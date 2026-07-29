@@ -1,0 +1,17 @@
+{
+  "short_name": "СКУД Z5R",
+  "name": "Smart-Lock Z5R Net Locker",
+  "icons": [
+    {
+      "src": "/icon-256.png",
+      "type": "image/png",
+      "sizes": "256x256",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#eef2f5",
+  "theme_color": "#1a73e8",
+  "orientation": "portrait"
+}
