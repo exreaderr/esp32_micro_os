@@ -1,0 +1,42 @@
+{
+    "smart_counter": {
+        "src": "/home/kiv/Arduino/smart_counter_v4.0",
+        "bin_dir": "/home/kiv/Arduino/smart_counter_v4.0/build",
+        "ha": "/home/kiv/Arduino/ota/smart_counter",
+        "size": "131072",
+        "mqtt_ip": "10.146.75.5",
+        "dev_ip": "10.146.75.48",
+        "mqtt_user": "smart",
+        "mqtt_pass": "J5D*ad18"
+    },
+    "smart_lock_v3": {
+        "src": "/home/kiv/Arduino/smart_lock_v3.0",
+        "bin_dir": "/home/kiv/Arduino/smart_lock_v3.0/build",
+        "ha": "/home/kiv/Arduino/ota/smart_lock",
+        "size": "1441792",
+        "mqtt_ip": "10.146.75.5",
+        "dev_ip": "10.146.75.48",
+        "mqtt_user": "smart",
+        "mqtt_pass": "J5D*ad18"
+    },
+    "smart_lock_v2": {
+        "src": "/home/kiv/Arduino/smart_lock_v2.0",
+        "bin_dir": "/home/kiv/Arduino/smart_lock_v2.0/build",
+        "ha": "/home/kiv/Arduino/ota",
+        "size": "131072",
+        "mqtt_ip": "10.146.75.5",
+        "dev_ip": "10.146.75.40",
+        "mqtt_user": "smart",
+        "mqtt_pass": "J5D*ad18"
+    },
+    "smart_lock_v5": {
+        "src": "/home/kiv/Arduino/smart_lock_v5.0",
+        "bin_dir": "/home/kiv/Arduino/smart_lock_v5.0",
+        "ha": "/home/kiv/Arduino/ota/smart_lock",
+        "size": "131072",
+        "mqtt_ip": "10.146.75.5",
+        "dev_ip": "10.146.75.53",
+        "mqtt_user": "smart",
+        "mqtt_pass": "J5D*ad18"
+    }
+}
