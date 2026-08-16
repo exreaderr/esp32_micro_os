@@ -1,0 +1,2209 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Умный замок — МикроОС 5.0</title>
+<meta name="theme-color" content="#f3eee2">
+<meta name="description" content="Панель управления умным замком СКУД на МикроОС 5.0">
+<link rel="manifest" href="/web/manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="/web/favicon.png">
+<link rel="apple-touch-icon" href="/web/icon.png">
+<link rel="stylesheet" href="/web/uplot.css">
+<script src="/web/uplot.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+:root {
+  --bg: #f3eee2;
+  --card: #fffdf6;
+  --text: #3b3226;
+  --text2: #8a7c63;
+  --border: #ddd0b8;
+  --field: #bfa982;
+  --info: #9a6716;
+  --success: #5d8a3c;
+  --warning: #cf8a1c;
+  --error: #b23c2e;
+  --svc: #71634f;
+  --radius: 16px;
+  --shadow: 0 2px 10px rgba(93,72,41,.10);
+  --giant-closed: linear-gradient(135deg, #9b4a33, #6e2a1a);
+  --giant-open: linear-gradient(135deg, #6a9440, #40661f);
+}
+body.dark {
+  --bg: #1f1810;
+  --card: #2a2114;
+  --text: #ede3cf;
+  --text2: #ab997a;
+  --border: #4a3d27;
+  --field: #6b5834;
+  --svc: #584b37;
+  --shadow: 0 2px 10px rgba(0,0,0,.5);
+}
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  transition: background .3s, color .3s;
+  padding: calc(10px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+}
+.container { max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.hidden { display: none !important; }
+
+/* ========== КАРТОЧКИ (mushroom) ========== */
+.cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.m-card {
+  background: var(--card); border-radius: var(--radius);
+  padding: 12px; box-shadow: var(--shadow); border: 1.5px solid var(--border);
+}
+.m-card.wide { grid-column: span 2; }
+.card-header { display: flex; align-items: center; gap: 12px; }
+.card-icon {
+  width: 42px; height: 42px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 21px; background: var(--bg); border: 1px solid var(--border);
+}
+.card-info { flex: 1; min-width: 0; }
+.card-label { font-size: 11px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+.card-value { font-size: 21px; font-weight: 700; line-height: 1.2; }
+.card-value.ok { color: var(--success); }
+.card-value.bad { color: var(--error); }
+.card-sub { font-size: 11px; color: var(--text2); margin-top: 2px; }
+
+/* ========== КНОПКИ ========== */
+button {
+  width: 100%; padding: 10px; border-radius: 11px; border: none;
+  background: var(--info); color: #fff; font-weight: 600; font-size: 13px;
+  cursor: pointer; transition: transform .1s, opacity .2s, filter .15s; font-family: inherit;
+}
+button:hover { filter: brightness(1.07); }
+button:active { transform: scale(.97); }
+button:disabled { opacity: .5; cursor: default; }
+button.svc { background: var(--svc); }
+button.success { background: var(--success); }
+button.warning { background: var(--warning); color: #2b2113; }
+button.danger { background: var(--error); }
+button.small { padding: 7px 12px; font-size: 12px; width: auto; }
+.btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* ========== ГИГАНТСКАЯ КНОПКА ЖИЛЬЦА ========== */
+.giant-card { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 24px 14px; }
+#giantBtn {
+  width: 170px; height: 170px; border-radius: 50%;
+  background: var(--giant-closed); color: #fff;
+  font-size: 18px; font-weight: 800; letter-spacing: 1px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 8px 30px rgba(110,42,26,.35), inset 0 -6px 16px rgba(0,0,0,.25);
+  transition: background .4s, box-shadow .4s;
+}
+#giantBtn.open { background: var(--giant-open); box-shadow: 0 8px 30px rgba(64,102,31,.4), inset 0 -6px 16px rgba(0,0,0,.2); }
+#giantBtn .giant-ico { font-size: 40px; }
+.door-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--bg); border: 1.5px solid var(--border);
+  border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+}
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.dot.red { background: var(--error); }
+.dot.green { background: var(--success); }
+.dot.orange { background: var(--warning); }
+
+/* ========== ПРИВЕТСТВИЕ / ПОГОДА / ТРЕВОГА ========== */
+.greeting-card {
+  background: linear-gradient(135deg, rgba(154,103,22,.08), rgba(93,138,60,.08));
+  border-left: 5px solid var(--info);
+}
+.greeting-clock { font-size: 28px; font-weight: 800; font-family: ui-monospace, monospace; letter-spacing: 1px; }
+.greeting-text { font-size: 17px; font-weight: 600; margin-top: 2px; }
+.weather-card {
+  background: linear-gradient(135deg, rgba(207,138,28,.07), rgba(154,103,22,.05));
+  border-left: 4px solid var(--warning);
+  display: flex; align-items: center; gap: 14px;
+}
+.weather-icon { font-size: 36px; }
+.weather-temp { font-size: 24px; font-weight: 800; margin-left: auto; white-space: nowrap; }
+.alarm-banner {
+  border-left: 5px solid var(--error);
+  background: linear-gradient(135deg, rgba(178,60,46,.12), rgba(178,60,46,.05));
+  font-weight: 700; color: var(--error); font-size: 14px;
+  display: flex; align-items: center; gap: 10px;
+  animation: pulse 1.6s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .65; } }
+
+/* ========== ЧИПСЫ НАВИГАЦИИ ========== */
+.nav-chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: thin; }
+.chip {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1.5px solid var(--border); color: var(--text);
+  border-radius: 999px; padding: 8px 15px; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all .2s; width: auto;
+}
+.chip.active { background: var(--info); border-color: var(--info); color: #fff; }
+.status-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.s-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1.5px solid var(--border);
+  border-radius: 999px; padding: 6px 12px; font-size: 11px; font-weight: 600; color: var(--text2);
+}
+.s-chip b { color: var(--text); }
+
+/* ========== СВОРАЧИВАЕМЫЕ ПАНЕЛИ ========== */
+.settings-panel { background: var(--card); border-radius: var(--radius); overflow: hidden; border: 1.5px solid var(--border); box-shadow: var(--shadow); }
+.settings-header {
+  padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;
+  cursor: pointer; font-weight: 700; font-size: 14px; text-transform: uppercase; letter-spacing: .4px;
+  background: var(--bg); user-select: none;
+}
+.settings-header.open { border-bottom: 1.5px solid var(--border); }
+.settings-header .arrow { transition: transform .3s; font-size: 12px; }
+.settings-header.open .arrow { transform: rotate(180deg); }
+.settings-content { max-height: 0; overflow: hidden; transition: max-height .4s ease; }
+.settings-content.open { max-height: 6000px; }
+.settings-inner { padding: 12px; }
+
+/* ========== ФОРМЫ ========== */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.form-grid .span2 { grid-column: span 2; }
+label { font-size: 10px; font-weight: 600; color: var(--text2); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
+input, select {
+  width: 100%; padding: 9px 12px; border-radius: 10px;
+  border: 1.5px solid var(--field); background: var(--card);
+  color: var(--text); font-size: 14px; outline: none; font-family: inherit;
+  transition: border-color .2s, box-shadow .2s;
+}
+input:focus, select:focus { border-color: var(--info); box-shadow: 0 0 0 3px rgba(154,103,22,.16); }
+body.dark input:focus, body.dark select:focus { box-shadow: 0 0 0 3px rgba(210,156,62,.22); }
+input:disabled { opacity: .55; }
+input[type="checkbox"] { width: auto; }
+.check-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--card); border-radius: 10px; border: 1.5px solid var(--field); }
+.check-row label { margin: 0; text-transform: none; font-size: 13px; color: var(--text); cursor: pointer; flex: 1; }
+.group-card { background: var(--bg); border-radius: 14px; padding: 12px; margin-bottom: 10px; border: 1.5px solid var(--border); }
+.group-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--info); padding-left: 8px; }
+.group-note { font-size: 11px; color: var(--warning); margin-top: 8px; font-weight: 600; }
+.save-row { margin-top: 4px; }
+
+/* ========== ПОЛЬЗОВАТЕЛИ ========== */
+.users-list { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.user-card {
+  background: var(--bg); border-radius: 12px; padding: 9px 12px;
+  display: flex; align-items: center; gap: 10px; border: 1.5px solid var(--border); border-left: 4px solid var(--success);
+}
+.user-card.master { border-left-color: var(--warning); }
+.user-card.temp { border-left-color: var(--info); }
+.user-card.onetime { border-left-color: var(--error); }
+.user-card.blocked { border-left-color: var(--error); opacity: .62; }
+.user-card.blocked .user-name { text-decoration: line-through; }
+.user-ico { font-size: 22px; }
+.user-body { flex: 1; min-width: 0; }
+.user-name { font-size: 14px; font-weight: 700; }
+.user-meta { font-size: 10px; color: var(--text2); margin-top: 2px; word-break: break-all; }
+.user-actions { display: flex; gap: 6px; }
+.user-actions button { width: 38px; height: 38px; padding: 0; border-radius: 50%; font-size: 15px; }
+.badge { display: inline-block; border-radius: 10px; padding: 2px 8px; font-size: 9px; font-weight: 700; margin-top: 4px; margin-right: 4px; }
+.badge-success { background: rgba(93,138,60,.15); color: var(--success); }
+.badge-warning { background: rgba(207,138,28,.15); color: var(--warning); }
+.badge-info { background: rgba(154,103,22,.13); color: var(--info); }
+.badge-error { background: rgba(178,60,46,.15); color: var(--error); }
+/* ========== ГРАФИКИ (даталоггер, uPlot) ========== */
+.chart-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chart-chips .chip.active { background: var(--info); color: #fff; border-color: var(--info); }
+.chart-box { width: 100%; min-height: 280px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 8px; }
+.chart-box .u-legend { font-size: 11px; color: var(--text2); }
+.load-more { text-align: center; font-size: 12px; font-weight: 600; color: var(--info); padding: 8px; cursor: pointer; }
+
+/* ========== ЖУРНАЛ / ЛОГИ ========== */
+.log-list { max-height: 300px; overflow-y: auto; font-size: 11px; display: flex; flex-direction: column; }
+.log-item { padding: 7px 4px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.log-time { color: var(--text2); font-family: ui-monospace, monospace; font-size: 10px; white-space: nowrap; }
+.log-text { word-break: break-word; }
+pre.tech-log {
+  background: rgba(154,103,22,.05); border-radius: 10px; padding: 12px; max-height: 280px; overflow: auto;
+  font-size: 10px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all;
+  border: 1.5px solid var(--field); color: var(--text);
+}
+
+/* ========== ЗДОРОВЬЕ / ПАЗ ========== */
+.health-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--border); font-size: 13px; gap: 10px; }
+.health-row:last-child { border-bottom: none; }
+.health-name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.health-msg { font-size: 11px; color: var(--text2); text-align: right; }
+.health-ok { color: var(--success); font-weight: 700; }
+.health-warn { color: var(--warning); font-weight: 700; }
+.health-crit { color: var(--error); font-weight: 700; }
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.stat-cell { background: var(--bg); border-radius: 10px; padding: 9px 12px; border: 1.5px solid var(--border); }
+.stat-cell .v { font-size: 18px; font-weight: 800; }
+.stat-cell .l { font-size: 10px; color: var(--text2); text-transform: uppercase; }
+
+/* ========== ПОДВАЛ ========== */
+.footer-card { font-size: 12px; }
+.footer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin-top: 10px; }
+.footer-item { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--text2); }
+.footer-item b { color: var(--text); font-weight: 600; text-align: right; }
+
+/* ========== МОДАЛКИ / ТОСТ ========== */
+.modal { display: none; position: fixed; inset: 0; background: rgba(31,24,16,.82); z-index: 1000; align-items: center; justify-content: center; padding: 16px; }
+.modal.show { display: flex; }
+.modal-card { background: var(--card); border-radius: 18px; padding: 24px; width: 340px; max-width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,.4); border: 1.5px solid var(--border); }
+.modal-card h2 { font-size: 18px; margin-bottom: 4px; text-align: center; }
+.modal-card .modal-sub { font-size: 12px; color: var(--text2); text-align: center; margin-bottom: 16px; }
+.auth-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.auth-tabs .chip { flex: 1; justify-content: center; }
+.modal-card input { margin-bottom: 10px; }
+.modal-err { color: var(--error); font-size: 12px; min-height: 16px; margin: 6px 0; text-align: center; font-weight: 600; }
+.modal-btns { display: flex; gap: 10px; margin-top: 8px; }
+#authBanner { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); text-align: center; font-size: 11px; color: var(--text2); letter-spacing: .6px; user-select: none; -webkit-user-select: none; cursor: default; opacity: .75; transition: opacity .2s; }
+#authBanner.egg-pulse { animation: eggPulse .28s; }
+@keyframes eggPulse { 50% { opacity: 1; transform: scale(1.04); } }
+#toast {
+  position: fixed; bottom: calc(18px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  background: #4a3d28; color: #fff; padding: 12px 22px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; z-index: 2000; opacity: 0; transition: opacity .3s;
+  pointer-events: none; max-width: 92%; text-align: center;
+}
+#toast.show { opacity: 1; }
+#toast.err { background: var(--error); }
+#toast.ok { background: var(--success); }
+
+/* ========== ДЕСКТОП: двухколоночная плотная раскладка ========== */
+@media (min-width: 1000px) {
+  .container { max-width: 1200px; }
+  /* Админский шелл: слева статус и сервисные кнопки, справа последний
+     доступ и навигация; настройки, журнал и подвал — на всю ширину */
+  #adminView { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  #adminView > .settings-panel, #adminView > .footer-card { grid-column: span 2; }
+  /* Внутри разделов настроек группы полей — в две колонки */
+  #cfg-net, #cfg-lock, #cfg-exit, #cfg-adm { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; align-items: start; }
+  .users-dual, .sys-dual, .adm-dual { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+  .stat-grid { grid-template-columns: repeat(4, 1fr); }
+  .footer-grid { grid-template-columns: repeat(4, 1fr); }
+  .users-list { max-height: 430px; }
+}
+
+@media (max-width: 380px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid .span2 { grid-column: span 1; }
+  #giantBtn { width: 150px; height: 150px; }
+}
+
+/* ========== СКИН «МЕТРО» (5.0.15): плоские плитки, рельс слева ==========
+   Второй визуальный стиль панели (переключатель «🎨 Стиль» в карточке
+   навигации, выбор в localStorage.mos_skin). Классика — без изменений. */
+body.skin-metro {
+  --bg: #f2f2f2; --card: #ffffff; --text: #1b1b1b; --text2: #6a6a6a;
+  --border: #dcdcdc; --field: #a8a8a8; --info: #1ba1e2;
+  --success: #60a917; --warning: #f0a30a; --error: #e51400; --svc: #5b6a75;
+  --radius: 2px; --shadow: none;
+  --giant-closed: #e51400; --giant-open: #60a917;
+  font-family: 'Segoe UI', system-ui, -apple-system, Roboto, sans-serif;
+}
+body.skin-metro.dark {
+  --bg: #141414; --card: #1f1f1f; --text: #f2f2f2; --text2: #9c9c9c;
+  --border: #3a3a3a; --field: #565656; --svc: #45525c; --shadow: none;
+}
+/* Плоскость: минимум скруглений, никаких теней */
+body.skin-metro .m-card, body.skin-metro .settings-panel,
+body.skin-metro .group-card, body.skin-metro .stat-cell,
+body.skin-metro .chart-box, body.skin-metro pre.tech-log,
+body.skin-metro .modal-card { border-radius: var(--radius); box-shadow: none; }
+body.skin-metro button, body.skin-metro input, body.skin-metro select,
+body.skin-metro .check-row, body.skin-metro .chip, body.skin-metro .s-chip,
+body.skin-metro .door-chip, body.skin-metro .user-card,
+body.skin-metro .badge, body.skin-metro #toast { border-radius: var(--radius); }
+/* Иконки карточек — квадратные акцентные плитки */
+body.skin-metro .card-icon {
+  border-radius: var(--radius); background: var(--info); color: #fff; border: none;
+}
+/* Гигантская кнопка жильца — большая live-плитка */
+body.skin-metro #giantBtn { border-radius: 8px; box-shadow: none; }
+/* Подвал — акцентная кромка сверху (вид «плитки статуса») */
+body.skin-metro .footer-card { border-top: 4px solid var(--info); }
+body.skin-metro .group-title { border-left-width: 4px; }
+
+/* --- Пер-табовые акценты ярлычков (палитра Windows Phone) --- */
+#navChips .chip[data-tab="net"]    { --tile: #1ba1e2; }
+#navChips .chip[data-tab="lock"]   { --tile: #60a917; }
+#navChips .chip[data-tab="exit"]   { --tile: #e51400; }
+#navChips .chip[data-tab="users"]  { --tile: #0050ef; }
+#navChips .chip[data-tab="charts"] { --tile: #aa00ff; }
+#navChips .chip[data-tab="paz"]    { --tile: #fa6800; }
+#navChips .chip[data-tab="sys"]    { --tile: #00aba9; }
+#navChips .chip[data-tab="adm"]    { --tile: #76608a; }
+
+/* Живой бейдж на ярлычке (MQTT офлайн / тревога ПАЗ) — виден в ОБОИХ скинах */
+#navChips .chip { position: relative; }
+.tile-badge {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--error);
+  margin-left: auto; flex-shrink: 0; box-shadow: 0 0 0 2px rgba(255,255,255,.35);
+}
+
+/* Метро-ярлычки: неактивный — плоский с цветной кромкой, активный — заливка */
+body.skin-metro #navChips .chip {
+  border: none; background: var(--card); color: var(--text);
+  box-shadow: inset 4px 0 0 var(--tile, var(--info));
+}
+body.skin-metro #navChips .chip.active {
+  background: var(--tile, var(--info)); color: #fff; box-shadow: none;
+}
+
+/* --- Метро-десктоп: рельс слева, контент со сдвигом вправо --- */
+@media (min-width: 760px) {
+  body.skin-metro #adminView.container { max-width: none; padding-left: 224px; }
+  body.skin-metro #navCard {
+    position: fixed; z-index: 90; left: 12px; top: 12px; bottom: 12px;
+    width: 200px; margin: 0; overflow-y: auto;
+    display: flex; flex-direction: column;
+  }
+  body.skin-metro #navCard .card-header { margin-bottom: 10px !important; }
+  body.skin-metro #navCard .card-header .card-sub { display: none; }
+  body.skin-metro #navCard .nav-chips {
+    flex-direction: column; overflow: visible; padding: 0; gap: 4px; flex: 1;
+  }
+  body.skin-metro #navChips .chip {
+    width: 100%; justify-content: flex-start; padding: 11px 12px; flex-shrink: 0;
+  }
+}
+
+/* --- Метро-мобильный: «стартовый экран» из цветных плиток 2×N --- */
+@media (max-width: 759px) {
+  body.skin-metro #navCard .nav-chips {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px; overflow: visible;
+  }
+  body.skin-metro #navChips .chip {
+    min-height: 58px; flex-direction: column; justify-content: center; gap: 3px;
+    background: var(--tile, var(--info)); color: #fff; box-shadow: none;
+    text-align: center; padding: 8px 4px;
+  }
+  body.skin-metro #navChips .chip.active {
+    outline: 2px solid var(--text); outline-offset: -2px;
+  }
+  body.skin-metro #navChips .chip .tile-badge {
+    position: absolute; top: 6px; right: 6px; margin-left: 0;
+  }
+}
+
+/* ========== СКИН «ТЕРМИНАЛ» (5.0.16): фосфорная CRT-консоль ==========
+   Третий визуальный ЯЗЫК (просьба: «чтобы совсем по-другому»): моноширинный
+   шрифт, окна консоли вместо карточек, скан-линии, свечение, инверсия
+   вместо заливки. Кнопка «🌙» здесь переключает фосфор: светлая тема —
+   ЯНТАРЬ (DEC VT240), тёмная — ЗЕЛЁНЫЙ (IBM 3270). Семантика цвета
+   (ок/тревога/ошибка) сохранена — читаемость важнее пуризма. */
+body.skin-term {
+  --bg: #0d0800; --card: #150d02; --text: #ffb000; --text2: #b07800;
+  --border: #4a3200; --field: #6b4a00; --info: #ffb000;
+  --success: #3df57a; --warning: #ffd24d; --error: #ff5544; --svc: #8a6a10;
+  --radius: 0; --shadow: none;
+  --giant-closed: #150d02; --giant-open: #0a1f10;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+body.skin-term.dark {
+  --bg: #050a05; --card: #0a120a; --text: #3df57a; --text2: #2fa05c;
+  --border: #1d4a2c; --field: #2a6a40; --info: #3df57a;
+  --warning: #ffc133; --svc: #1e5a35;
+}
+/* Скан-линии и виньетка ЭЛТ — поверх всего, клики пропускают */
+body.skin-term::after {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 3000;
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,.20) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.38) 100%);
+}
+/* Поверхности: плоские «окна» с рамкой, ноль скруглений и теней */
+body.skin-term .m-card, body.skin-term .settings-panel,
+body.skin-term .group-card, body.skin-term .stat-cell,
+body.skin-term .chart-box, body.skin-term pre.tech-log,
+body.skin-term .modal-card, body.skin-term .check-row,
+body.skin-term .user-card, body.skin-term .s-chip,
+body.skin-term .door-chip, body.skin-term .badge {
+  border-radius: 0; box-shadow: none; background: var(--card);
+}
+body.skin-term input, body.skin-term select, body.skin-term button,
+body.skin-term .chip, body.skin-term #toast { border-radius: 0; }
+body.skin-term input, body.skin-term select {
+  background: var(--bg); border: 1px solid var(--field); color: var(--text);
+}
+body.skin-term input:focus, body.skin-term select:focus {
+  border-color: var(--text); box-shadow: 0 0 8px var(--field);
+}
+/* Свечение фосфора — только на крупных элементах (кириллица не плывёт) */
+body.skin-term .card-value, body.skin-term .greeting-clock,
+body.skin-term .weather-temp, body.skin-term .settings-header,
+body.skin-term .modal-card h2 { text-shadow: 0 0 7px var(--text); }
+/* Консольные маркеры заголовков */
+body.skin-term .group-title { border-left: none; padding-left: 0; }
+body.skin-term .group-title::before { content: '> '; color: var(--text2); }
+body.skin-term .card-label::before { content: '# '; }
+/* Мигающий курсор в заголовке активного раздела */
+@keyframes termBlink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0; } }
+body.skin-term #tabPanelTitle::after { content: ' █'; animation: termBlink 1.1s infinite; }
+/* Кнопки: рамка + ИНВЕРСИЯ при наведении (inverse video) */
+body.skin-term button {
+  background: var(--card); color: var(--text); border: 1px solid var(--border);
+  text-transform: uppercase; letter-spacing: .5px;
+}
+body.skin-term button:hover { background: var(--text); color: var(--bg); filter: none; }
+body.skin-term button:active { transform: none; }
+body.skin-term button.success { color: var(--success); border-color: var(--success); }
+body.skin-term button.success:hover { background: var(--success); color: var(--bg); }
+body.skin-term button.warning { color: var(--warning); border-color: var(--warning); }
+body.skin-term button.warning:hover { background: var(--warning); color: var(--bg); }
+body.skin-term button.danger { color: var(--error); border-color: var(--error); }
+body.skin-term button.danger:hover { background: var(--error); color: var(--bg); }
+body.skin-term button.svc { color: var(--text2); }
+body.skin-term button.svc:hover { background: var(--text2); color: var(--bg); }
+/* Навигация — BBS-меню: перенос строк вместо скролла, [скобки] консоли */
+body.skin-term #navCard .nav-chips { flex-wrap: wrap; overflow: visible; gap: 6px; }
+body.skin-term #navChips .chip {
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+}
+body.skin-term #navChips .chip::before { content: '['; }
+body.skin-term #navChips .chip::after { content: ']'; }
+body.skin-term #navChips .chip.active {
+  background: var(--text); color: var(--bg); border-color: var(--text);
+  text-shadow: none; box-shadow: 0 0 10px var(--field);
+}
+body.skin-term .chip.chart-chan.active, body.skin-term .chip.chart-range.active {
+  background: var(--text); color: var(--bg); border-color: var(--text);
+}
+/* Иконки карточек — рамки, гигант — консольный блок в рамке */
+body.skin-term .card-icon {
+  border-radius: 0; background: transparent; border: 1px solid var(--border);
+}
+body.skin-term #giantBtn {
+  border-radius: 0; border: 3px solid var(--error);
+  box-shadow: 0 0 18px rgba(255,85,68,.25);
+}
+body.skin-term #giantBtn.open {
+  border-color: var(--success); box-shadow: 0 0 18px rgba(61,245,122,.25);
+}
+/* Подвал — строка состояния консоли */
+body.skin-term .footer-card { border-top: 1px solid var(--border); }
+/* Тост — строка консоли */
+body.skin-term #toast {
+  background: var(--card); border: 1px solid var(--text); color: var(--text);
+}
+body.skin-term #toast.ok { border-color: var(--success); color: var(--success); }
+body.skin-term #toast.err { border-color: var(--error); color: var(--error); }
+body.skin-term ::selection { background: var(--text); color: var(--bg); }
+</style>
+</head>
+<body>
+
+<!-- ==================== ВХОД ==================== -->
+<div class="modal" id="authModal">
+  <div class="modal-card">
+    <h2>🔐 Умный замок</h2>
+    <div class="modal-sub" id="authSub">МикроОС 5.0 · СКУД</div>
+    <div class="auth-tabs" id="authTabs">
+      <button class="chip active" id="tabResident" onclick="authTab('resident')">🏠 Жилец</button>
+      <button class="chip" id="tabAdmin" onclick="authTab('admin')">👑 Администратор</button>
+    </div>
+    <div id="authResident">
+      <label>Личный ПИН-код (4–6 цифр)</label>
+      <input type="password" id="pinInput" inputmode="numeric" maxlength="6" placeholder="Только цифры" autocomplete="off">
+    </div>
+    <div id="authAdmin" class="hidden">
+      <label id="adminPassLabel">Пароль администратора</label>
+      <input type="password" id="passInput" maxlength="32" placeholder="Пароль" autocomplete="current-password">
+      <div id="passConfirmWrap" class="hidden">
+        <label>Подтверждение пароля</label>
+        <input type="password" id="passConfirm" maxlength="32" placeholder="Повторите пароль" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="modal-err" id="authErr"></div>
+    <button class="success" id="authBtn" onclick="doLogin()">Войти</button>
+    <!-- Пасхальное яйцо: 5 тапов по баннеру открывают выбор профиля
+         администратора. Жилец про админку не знает вовсе. -->
+    <div id="authBanner" onclick="authEgg()">МикроОС 5.0 · © 2026</div>
+  </div>
+</div>
+
+<!-- ==================== ШЕЛЛ ЖИЛЬЦА ==================== -->
+<div class="container hidden" id="userView">
+  <div class="m-card giant-card">
+    <button id="giantBtn" onclick="residentOpen()">
+      <span class="giant-ico" id="giantIco">🔒</span>
+      <span id="giantLbl">ОТКРЫТЬ</span>
+    </button>
+    <div class="door-chip"><span class="dot red" id="doorDot"></span><span id="doorTxt">🔒 Дверь закрыта</span></div>
+  </div>
+
+  <div class="m-card alarm-banner hidden" id="alarmBanner">
+    <span style="font-size:22px">🚨</span><span id="alarmTxt">ТРЕВОГА</span>
+  </div>
+
+  <div class="m-card greeting-card">
+    <div class="greeting-clock" id="userClock">--:--:--</div>
+    <div class="greeting-text" id="userGreeting">Здравствуйте!</div>
+    <div class="card-sub">Рады вас видеть. Периметр находится под охраной.</div>
+  </div>
+
+  <div class="m-card weather-card hidden" id="weatherCard">
+    <span class="weather-icon" id="weatherIco">🌡️</span>
+    <div>
+      <div class="card-label">Погода за окном</div>
+      <div class="card-sub" id="weatherTxt" style="font-size:12px">Синхронизация...</div>
+    </div>
+    <span class="weather-temp" id="weatherTemp"></span>
+  </div>
+
+  <div class="m-card footer-card">
+    <div class="card-label">ℹ️ Системная информация · <span id="uVer">5.0.16</span></div>
+    <div class="footer-grid">
+      <div class="footer-item"><span>MQTT</span><b id="uMqtt">—</b></div>
+      <div class="footer-item"><span>Аптайм</span><b id="uUptime">—</b></div>
+      <div class="footer-item"><span>🔧 Циклов замка</span><b id="uCycles">0</b></div>
+      <div class="footer-item"><span id="uTime">—</span><b></b></div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== ШЕЛЛ АДМИНА ==================== -->
+<div class="container hidden" id="adminView">
+
+  <div class="cards-grid">
+    <div class="m-card">
+      <div class="card-header">
+        <div class="card-icon" id="lockIco">🔒</div>
+        <div class="card-info">
+          <div class="card-label">Исполнитель</div>
+          <div class="card-value" id="lockState">ЗАКРЫТ</div>
+        </div>
+      </div>
+      <button class="success" style="margin-top:10px" onclick="adminOpen()">🔓 ОТКРЫТЬ</button>
+    </div>
+    <div class="m-card">
+      <div class="card-header">
+        <div class="card-icon">🚪</div>
+        <div class="card-info">
+          <div class="card-label">Датчик двери</div>
+          <div class="card-value" id="doorState">—</div>
+          <div class="card-sub" id="modeSub">Режим: —</div>
+        </div>
+      </div>
+      <div class="status-chips" style="margin-top:10px">
+        <span class="s-chip" id="healthChip">Здоровье <span class="dot green" id="healthDot"></span></span>
+        <span class="s-chip" id="alarmChip">Тревога <b id="alarmVal">нет</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="m-card">
+    <div class="card-header">
+      <div class="card-icon" style="background:rgba(156,39,176,.12)">🪪</div>
+      <div class="card-info">
+        <div class="card-label">Последний доступ</div>
+        <div class="card-value" style="font-size:18px" id="lastUser">—</div>
+        <div class="card-sub" id="lastKey"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="btn-grid">
+    <button class="svc" onclick="syncTime()">🕐 Синхр. время</button>
+    <button class="svc" id="modeBtn" onclick="cycleMode()">🔄 Режим: —</button>
+    <button class="svc" onclick="checkHealth()">🩺 Проверить ПО</button>
+    <button class="svc" onclick="toggleTheme()">🌙 Тёмная тема</button>
+  </div>
+
+  <div class="m-card" id="navCard">
+    <div class="card-header" style="margin-bottom:6px">
+      <div class="card-icon">⚙️</div>
+      <div class="card-info">
+        <div class="card-label">Навигация по настройкам</div>
+        <div class="card-sub">Быстрый доступ к разделам</div>
+      </div>
+    </div>
+    <div class="nav-chips" id="navChips">
+      <button class="chip" data-tab="net" onclick="showTab('net')">📡 Связь<span class="tile-badge hidden" id="tbNet" title="MQTT офлайн"></span></button>
+      <button class="chip" data-tab="lock" onclick="showTab('lock')">🔒 Замок</button>
+      <button class="chip" data-tab="exit" onclick="showTab('exit')">⛔ Кнопка выхода</button>
+      <button class="chip" data-tab="users" onclick="showTab('users')">👥 Пользователи</button>
+      <button class="chip" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
+      <button class="chip" data-tab="paz" onclick="showTab('paz')">🛡️ ПАЗ<span class="tile-badge hidden" id="tbPaz" title="Тревога!"></span></button>
+      <button class="chip" data-tab="sys" onclick="showTab('sys')">🩺 Система</button>
+      <button class="chip" data-tab="adm" onclick="showTab('adm')">👑 Админ</button>
+    </div>
+    <button class="svc" id="skinBtn" style="margin-top:10px" onclick="toggleSkin()">🎨 Стиль: Метро</button>
+  </div>
+
+  <div class="settings-panel">
+    <div class="settings-header open" id="tabPanelHdr" onclick="togglePanel('tabPanel')">
+      <span id="tabPanelTitle">🔧 Расширенные настройки</span><span class="arrow">▼</span>
+    </div>
+    <div class="settings-content open" id="tabPanel">
+      <div class="settings-inner">
+
+        <div id="tab-net" class="tab-pane hidden">
+          <div id="cfg-net"></div>
+          <div class="save-row"><button class="warning" onclick="saveConfig('net')">💾 Сохранить параметры</button></div>
+        </div>
+
+        <div id="tab-lock" class="tab-pane hidden">
+          <div id="cfg-lock"></div>
+          <div class="save-row"><button class="warning" onclick="saveConfig('lock')">💾 Сохранить параметры</button></div>
+        </div>
+
+        <div id="tab-exit" class="tab-pane hidden">
+          <div id="cfg-exit"></div>
+          <div class="group-card" style="background:rgba(76,175,80,.08)">
+            <div class="card-sub" style="font-size:12px">🛡️ <b>Fail-Safe:</b> при неисправном часовом модуле (RTC) кнопка выхода разрешена всегда — безопасность превыше расписания.</div>
+          </div>
+          <div class="save-row"><button class="warning" onclick="saveConfig('exit')">💾 Сохранить параметры</button></div>
+        </div>
+
+        <div id="tab-users" class="tab-pane hidden">
+         <div class="users-dual">
+          <div class="group-card">
+            <div class="group-title">➕ Добавить ключ</div>
+            <div class="form-grid">
+              <div><label>HEX код карты</label><input id="addId" placeholder="4A2C9E1B" maxlength="8" style="text-transform:uppercase"></div>
+              <div><label>Имя пользователя</label><input id="addName" placeholder="Алексей" maxlength="24"></div>
+              <div><label>Тип ключа</label>
+                <select id="addType">
+                  <option value="permanent">Постоянный</option>
+                  <option value="temporary">Временный</option>
+                  <option value="one-time">Разовый (сгорает после прохода)</option>
+                  <option value="master">Мастер-ключ</option>
+                </select>
+              </div>
+              <div><label>Истекает (лимит доступа)</label><input id="addExpiry" type="datetime-local"></div>
+              <div id="addTypeHint" class="span2 hidden" style="padding:10px 12px;border-radius:8px;background:rgba(255,170,0,.12);border:1px solid rgba(255,170,0,.45);font-size:13px;line-height:1.45">👑 База пуста: первая карта всегда становится Мастер-ключом — как при поднесении к считывателю. Тип назначается принудительно.</div>
+              <div><label>Номер аудио-трека (1-99)</label>
+                <div style="display:flex;gap:8px">
+                  <input id="addTrack" type="number" min="1" max="99" placeholder="0">
+                  <button class="warning small" style="width:44px;height:42px;border-radius:12px;padding:0" onclick="testTrack()" title="Прослушать">▶</button>
+                </div>
+              </div>
+              <div><label>Личный ПИН-код веб (4-6 цифр)</label><input id="addPin" inputmode="numeric" maxlength="6" placeholder="Только цифры"></div>
+            </div>
+            <div style="display:flex;gap:10px;margin-top:12px">
+              <button class="svc" onclick="readCard()" id="readBtn">🪪 Считать карту</button>
+              <button class="success" onclick="addKey()">+ Добавить</button>
+            </div>
+            <div class="card-sub" id="readHint" style="margin-top:8px"></div>
+          </div>
+
+          <div class="group-card" style="margin-bottom:0">
+            <div class="group-title" style="margin:0 0 10px">👥 База пользователей <span class="card-sub" id="usersCount"></span></div>
+            <input id="usersSearch" placeholder="🔎 Поиск по имени или HEX…" maxlength="24"
+                   oninput="onUsersSearch(this.value)" style="margin:0 0 10px">
+            <div class="users-list" id="usersList"></div>
+            <div class="load-more hidden" id="usersMore" onclick="loadKeys(true)">Показать ещё</div>
+            <div id="dbRestoreHint" class="hidden" style="margin-top:12px;padding:10px 12px;border-radius:8px;background:rgba(255,170,0,.12);border:1px solid rgba(255,170,0,.45);font-size:13px;line-height:1.45">
+              ⚠️ <b>База пользователей пуста</b>, но в NVS есть резервная копия.<br>
+              Восстановление — кнопкой «♻️ Восстановить из NVS» ниже: текущая (пустая) база будет заменена бэкапом.
+            </div>
+            <div class="btn-grid" style="margin-top:12px">
+              <button class="svc" onclick="dbBackup()">💾 Сохранить бэкап в NVS</button>
+              <button class="warning" onclick="dbRestore()">♻️ Восстановить из NVS</button>
+            </div>
+          </div>
+         </div>
+        </div>
+
+        <div id="tab-charts" class="tab-pane hidden">
+          <div class="group-card">
+            <div class="group-title">📈 Даталоггер</div>
+            <div class="card-sub" style="margin-bottom:10px">История метрик: 6 ч — сырые точки, до месяца — почасовые (среднее + коридор мин/макс), год — посуточные</div>
+            <div class="chart-chips" id="chartChannels"></div>
+            <div class="chart-chips" id="chartRanges">
+              <button class="chip chart-range active" data-range="6h" onclick="setChartRange('6h')">6 ч</button>
+              <button class="chip chart-range" data-range="24h" onclick="setChartRange('24h')">24 ч</button>
+              <button class="chip chart-range" data-range="7d" onclick="setChartRange('7d')">7 дн</button>
+              <button class="chip chart-range" data-range="30d" onclick="setChartRange('30d')">30 дн</button>
+              <button class="chip chart-range" data-range="1y" onclick="setChartRange('1y')">Год</button>
+            </div>
+            <div id="chartBox" class="chart-box"></div>
+            <div class="card-sub" id="chartHint" style="margin-top:8px;text-align:center"></div>
+          </div>
+        </div>
+
+        <div id="tab-paz" class="tab-pane hidden">
+          <div class="group-card">
+            <div class="group-title">🛡️ Противоаварийная автоматическая защита</div>
+            <div class="card-sub" style="margin-bottom:10px">Диагностика и статус системы</div>
+            <div id="pazRows"></div>
+            <div id="pazJournal"></div>
+          </div>
+          <button class="warning" onclick="pazReset()">🔄 Сбросить флаг ПАЗ</button>
+        </div>
+
+        <div id="tab-sys" class="tab-pane hidden">
+          <div class="stat-grid" id="sysStats"></div>
+          <div class="sys-dual">
+            <div class="group-card">
+              <div class="group-title">🩺 Здоровье модулей</div>
+              <div id="healthRows"></div>
+            </div>
+            <div class="group-card">
+              <div class="group-title">🖥️ Технический журнал
+                <button class="small svc" style="margin-left:auto" onclick="loadTechLog()">Обновить</button>
+              </div>
+              <pre class="tech-log" id="techLog">Нажмите «Обновить»…</pre>
+            </div>
+          </div>
+          <div class="group-card" style="margin-top:14px">
+            <div class="group-title">⬆️ Обновление прошивки</div>
+            <div id="otaRows"><div class="card-sub">Загрузка сведений…</div></div>
+            <div id="otaBar" style="display:none;margin:10px 0">
+              <div style="border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
+                <div id="otaBarFill" style="height:100%;width:0%;background:var(--info);transition:width .2s"></div>
+              </div>
+              <div class="card-sub" id="otaBarTxt" style="margin-top:4px"></div>
+            </div>
+            <div style="margin-top:10px">
+              <button class="svc" style="width:100%" onclick="otaCheck()">🔎 Проверить обновление</button>
+              <button class="svc" style="width:100%;margin-top:8px" onclick="otaRemote()">☁️ Обновить с сервера (прошивка + ФС)</button>
+            </div>
+            <div class="btn-grid" style="margin-top:8px">
+              <button class="svc" onclick="$('otaFwFile').click()">📦 Прошивка (.bin)</button>
+              <button class="svc" onclick="$('otaFsFile').click()">🗂️ Файловая система (.bin)</button>
+              <button class="svc" onclick="cfgBackup()">💾 Сохранить бэкап в NVS</button>
+              <button class="svc" onclick="cfgRestore()">♻️ Восстановить из NVS</button>
+              <input type="file" id="otaFwFile" accept=".bin" style="display:none" onchange="otaUpload(this,'fw')">
+              <input type="file" id="otaFsFile" accept=".bin" style="display:none" onchange="otaUpload(this,'fs')">
+            </div>
+            <div class="card-sub" id="cfgBakInfo" style="margin-top:8px"></div>
+            <div id="otaHistory"></div>
+          </div>
+          <button class="danger" onclick="rebootDevice()">⏻ Перезагрузить контроллер</button>
+        </div>
+
+        <div id="tab-adm" class="tab-pane hidden">
+         <div class="adm-dual">
+          <div class="group-card">
+            <div class="group-title">👑 Пароль администратора</div>
+            <div class="form-grid">
+              <div><label>Действующий пароль</label><input type="password" id="admOld" maxlength="32" autocomplete="current-password"></div>
+              <div></div>
+              <div><label>Новый пароль (4–32, без пробелов)</label><input type="password" id="admNew" maxlength="32" autocomplete="new-password"></div>
+              <div><label>Подтверждение</label><input type="password" id="admNew2" maxlength="32" autocomplete="new-password"></div>
+            </div>
+            <button class="warning" style="margin-top:12px" onclick="changePassword()">💾 Сменить пароль</button>
+          </div>
+          <div class="group-card">
+            <div class="group-title">🪪 Мастер-ключ</div>
+            <div class="card-sub" style="margin-bottom:10px">Текущий: <b id="admMasterId">—</b></div>
+            <button class="danger" onclick="masterDelete()">🗑 Удалить Мастер-ключ</button>
+          </div>
+         </div>
+          <div id="cfg-adm"></div>
+          <div class="save-row" id="cfg-adm-save" style="margin-bottom:12px"><button class="warning" onclick="saveConfig('adm')">💾 Сохранить параметры</button></div>
+          <div class="btn-grid">
+            <button class="svc" onclick="logout()">🚪 Выйти из сессии</button>
+            <button class="danger" onclick="rebootDevice()">⏻ Перезагрузка</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-panel">
+    <div class="settings-header" id="journalPanelHdr" onclick="toggleJournal()">
+      <span>📋 Журнал событий</span><span class="arrow">▼</span>
+    </div>
+    <div class="settings-content" id="journalPanel">
+      <div class="settings-inner">
+        <div class="card-sub" style="margin-bottom:8px">Персистентный аудит: вход, доступ, смена настроек, ПАЗ. Переживает перезагрузку.</div>
+        <div class="log-list" id="journalList"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="m-card footer-card">
+    <div class="card-label">ℹ️ Системная информация · МикроОС <span id="aVer">5.0.16</span></div>
+    <div class="footer-grid">
+      <div class="footer-item"><span>MQTT</span><b id="aMqtt">—</b></div>
+      <div class="footer-item"><span>Аптайм</span><b id="aUptime">—</b></div>
+      <div class="footer-item"><span>Мастер-ключ</span><b id="aMaster">—</b></div>
+      <div class="footer-item"><span>Кнопка выхода</span><b id="aExit">—</b></div>
+      <div class="footer-item"><span>Тихий режим</span><b id="aQuiet">—</b></div>
+      <div class="footer-item"><span>Карт в базе</span><b id="aCards">—</b></div>
+      <div class="footer-item"><span>🔧 Циклов замка</span><b id="aCycles">0</b></div>
+      <div class="footer-item"><span>Импульс</span><b id="aPulse">—</b></div>
+    </div>
+    <div class="footer-item" style="margin-top:6px;justify-content:flex-end"><span id="aTime">—</span></div>
+  </div>
+</div>
+
+<!-- ==================== ПОДТВЕРЖДЕНИЕ ==================== -->
+<div class="modal" id="confirmModal">
+  <div class="modal-card">
+    <h2 id="cfTitle">Подтверждение</h2>
+    <div class="modal-sub" id="cfText"></div>
+    <div id="cfInputWrap" class="hidden">
+      <label>Введите DELETE для подтверждения</label>
+      <input id="cfInput" placeholder="DELETE" autocomplete="off" style="text-align:center;letter-spacing:2px">
+    </div>
+    <div class="modal-btns">
+      <button class="svc" onclick="closeConfirm()">Отмена</button>
+      <button class="danger" id="cfBtn">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ============================================================================
+// СОСТОЯНИЕ И УТИЛИТЫ
+// ============================================================================
+var S = {
+  token: sessionStorage.getItem('mos_token') || '',
+  role: '',           // 'admin' | 'user'
+  userName: sessionStorage.getItem('lock_username') || '',
+  userTok: sessionStorage.getItem('lock_utok') || '',
+  status: null,       // последний lock/status
+  sys: null,          // /api/system
+  cfg: null,          // /api/config (схема)
+  dirty: {},          // изменённые ключи конфига по вкладкам
+  keysFrom: 0,
+  keysQ: '',          // поиск по базе (серверный фильтр, 5.1.2)
+  voiceMap: null,
+  pollTimer: null,
+  clockTimer: null,
+  devUnix: 0,         // unix устройства из /api/status (0 = недостоверно)
+  devAt: 0,           // Date.now() момента получения devUnix
+  provisioned: true
+};
+// Миграция 5.0.x: ПИН жильца больше НЕ храним в браузере — вместо него
+// серверный токен сессии (lock_utok) со скользящим окном бездействия.
+sessionStorage.removeItem('lock_pin');
+// Версия ФС-панели: фолбэк подвала, пока контроллер не ответил (5.0.15:
+// раньше литерал '5.0.0' застывал навсегда; теперь бэкенд шлёт MICROOS_VERSION,
+// а это — только заглушка до первого опроса, бампать при релизе ФС)
+var PANEL_VER='5.2.0';
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function toast(msg, kind){
+  var t=$('toast'); t.textContent=msg; t.className='show '+(kind||'');
+  clearTimeout(t._tm); t._tm=setTimeout(function(){ t.className=''; }, 3000);
+}
+function fmtUptime(s){
+  s=+s||0; var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),sec=s%60;
+  if(d>0) return d+'д '+h+'ч';
+  if(h>0) return h+'ч '+m+'м';
+  if(m>0) return m+'м '+sec+'с';
+  return sec+'с';
+}
+function pad2(n){ return (n<10?'0':'')+n; }
+function fmtNow(){
+  var d=new Date();
+  return pad2(d.getDate())+'.'+pad2(d.getMonth()+1)+'.'+d.getFullYear()+' '+pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());
+}
+
+// ============================================================================
+// API-КЛИЕНТ
+// ============================================================================
+async function api(url, opts){
+  opts=opts||{};
+  opts.headers=opts.headers||{};
+  if(S.token) opts.headers['X-Auth-Token']=S.token;
+  var res;
+  try { res=await fetch(url,opts); }
+  catch(e){ toast('Нет связи с контроллером','err'); throw e; }
+  var ct=res.headers.get('content-type')||'';
+  // «application/json-lines» (аудит) — текст, не JSON-объект
+  var isJson=ct.indexOf('json')>=0 && ct.indexOf('json-lines')<0;
+  var data=isJson?await res.json().catch(function(){return{};}):await res.text();
+  if(res.status===401 && S.role==='admin' && url.indexOf('/api/auth')!==0 && url.indexOf('user/auth')<0 && url.indexOf('/status')<0){
+    logout(true);
+  }
+  return { ok: res.ok, status: res.status, data: data };
+}
+async function apiPost(url){ return api(url,{method:'POST'}); }
+
+// ============================================================================
+// ТЕМА
+// ============================================================================
+function applyTheme(){
+  if(localStorage.getItem('mos_theme')==='dark') document.body.classList.add('dark');
+  else document.body.classList.remove('dark');
+}
+function toggleTheme(){
+  localStorage.setItem('mos_theme', document.body.classList.contains('dark')?'light':'dark');
+  applyTheme();
+}
+// Скин оформления (5.0.15/5.0.16): classic (тёплые карточки) → metro
+// (плитки, рельс слева) → term (фосфорная CRT-консоль) → classic.
+// Независим от тёмной темы; в term она переключает фосфор янтарь↔зелёный.
+var SKINS=['classic','metro','term'];
+var SKIN_RU={classic:'Классика',metro:'Метро',term:'Терминал'};
+var SKIN_HINT={classic:'тёплые карточки',metro:'плитки и рельс слева',
+               term:'фосфорная консоль'};
+function applySkin(){
+  var s=localStorage.getItem('mos_skin')||'classic';
+  var i=SKINS.indexOf(s); if(i<0){ i=0; s='classic'; }
+  document.body.classList.toggle('skin-metro', s==='metro');
+  document.body.classList.toggle('skin-term',  s==='term');
+  var b=$('skinBtn');
+  if(b) b.textContent='🎨 Стиль: '+SKIN_RU[SKINS[(i+1)%SKINS.length]];
+}
+function toggleSkin(){
+  var s=localStorage.getItem('mos_skin')||'classic';
+  var i=SKINS.indexOf(s); if(i<0) i=0;
+  var n=SKINS[(i+1)%SKINS.length];
+  localStorage.setItem('mos_skin', n);
+  applySkin();
+  toast('Стиль «'+SKIN_RU[n]+'»: '+SKIN_HINT[n], 'ok');
+}
+
+// ============================================================================
+// ВХОД
+// ============================================================================
+var authMode='resident';
+function authTab(m){
+  authMode=m;
+  $('tabResident').classList.toggle('active', m==='resident');
+  $('tabAdmin').classList.toggle('active', m==='admin');
+  $('authResident').classList.toggle('hidden', m!=='resident');
+  $('authAdmin').classList.toggle('hidden', m!=='admin');
+  $('authErr').textContent='';
+}
+function showAuth(){
+  $('authModal').classList.add('show');
+  $('userView').classList.add('hidden');
+  $('adminView').classList.add('hidden');
+  stopPolling();
+  if(!S.provisioned){
+    // Первый запуск: только задание пароля владельца
+    $('authTabs').classList.add('hidden');
+    $('authResident').classList.add('hidden');
+    $('authAdmin').classList.remove('hidden');
+    $('passConfirmWrap').classList.remove('hidden');
+    $('authSub').textContent='Первый запуск — задайте пароль владельца';
+    $('adminPassLabel').textContent='Пароль владельца (4–32 символа, без пробелов)';
+    $('authBtn').textContent='Задать пароль и войти';
+    authMode='admin';
+  } else {
+    // Пасхалка: вкладки профилей скрыты — жилец видит только ПИН-поле.
+    // Выбор администратора открывается тапами по баннеру (authEgg).
+    $('authTabs').classList.add('hidden');
+    eggTaps=0;
+    authTab('resident');
+    $('passConfirmWrap').classList.add('hidden');
+    $('authSub').textContent='МикроОС 5.0 · СКУД';
+    $('adminPassLabel').textContent='Пароль администратора';
+    $('authBtn').textContent='Войти';
+  }
+}
+// Пасхальное яйцо: 5 тапов по баннеру (пауза между тапами < 2.5 с)
+// открывают вкладки профилей и переключают на администратора.
+var eggTaps=0, eggLastTap=0;
+function authEgg(){
+  if(!S.provisioned) return;   // первый запуск — и так админ-режим
+  var now=Date.now();
+  if(now-eggLastTap>2500) eggTaps=0;
+  eggLastTap=now; eggTaps++;
+  var b=$('authBanner');
+  b.classList.remove('egg-pulse'); void b.offsetWidth; b.classList.add('egg-pulse');
+  if(eggTaps>=5){
+    eggTaps=0;
+    $('authTabs').classList.remove('hidden');
+    authTab('admin');
+    $('passInput').focus();
+    toast('👑 Режим администратора','ok');
+  }
+}
+async function doLogin(){
+  $('authErr').textContent='';
+  if(!S.provisioned){
+    var p1=$('passInput').value, p2=$('passConfirm').value;
+    if(p1.length<4||p1.length>32||/\s/.test(p1)){ $('authErr').textContent='Пароль: 4–32 символа без пробелов'; return; }
+    if(p1!==p2){ $('authErr').textContent='Пароли не совпадают'; return; }
+    var r=await apiPost('/api/setup?pin='+encodeURIComponent(p1));
+    if(r.ok && r.data.token){
+      S.token=r.data.token; sessionStorage.setItem('mos_token',S.token);
+      S.role='admin'; S.provisioned=true;
+      enterAdmin(); toast('Пароль задан. Добро пожаловать!','ok');
+    } else $('authErr').textContent='Ошибка: '+(r.data.error||r.status);
+    return;
+  }
+  if(authMode==='resident'){
+    var pin=$('pinInput').value.trim();
+    if(!/^\d{4,6}$/.test(pin)){ $('authErr').textContent='ПИН-код: 4–6 цифр'; return; }
+    var r2=await apiPost('/api/dev/lock/user/auth?pin='+encodeURIComponent(pin));
+    if(r2.ok && r2.data.ok){
+      S.role='user'; S.userTok=r2.data.utok||''; S.userName=r2.data.name||'Жилец';
+      sessionStorage.setItem('lock_utok',S.userTok);
+      sessionStorage.setItem('lock_username',S.userName);
+      $('authModal').classList.remove('show');
+      enterResident();
+    } else if(r2.status===401 && r2.data && r2.data.sec){
+      $('authErr').textContent='Вход заблокирован на '+r2.data.sec+' с';
+    } else $('authErr').textContent='Неверный ПИН-код';
+  } else {
+    var p=$('passInput').value;
+    if(p.length<4){ $('authErr').textContent='Минимум 4 символа'; return; }
+    var r3=await apiPost('/api/auth?pin='+encodeURIComponent(p));
+    if(r3.ok && r3.data.token){
+      S.token=r3.data.token; sessionStorage.setItem('mos_token',S.token);
+      S.role='admin';
+      $('authModal').classList.remove('show');
+      enterAdmin();
+    } else if(r3.data && r3.data.error==='locked'){
+      $('authErr').textContent='Вход заблокирован на '+(r3.data.sec||60)+' с';
+    } else $('authErr').textContent='Неверный пароль';
+  }
+}
+async function logout(expired){
+  if(S.token) await apiPost('/api/logout').catch(function(){});
+  if(S.userTok) await apiPost('/api/dev/lock/user/logout?utok='+encodeURIComponent(S.userTok)).catch(function(){});
+  S.token=''; S.role=''; S.userTok='';
+  sessionStorage.removeItem('mos_token'); sessionStorage.removeItem('lock_utok');
+  sessionStorage.removeItem('lock_username');
+  showAuth();
+  if(expired) toast('Сессия истекла — войдите снова','err');
+}
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter' && $('authModal').classList.contains('show')) doLogin();
+});
+</script>
+
+<script>
+// ============================================================================
+// ПОГОДА (карта состояний HA — дословно из монолита)
+// ============================================================================
+var weatherMap = {
+  'clear-night':'Ясная ночь','cloudy':'Пасмурно','fog':'Туман','hail':'Град',
+  'lightning':'Гроза','lightning-rainy':'Гроза с дождем','partlycloudy':'Переменная облачность',
+  'pouring':'Ливень','rainy':'Дождь','snowy':'Снег','snowy-rainy':'Мокрый снег',
+  'sunny':'Ясно, солнечно','windy':'Ветрено'
+};
+var weatherIco = {
+  'clear-night':'🌙','cloudy':'☁️','fog':'🌫️','hail':'🌨️','lightning':'🌩️',
+  'lightning-rainy':'⛈️','partlycloudy':'⛅','pouring':'🌧️','rainy':'🌧️',
+  'snowy':'🌨️','snowy-rainy':'🌨️','sunny':'☀️','windy':'💨'
+};
+var MODE_RU = { NORMAL:'Обычный', ACCEPT:'Приём карты', TRIGGER:'Триггер' };
+var MODE_NEXT = { NORMAL:1, ACCEPT:2, TRIGGER:0 };   // mode=0|1|2
+
+// ============================================================================
+// ОПРОС СТАТУСА
+// ============================================================================
+function stopPolling(){
+  if(S.pollTimer){ clearInterval(S.pollTimer); S.pollTimer=null; }
+  if(S.clockTimer){ clearInterval(S.clockTimer); S.clockTimer=null; }
+}
+function startPolling(){
+  stopPolling();
+  pollStatus();
+  S.pollTimer=setInterval(pollStatus, 4000);
+  S.clockTimer=setInterval(tickClock, 1000);
+  tickClock();
+}
+function tickClock(){
+  // Часы показывают время УСТРОЙСТВА (S.devUnix из /api/status), а не
+  // браузера — урок 5.0.x: браузерные часы выглядели как «всё синхронно»,
+  // пока RTC ждал NTP. Базу обновляет pollStatus, здесь — только ход.
+  var t, full;
+  if(S.devUnix){
+    var d=new Date((S.devUnix+Math.floor((Date.now()-S.devAt)/1000))*1000);
+    t=pad2(d.getHours())+':'+pad2(d.getMinutes())+':'+pad2(d.getSeconds());
+    full=pad2(d.getDate())+'.'+pad2(d.getMonth()+1)+'.'+d.getFullYear()+' '+t;
+  } else {
+    var b=new Date();
+    t=pad2(b.getHours())+':'+pad2(b.getMinutes())+':'+pad2(b.getSeconds());
+    full='⚠ время не синхронизировано — «🕐 Синхр. время» · '+t+' (браузер)';
+  }
+  if($('userClock')) $('userClock').textContent=t;
+  if($('uTime')) $('uTime').textContent=full;
+  if($('aTime')) $('aTime').textContent=full;
+}
+async function pollStatus(){
+  var r=await api('/api/dev/lock/status').catch(function(){ return null; });
+  if(!r || !r.ok) return;
+  S.status=r.data;
+  // Опорное время устройства для tickClock (0 — RTC недостоверно)
+  S.devUnix=(+r.data.unix||0)>0?+r.data.unix:0; S.devAt=Date.now();
+  if(S.role==='user') renderResident();
+  else if(S.role==='admin') renderAdmin();
+  // ПАЗ живой: окно чтения карты — 10 с, ждать переключения вкладки нельзя
+  if(currentTab==='paz') renderPaz();
+  // 5.5.2 (решение владельца 08.08): никаких модалок-застав — напоминание
+  // о бэкапе живёт плашкой на вкладке пользователей, рядом с кнопкой
+  // восстановления. Восстановление — осознанное действие на месте.
+  var rh=$('dbRestoreHint');
+  if(rh) rh.classList.toggle('hidden', !(r.data.db_empty===1 && r.data.nvs_bak===1));
+  // 5.5.13: гвард первой карты — пустая база: тип принудительно «Мастер-ключ»
+  // (инцидент 12.08: оператор внёс первую карту «постоянной» и потерял мастера)
+  var at=$('addType'), ah=$('addTypeHint');
+  var emptyDb=(r.data.db_empty===1);
+  if(at){ at.disabled=emptyDb; if(emptyDb) at.value='master'; }
+  if(ah) ah.classList.toggle('hidden',!emptyDb);
+}
+
+// ============================================================================
+// ШЕЛЛ ЖИЛЬЦА
+// ============================================================================
+function enterResident(){
+  $('userView').classList.remove('hidden');
+  $('adminView').classList.add('hidden');
+  renderResident(); startPolling();
+}
+async function residentOpen(){
+  var r=await apiPost('/api/dev/lock/open?utok='+encodeURIComponent(S.userTok));
+  if(r.ok){ toast('Замок открыт','ok'); setTimeout(pollStatus,400); }
+  else if(r.status===401){
+    sessionStorage.removeItem('lock_utok'); S.userTok='';
+    toast('Сессия истекла — войдите снова','err'); showAuth();
+  } else toast('Ошибка открытия','err');
+}
+function renderResident(){
+  var d=S.status; if(!d) return;
+  var open = d.lock==='unlocked'||d.lock==='trigger';
+  $('giantBtn').classList.toggle('open', open);
+  $('giantIco').textContent = open?'🔓':'🔒';
+  $('giantLbl').textContent = open?'ОТКРЫТО':'ОТКРЫТЬ';
+  var doorOpen = d.door===1;
+  $('doorDot').className = 'dot '+(doorOpen?'orange':'red');
+  $('doorTxt').textContent = doorOpen?'🚪 Дверь открыта':'🔒 Дверь закрыта';
+  // Приветствие: устройство даёт greet по своему RTC, имя — из входа по ПИНу
+  var greet = d.greet || 'Здравствуйте';
+  $('userGreeting').innerHTML = esc(greet)+', <span style="color:var(--info);font-weight:800">'+esc(S.userName||'Жилец')+'</span>';
+  // Баннер тревоги — жилец должен видеть аварию (безопасность)
+  var alarmTxt='';
+  if(d.forced===1 && d.door_alarm===1) alarmTxt='ТРЕВОГА: проникновение и незакрытая дверь!';
+  else if(d.forced===1) alarmTxt='ТРЕВОГА: дверь открыта без авторизации!';
+  else if(d.door_alarm===1) alarmTxt='ВНИМАНИЕ: дверь не закрыта!';
+  $('alarmBanner').classList.toggle('hidden', !alarmTxt);
+  if(alarmTxt) $('alarmTxt').textContent=alarmTxt;
+  renderWeather(d, false);
+  $('uMqtt').textContent = d.mqtt===1?'🌐 Онлайн':'⚪ Офлайн';
+  $('uUptime').textContent = fmtUptime(d.uptime);
+  $('uCycles').textContent = d.cycles||0;
+  $('uVer').textContent = d.version||PANEL_VER;
+}
+function renderWeather(d, isAdmin){
+  var card=$('weatherCard'); if(!card) return;
+  if(d.wx!==1){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  var t=+d.w_temp||0;
+  $('weatherTemp').textContent=(t>0?'+':'')+t.toFixed(1)+'°C';
+  var raw=(d.w_text||'').toLowerCase();
+  var txt=weatherMap[raw]||d.w_text||'Синхронизация...';
+  $('weatherIco').textContent=weatherIco[raw]||'🌡️';
+  if(d.w_feel && +d.w_feel!==0){
+    var f=+d.w_feel;
+    txt+=', ощущается как '+(f>0?'+':'')+f.toFixed(1)+'°C';
+  }
+  $('weatherTxt').textContent=txt;
+}
+
+// ============================================================================
+// ШЕЛЛ АДМИНА — шапка и подвал
+// ============================================================================
+function enterAdmin(){
+  $('adminView').classList.remove('hidden');
+  $('userView').classList.add('hidden');
+  renderAdmin(); startPolling();
+  loadSystem(); loadVoiceMap();
+  showTab('net');
+}
+async function adminOpen(){
+  var r=await apiPost('/api/dev/lock/open');
+  if(r.ok){ toast('Замок открыт','ok'); setTimeout(pollStatus,400); }
+  else toast('Ошибка открытия','err');
+}
+function renderAdmin(){
+  var d=S.status; if(!d) return;
+  var open = d.lock==='unlocked'||d.lock==='trigger';
+  $('lockIco').textContent = open?'🔓':'🔒';
+  $('lockState').textContent = open?'ОТКРЫТ':'ЗАКРЫТ';
+  $('lockState').className = 'card-value '+(open?'ok':'bad');
+  var doorOpen = d.door===1;
+  $('doorState').textContent = doorOpen?'ОТКРЫТА':'ЗАКРЫТА';
+  $('doorState').className = 'card-value '+(doorOpen?'bad':'');
+  $('modeSub').textContent = 'Режим: '+(MODE_RU[d.mode]||d.mode);
+  $('modeBtn').textContent = '🔄 Режим: '+(MODE_RU[d.mode]||'—');
+  var al = (d.forced===1||d.door_alarm===1);
+  $('alarmVal').textContent = al?'ДА':'нет';
+  $('alarmChip').style.borderColor = al?'var(--error)':'var(--border)';
+  // Живые ярлычки рельса (5.0.15): MQTT офлайн и тревога — прямо на плитках
+  var bn=$('tbNet'); if(bn) bn.classList.toggle('hidden', d.mqtt===1);
+  var bp=$('tbPaz'); if(bp) bp.classList.toggle('hidden', !al);
+  $('lastUser').textContent = d.last_user||'—';
+  $('lastKey').textContent = d.last_key?('Карта: '+d.last_key):'';
+  $('aMqtt').textContent = d.mqtt===1?'🌐 Онлайн':'⚪ Офлайн';
+  $('aUptime').textContent = fmtUptime(d.uptime);
+  $('aMaster').textContent = d.master===1?(d.master_id||'есть'):'нет';
+  $('aExit').textContent = d.exit===1?'✅ разрешена':'⛔ запрещена';
+  $('aQuiet').textContent = d.quiet===1?'вкл':'выкл';
+  $('aCards').textContent = d.cards||0;
+  $('aCycles').textContent = d.cycles||0;
+  $('aPulse').textContent = ((d.open_ms||0)/1000).toFixed(1)+' с';
+  $('aVer').textContent = d.version||PANEL_VER;
+  $('admMasterId').textContent = d.master===1?(d.master_id||'есть'):'не назначен';
+}
+async function loadSystem(){
+  var r=await api('/api/system').catch(function(){ return null; });
+  if(r && r.ok) S.sys=r.data;
+}
+</script>
+
+<script>
+// ============================================================================
+// СЕРВИСНЫЕ КНОПКИ ШАПКИ
+// ============================================================================
+async function syncTime(){
+  // 1) Толкаем время браузера — работает даже без интернета (урок 5.0.x:
+  //    SNTP до pool.ntp.org из изолированной сети не достучаться).
+  // 2) Параллельно просим NTP — когда интернет появится, уточнит само.
+  var sec=Math.floor(Date.now()/1000);
+  // Пояс браузера в часах (getTimezoneOffset: -420 для GMT+7 → tz=7).
+  // Это осознанное действие админа — сервер запишет его в sys.tz_offset.
+  var tz=Math.round(-new Date().getTimezoneOffset()/60);
+  var r=await apiPost('/api/time/set?unix='+sec+'&tz='+tz);
+  if(r.ok && r.data.ok){
+    toast('Время от браузера, пояс GMT'+(tz>=0?'+':'')+tz,'ok');
+    apiPost('/api/time/sync').catch(function(){});
+    S.devUnix=sec; S.devAt=Date.now(); tickClock();
+    // Статус переспросить сразу: до синхры время было недостоверно и
+    // Fail-Safe держал кнопку «разрешена» — пусть панель покажет бой.
+    setTimeout(pollStatus,600);
+    return;
+  }
+  var r2=await apiPost('/api/time/sync');
+  if(r2.ok && r2.data.ok) toast('Запрос NTP отправлен — время обновится асинхронно','ok');
+  else toast('Не удалось синхронизировать время','err');
+}
+async function cycleMode(){
+  var d=S.status; if(!d) return;
+  var next=MODE_NEXT[d.mode]; if(next===undefined) next=0;
+  var r=await apiPost('/api/dev/lock/mode?mode='+next);
+  if(r.ok){ toast('Режим изменён','ok'); pollStatus(); }
+  else toast('Не удалось сменить режим','err');
+}
+async function checkHealth(){
+  var r=await api('/api/health');
+  if(!r.ok){ toast('Нет доступа к диагностике','err'); return; }
+  var h=r.data;
+  var dot=$('healthDot');
+  dot.className='dot '+(h.criticals>0?'red':(h.warnings>0?'orange':'green'));
+  if(h.healthy===1) toast('Все системы в норме ('+h.checks.length+' проверок)','ok');
+  else toast('Предупреждений: '+h.warnings+', критичных: '+h.criticals+' — см. вкладку «Система»','err');
+}
+
+// ============================================================================
+// ВКЛАДКИ
+// ============================================================================
+var TAB_TITLES = {
+  net:'📡 Связь', lock:'🔒 Замок', exit:'⛔ Кнопка выхода',
+  users:'👥 Пользователи', charts:'📈 Даталоггер — графики', paz:'🛡️ Противоаварийная защита',
+  sys:'🩺 Система', adm:'👑 Администрирование'
+};
+var currentTab=null;
+function showTab(name){
+  currentTab=name;
+  var chips=document.querySelectorAll('#navChips .chip');
+  for(var i=0;i<chips.length;i++) chips[i].classList.toggle('active', chips[i].dataset.tab===name);
+  var panes=document.querySelectorAll('.tab-pane');
+  for(var j=0;j<panes.length;j++) panes[j].classList.add('hidden');
+  $('tab-'+name).classList.remove('hidden');
+  $('tabPanelTitle').textContent=TAB_TITLES[name]||'Настройки';
+  var hdr=$('tabPanelHdr');
+  if(!hdr.classList.contains('open')) togglePanel('tabPanel');
+  if(name==='users'){ S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false); }
+  if(name==='charts') loadCharts();
+  if(name==='paz') renderPaz();
+  if(name==='sys') renderSys();
+  if(name==='net'||name==='lock'||name==='exit'||name==='adm') ensureConfig(name);
+}
+function togglePanel(id){
+  var c=$(id), h=$(id+'Hdr');
+  c.classList.toggle('open'); h.classList.toggle('open');
+}
+
+// ============================================================================
+// АВТО-UI КОНФИГА (схема /api/config → виджеты по группам)
+// ============================================================================
+var TAB_GROUPS = {
+  net:  ['Сеть','MQTT','Умный дом'],
+  lock: ['Замок','Дверь','Звук','Звук профиля'],
+  exit: ['Кнопка выхода','Доступ по вебу'],
+  adm:  ['Безопасность','Система','Планировщик','Счётчики']
+};
+var GROUP_REBOOT_NOTE = { 'Сеть':1, 'MQTT':1 };
+async function ensureConfig(tab){
+  if(!S.cfg){
+    var r=await api('/api/config');
+    if(!r.ok){ toast('Конфиг недоступен','err'); return; }
+    S.cfg=r.data; S.dirty={};
+    renderConfigAll();
+  }
+}
+function groupCard(name, fields, tab){
+  var gc=document.createElement('div'); gc.className='group-card';
+  var html='<div class="group-title">'+esc(name)+'</div><div class="form-grid">';
+  for(var f=0; f<fields.length; f++) html+=widgetHtml(fields[f], tab);
+  html+='</div>';
+  if(GROUP_REBOOT_NOTE[name]) html+='<div class="group-note">⏻ Применяется после перезагрузки контроллера</div>';
+  gc.innerHTML=html;
+  return gc;
+}
+function renderConfigAll(){
+  for(var tab in TAB_GROUPS){
+    var host=$('cfg-'+tab); if(!host) continue;
+    host.innerHTML='';
+    var groups=TAB_GROUPS[tab], any=false, hidden=[];
+    for(var g=0; g<groups.length; g++){
+      var fields=fieldsOfGroup(groups[g]);
+      if(!fields.length) continue;
+      // 5.8.0, аккордеон «Служебные»: группы с флагом hg:1 в схеме
+      // (профильная пометка ConfigService::setHiddenGroups) уходят в
+      // свёрнутый блок внизу вкладки. Поля живут полной программой —
+      // меняется только отображение (дизайн 13.08.2026).
+      if(fields[0].f.hg){ hidden.push({name:groups[g], fields:fields}); continue; }
+      any=true;
+      host.appendChild(groupCard(groups[g], fields, tab));
+    }
+    if(hidden.length){
+      any=true;
+      var det=document.createElement('details');
+      det.className='group-card';
+      var sh='<summary class="group-title" style="cursor:pointer;list-style:none">🛠 Служебные <span class="card-sub">· ядерные, обычно не трогают</span></summary>';
+      for(var h=0; h<hidden.length; h++){
+        sh+='<div class="group-title" style="margin-top:12px">'+esc(hidden[h].name)+'</div><div class="form-grid">';
+        for(var f2=0; f2<hidden[h].fields.length; f2++) sh+=widgetHtml(hidden[h].fields[f2], tab);
+        sh+='</div>';
+      }
+      det.innerHTML=sh;
+      host.appendChild(det);
+    }
+    if(!any) host.innerHTML='<div class="card-sub">Нет полей этой группы</div>';
+  }
+  applyDhcpVisibility();   // начальное состояние — по загруженному конфигу
+}
+// Порядок полей внутри группы: по умолчанию — алфавитный (исторически),
+// но «Запрет с» должен идти ПЕРЕД «Запрет до» (алфавит даёт наоборот:
+// ..._end < ..._start — пользователь 5.0.x). Явный порядок — точечно.
+var GROUP_FIELD_ORDER = {
+  'Кнопка выхода': ['lock.exit_restrict','lock.exit_restrict_active',
+                    'lock.exit_restrict_start','lock.exit_restrict_end'],
+  // hostname — сразу справа от DNS (просьба 5.0.x: имя устройства ищут
+  // рядом с сетевыми полями, а не в ядерной админке)
+  'Сеть': ['net.dhcp','net.dns','sys.hostname','net.enabled',
+           'net.gateway','net.gw_period','net.ip','net.mask','net.ping_gw'],
+  // Время — сверху (пояс правят чаще всего), пороги ПАЗ — внизу
+  'Система': ['sys.tz_offset','sys.ntp_enabled','sys.ntp_server',
+              'sys.temp_warn_c','sys.temp_crit_c'],
+  // «Тихие часы ОТ» перед «ДО» (алфавит даёт наоборот: quiet_end <
+  // quiet_start — просьба 5.0.15); громкости — парой выше расписания
+  'Звук': ['audio.enabled','audio.volume','audio.volume_night',
+           'audio.quiet_start','audio.quiet_end','audio.repeat_window_s',
+           'audio.use_advert'],
+  // Ядерные сервисы 5.1: включатель сверху, правила по порядку (5.1.1:
+  // группы появились в панели — в 5.1.0 поля sched.*/cnt.* были слепы)
+  'Планировщик': ['sched.enabled','sched.rule0','sched.rule1','sched.rule2',
+                  'sched.rule3'],
+  'Счётчики': ['cnt.flush_every','cnt.flush_interval_s']
+};
+function fieldsOfGroup(group){
+  var out=[];
+  for(var key in S.cfg){
+    if(S.cfg[key].group===group) out.push({key:key, f:S.cfg[key]});
+  }
+  var ord=GROUP_FIELD_ORDER[group];
+  if(ord){
+    out.sort(function(a,b){
+      var ia=ord.indexOf(a.key), ib=ord.indexOf(b.key);
+      if(ia<0) ia=999; if(ib<0) ib=999;
+      return ia-ib || (a.key<b.key?-1:1);
+    });
+  } else {
+    out.sort(function(a,b){ return a.key<b.key?-1:1; });
+  }
+  return out;
+}
+// Панельные преобразования единиц (просьба 5.0.15: «всё в секундах и
+// минутах»). Хранилище, API и NVS-бэкап остаются в «сырых» единицах схемы —
+// совместимость 5.0.x не трогаем; оператору показываем человеческие.
+// lock.open_ms — наследие монолита (мс), в UI — секунды с шагом 0.5.
+var FIELD_UI_CONV = {
+  'lock.open_ms': {
+    label: 'Длительность импульса открытия, с',
+    min: 0.5, max: 30, step: 0.5,
+    toUi:  function(v){ var n=parseFloat(v); return isNaN(n)?'':(n/1000).toString(); },
+    toCfg: function(v){ var n=parseFloat(v); return isNaN(n)?v:String(Math.round(n*1000)); }
+  }
+};
+function widgetHtml(it, tab){
+  var key=it.key, f=it.f, id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_');
+  var wid='w_'+id.slice(4);   // id обёртки — для скрытия полей (DHCP 5.5.6)
+  var ro=f.ro===1, dis=ro?'disabled':'';
+  var conv=FIELD_UI_CONV[key]||null;
+  var html;
+  if(f.secret===1){   // SECRET (mqtt.pass): значение с устройства не приходит
+    var ph=f.set===1?'•••••••• — задан, введите новый':'не задан';
+    return '<div id="'+wid+'"><label>'+esc(f.label)+'</label>'+
+      '<input type="password" id="'+id+'" value="" placeholder="'+ph+'"'+
+      ' autocomplete="new-password" '+dis+
+      ' oninput="markDirty(\''+tab+'\',\''+key+'\')"></div>';
+  }
+  if(f.t===3){   // BOOL — чекбокс-строка
+    html='<div class="span2" id="'+wid+'"><div class="check-row">'+
+      '<input type="checkbox" id="'+id+'" '+(f.value==='true'||f.value==='1'?'checked':'')+' '+dis+
+      ' onchange="markDirty(\''+tab+'\',\''+key+'\');applyDhcpVisibility()">'+
+      '<label for="'+id+'">'+esc(f.label)+(ro?' · <i>только чтение</i>':'')+'</label></div></div>';
+  } else {
+    var input;
+    if(f.t===0||f.t===1||f.t===2){   // INT/UINT/FLOAT
+      var step=f.t===2?'any':'1';
+      var val=f.value, mn=f.min, mx=f.max;
+      if(conv){ val=conv.toUi(val); step=String(conv.step); mn=conv.min; mx=conv.max; }
+      input='<input type="number" id="'+id+'" value="'+esc(val)+'" step="'+step+'"'+
+        (mn||mx?' min="'+mn+'" max="'+mx+'"':'')+' '+dis+
+        ' oninput="markDirty(\''+tab+'\',\''+key+'\')">';
+    } else {                          // STRING/IP
+      input='<input type="text" id="'+id+'" value="'+esc(f.value)+'" '+dis+
+        ' oninput="markDirty(\''+tab+'\',\''+key+'\')">';
+    }
+    html='<div id="'+wid+'"><label>'+esc(conv?conv.label:f.label)+(ro?' · <i>только чтение</i>':'')+'</label>'+input+'</div>';
+  }
+  return html;
+}
+// DHCP включён → статические поля прячутся и игнорируются (урок монолита,
+// бенч 5.5.5: заполненные поля при активном DHCP вводили в заблуждение —
+// «а что вообще применено?»). Скрытие чисто панельное: на устройстве
+// net.dhcp=true и так игнорирует net.ip/mask/gateway/dns.
+var DHCP_HIDES=['net.ip','net.mask','net.gateway','net.dns'];
+function applyDhcpVisibility(){
+  var cb=$('cfg_net_dhcp'); if(!cb) return;
+  var hide=cb.checked;
+  for(var i=0;i<DHCP_HIDES.length;i++){
+    var w=$('w_'+DHCP_HIDES[i].replace(/[^a-zA-Z0-9]/g,'_'));
+    if(w) w.style.display=hide?'none':'';
+  }
+}
+function markDirty(tab, key){
+  if(!S.dirty[tab]) S.dirty[tab]={};
+  S.dirty[tab][key]=true;
+}
+async function saveConfig(tab){
+  var d=S.dirty[tab]||{}, keys=Object.keys(d);
+  if(!keys.length){ toast('Нет изменений',''); return; }
+  var ok=0, fail=0, skipped=0, failKeys=[];
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i], id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_'), el=$(id);
+    if(!el){ continue; }
+    var val = el.type==='checkbox' ? (el.checked?'true':'false') : el.value;
+    // Панельные единицы → сырые единицы схемы (5.0.15: секунды → мс)
+    var conv=FIELD_UI_CONV[key];
+    if(conv && el.type!=='checkbox') val=conv.toCfg(val);
+    // Секрет, оставленный пустым, не отправляем — случайная очистка
+    // пароля брокера одним кликом недопустима. Очистка — только явная
+    // (через консоль ядра).
+    if(el.type==='password' && val===''){ skipped++; continue; }
+    var r=await apiPost('/api/config?key='+encodeURIComponent(key)+'&value='+encodeURIComponent(val));
+    if(r.ok){ ok++; if(el.type==='password'){ el.value=''; S.cfg[key].set=1; } else S.cfg[key].value=val; }
+    else { fail++; failKeys.push(key); }
+  }
+  S.dirty[tab]={};
+  if(fail===0) toast('Сохранено: '+ok+' параметр(ов)'+(skipped?' · секрет пуст — пропущен':''),'ok');
+  else toast('Сохранено '+ok+', отклонено '+fail+' ('+failKeys.join(', ')+')','err');
+}
+</script>
+
+<script>
+// ============================================================================
+// ПОЛЬЗОВАТЕЛИ
+// ============================================================================
+async function loadVoiceMap(){
+  if(S.voiceMap) return;
+  try{
+    var r=await fetch('/web/voice_map.json');
+    if(r.ok) S.voiceMap=await r.json();
+  }catch(e){ /* карта имён не обязательна */ }
+}
+// Автоподстановка трека по имени (voice_map.json монолита)
+document.addEventListener('input', function(e){
+  if(e.target && e.target.id==='addName' && S.voiceMap){
+    var t=S.voiceMap[e.target.value.trim()];
+    if(t!==undefined) $('addTrack').value=t;
+  }
+});
+var TYPE_RU={ permanent:'Постоянный', temporary:'Временный', 'one-time':'Разовый', master:'Мастер-ключ' };
+var TYPE_ICO={ permanent:'💳', temporary:'⏳', 'one-time':'🎫', master:'👑' };
+var TYPE_CLS={ permanent:'', temporary:'temp', 'one-time':'onetime', master:'master' };
+
+async function readCard(){
+  var r=await apiPost('/api/dev/lock/read/start');
+  if(!r.ok){ toast('Не удалось запустить чтение','err'); return; }
+  $('readHint').textContent='⏳ Поднесите карту к считывателю (10 с)…';
+  $('readBtn').disabled=true;
+  for(var i=0;i<20;i++){
+    await new Promise(function(res){ setTimeout(res,500); });
+    var rr=await api('/api/dev/lock/read/result').catch(function(){ return null; });
+    if(!rr||!rr.ok) break;
+    if(rr.data.card){ $('addId').value=rr.data.card; $('readHint').textContent='✅ Карта считана: '+rr.data.card; break; }
+    if(rr.data.active!==1){ $('readHint').textContent=''; break; }
+  }
+  $('readBtn').disabled=false;
+  if(!$('addId').value) $('readHint').textContent='Карта не поднесена — введите HEX вручную';
+}
+async function testTrack(){
+  var n=parseInt($('addTrack').value,10);
+  if(!n||n<1||n>99){ toast('Трек: 1–99','err'); return; }
+  var r=await apiPost('/api/dev/lock/audio/test?track='+n);
+  if(r.ok) toast('Воспроизводится трек '+n,'ok');
+  else toast('Не удалось воспроизвести','err');
+}
+async function addKey(){
+  // Раскладка-ловушка: кириллические омоглифы HEX (А В С Е Ф) тихо
+  // переводим в латиницу — тост «4–8 символа» останется для прочего мусора.
+  var id=$('addId').value.trim().toUpperCase().replace(/[АВСЕФ]/g,
+    function(c){ return {'А':'A','В':'B','С':'C','Е':'E','Ф':'F'}[c]; });
+  $('addId').value=id;
+  var name=$('addName').value.trim();
+  var type=$('addType').value;
+  var track=parseInt($('addTrack').value,10)||0;
+  var pin=$('addPin').value.trim();
+  if(!/^[0-9A-F]{4,8}$/.test(id)){ toast('HEX код: 4–8 шестнадцатеричных символа','err'); return; }
+  if(pin && !/^\d{4,6}$/.test(pin)){ toast('ПИН: 4–6 цифр','err'); return; }
+  var url='/api/dev/lock/keys/add?id='+id+'&name='+encodeURIComponent(name)+'&type='+type+'&track='+track;
+  var ex=$('addExpiry').value;
+  if(ex){
+    var days=Math.ceil((new Date(ex).getTime()-Date.now())/86400000);
+    if(days<1) days=1;
+    url+='&expiry_days='+days;
+  }
+  if(pin) url+='&pin='+pin;
+  var r=await apiPost(url);
+  if(r.ok){
+    if(r.data.first_master===1) toast('Первая карта пустой базы — назначена МАСТЕР-ключом','ok');
+    else toast('Ключ добавлен','ok');
+    $('addId').value=''; $('addName').value=''; $('addPin').value=''; $('addExpiry').value='';
+    // Поиск сбрасываем: новый ключ мог не попасть в фильтр и «потеряться»
+    S.keysQ=''; $('usersSearch').value='';
+    S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false);
+  } else if(r.data.err==='pin_not_unique') toast('Такой ПИН уже занят другим жильцом','err');
+  else if(String(r.data.err||'').indexOf('pin')>=0) toast('ПИН: строго 4–6 цифр','err');
+  else if(String(r.data.err||'').indexOf('valid RTC')>=0) toast('Нет точного времени — нажмите «🕐 Синхр. время» и повторите','err');
+  else if(r.data.err==='dup') toast('Такой HEX уже есть в базе','err');
+  else if(r.data.err==='full') toast('База ключей полна — удалите неиспользуемые','err');
+  else if(r.data.err==='bad_id') toast('HEX код: 4–8 шестнадцатеричных символа','err');
+  else toast('Ошибка добавления ('+(r.data.err||r.status)+')','err');
+}
+// Поиск по базе (5.1.2): серверный q, дебаунс 300 мс. Пагинация — по
+// отфильтрованному списку (matched), «Показать ещё» живёт и в поиске.
+var _usrSearchT=null;
+function onUsersSearch(v){
+  clearTimeout(_usrSearchT);
+  _usrSearchT=setTimeout(function(){
+    S.keysQ=v.trim(); S.keysFrom=0; S.keysById={};
+    $('usersList').innerHTML=''; loadKeys(false);
+  },300);
+}
+async function loadKeys(more){
+  if(!more){ S.keysFrom=0; S.keysById={}; }
+  var url='/api/dev/lock/keys?from='+S.keysFrom;
+  if(S.keysQ) url+='&q='+encodeURIComponent(S.keysQ);
+  var r=await api(url);
+  if(!r.ok){ toast('Не удалось загрузить базу','err'); return; }
+  var d=r.data;
+  var total=(typeof d.matched==='number')?d.matched:d.count;
+  $('usersCount').textContent=S.keysQ
+    ? '(найдено '+total+' · всего '+d.count+'/'+d.capacity+')'
+    : '('+d.count+'/'+d.capacity+')';
+  var host=$('usersList');
+  for(var i=0;i<d.users.length;i++){
+    var u=d.users[i];
+    S.keysById[u.id]=u;
+    var el=document.createElement('div');
+    el.className='user-card '+TYPE_CLS[u.type]+(u.blocked?' blocked':'');
+    var badges = u.has_pin? '<span class="badge badge-success">Web-доступ</span>' : '<span class="badge badge-warning">Только карта</span>';
+    if(u.blocked) badges+='<span class="badge badge-error">⛔ Заблокирован</span>';
+    var exp = u.expiry>0 ? ' · до '+new Date(u.expiry*1000).toLocaleDateString('ru-RU') : '';
+    // Статистика проходов (5.0.x). «Молчит N дн.» — от часов УСТРОЙСТВА
+    // (S.devUnix), а не браузера; без достоверного времени — без оценки.
+    var stats='Проходов: '+(u.uses||0);
+    if(u.last_use>0){
+      var lu=new Date(u.last_use*1000);
+      stats+=' · последний: '+lu.toLocaleDateString('ru-RU')+' '+lu.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+      var nowSec=(S.devUnix>0)?(S.devUnix+Math.floor((Date.now()-S.devAt)/1000)):Math.floor(Date.now()/1000);
+      var idle=Math.floor((nowSec-u.last_use)/86400);
+      if(idle>=30) stats+=' · ⚠ молчит '+idle+' дн.';
+    }
+    el.innerHTML='<span class="user-ico">'+TYPE_ICO[u.type]+'</span>'+
+      '<div class="user-body"><div class="user-name">'+esc(u.name||u.id)+'</div>'+
+      '<div class="user-meta">HEX: '+esc(u.id)+' | '+TYPE_RU[u.type]+' | Трек: '+String(u.track).padStart(3,'0')+exp+'</div>'+
+      '<div class="user-meta">'+stats+'</div>'+
+      badges+'</div>'+
+      '<div class="user-actions">'+
+      '<button class="svc" onclick="editKey(\''+u.id+'\')" title="Изменить">✏️</button>'+
+      (u.blocked
+        ? '<button class="svc" onclick="blockKey(\''+u.id+'\',false)" title="Разблокировать">✅</button>'
+        : '<button class="svc" onclick="blockKey(\''+u.id+'\',true)" title="Заблокировать (без удаления)">🚫</button>')+
+      '<button class="danger" onclick="removeKey(\''+u.id+'\')" title="Удалить">🗑</button></div>';
+    host.appendChild(el);
+  }
+  S.keysFrom=d.from+d.shown;
+  $('usersMore').classList.toggle('hidden', S.keysFrom>=total);
+}
+async function removeKey(id){
+  openConfirm('Удалить ключ?', 'Ключ '+id+' будет удалён из базы.', '', async function(){
+    var r=await apiPost('/api/dev/lock/keys/remove?id='+id);
+    if(r.ok){ toast('Ключ удалён','ok'); S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false); }
+    else toast('Ошибка удаления','err');
+  });
+}
+function blockKey(id, blocked){
+  openConfirm(blocked?'Заблокировать ключ?':'Разблокировать ключ?',
+    'Ключ '+id+(blocked
+      ? ' не сможет открыть дверь, но останется в базе (имя, трек, статистика сохранятся).'
+      : ' снова сможет открывать дверь.'),
+    '', async function(){
+    var r=await apiPost('/api/dev/lock/keys/block?id='+id+'&blocked='+(blocked?1:0));
+    if(r.ok){ toast(blocked?'Ключ заблокирован':'Ключ разблокирован','ok'); S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false); }
+    else toast('Ошибка ('+(r.data.err||r.status)+')','err');
+  });
+}
+
+// ============================================================================
+// ГРАФИКИ (даталоггер п.5, uPlot — встроен офлайн, /web/uplot.js)
+// ============================================================================
+var chartInst=null, chartCh=0, chartRange='6h', chartChannels=[];
+async function loadCharts(){
+  var r=await api('/api/dev/lock/dlog/channels');
+  if(!r.ok){ $('chartHint').textContent='Даталоггер недоступен'; return; }
+  chartChannels=r.data.channels||[];
+  var host=$('chartChannels');
+  host.innerHTML='';
+  if(chartChannels.length===0){ $('chartHint').textContent='Каналы не зарегистрированы'; return; }
+  if(chartCh>=chartChannels.length) chartCh=0;
+  for(var i=0;i<chartChannels.length;i++){
+    (function(ch){
+      var b=document.createElement('button');
+      b.className='chip chart-chan'+(ch.i===chartCh?' active':'');
+      b.textContent=ch.name;
+      b.onclick=function(){ chartCh=ch.i; refreshChart(); };
+      host.appendChild(b);
+    })(chartChannels[i]);
+  }
+  refreshChart();
+}
+function setChartRange(r){
+  chartRange=r;
+  var btns=document.querySelectorAll('.chart-range');
+  for(var i=0;i<btns.length;i++) btns[i].classList.toggle('active', btns[i].dataset.range===r);
+  refreshChart();
+}
+async function refreshChart(){
+  var chs=document.querySelectorAll('.chart-chan');
+  for(var i=0;i<chs.length;i++) chs[i].classList.toggle('active', i===chartCh);
+  var r=await api('/api/dev/lock/dlog?ch='+chartCh+'&range='+chartRange);
+  if(!r.ok){ $('chartHint').textContent='Нет данных'; return; }
+  var d=r.data, ch=chartChannels[chartCh]||{name:'',unit:''};
+  if(!d.ts||d.ts.length<2){
+    $('chartHint').textContent='История накапливается — точка раз в минуту, первый часовой агрегат появится в начале следующего часа';
+    destroyChart(); return;
+  }
+  $('chartHint').textContent='';
+  drawChart(d, ch);
+}
+function destroyChart(){
+  if(chartInst){ chartInst.destroy(); chartInst=null; }
+  $('chartBox').innerHTML='';
+}
+function drawChart(d, ch){
+  destroyChart();
+  var cs=getComputedStyle(document.body);
+  var colText2=cs.getPropertyValue('--text2').trim()||'#8a7c63';
+  var colBorder=cs.getPropertyValue('--border').trim()||'#ddd0b8';
+  var w=($('chartBox').clientWidth||340)-16;
+  var series=[{label:'Время'}];
+  var data=[d.ts];
+  if(d.fmt==='raw'){
+    series.push({label:ch.name+(ch.unit?', '+ch.unit:''), stroke:'#cf8a1c', width:2,
+                 points:{show:d.ts.length<80, size:4}});
+    data.push(d.v);
+  }else{
+    series.push({label:'Среднее'+(ch.unit?', '+ch.unit:''), stroke:'#cf8a1c', width:2});
+    series.push({label:'Мин', stroke:'#8a7c63', width:1, dash:[5,5]});
+    series.push({label:'Макс', stroke:'#b23c2e', width:1, dash:[5,5]});
+    data.push(d.avg, d.min, d.max);
+  }
+  var axStyle={stroke:colText2, grid:{stroke:colBorder, width:1}, ticks:{stroke:colBorder}};
+  chartInst=new uPlot({
+    width:w, height:280,
+    scales:{x:{time:true}},
+    axes:[axStyle, axStyle],
+    series:series,
+    legend:{show:true},
+    cursor:{show:true}
+  }, data, $('chartBox'));
+}
+function editKey(id){
+  var u=(S.keysById||{})[id]||{};
+  function dtLoc(ts){ var d=new Date(ts*1000); function p(n){ return String(n).padStart(2,'0'); }
+    return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
+  openConfirm('Изменить ключ '+id, 'Поля предзаполнены текущими значениями. Пустое поле — параметр не изменится.', '', null, true);
+  $('cfInputWrap').classList.remove('hidden');
+  $('cfInputWrap').innerHTML=
+    '<label>Имя</label><input id="edName" value="'+esc(u.name||'')+'" placeholder="Без изменений">'+
+    '<label>Трек (1-99)</label><input id="edTrack" type="number" min="1" max="99" value="'+(u.track>0?u.track:'')+'" placeholder="Без изменений">'+
+    '<label>Срок действия</label><input id="edExpiry" type="datetime-local" value="'+(u.expiry>0?dtLoc(u.expiry):'')+'">'+
+    '<label>Новый ПИН (4-6 цифр)</label><input id="edPin" inputmode="numeric" maxlength="6" placeholder="'+(u.has_pin?'Задан (скрыт) — без изменений':'Не задан — без изменений')+'">'+
+    '<div class="check-row" style="margin-top:6px"><input type="checkbox" id="edPinClear"><label for="edPinClear">Убрать web-доступ (сбросить ПИН)</label></div>';
+  $('cfBtn').onclick=async function(){
+    var url='/api/dev/lock/keys/update?id='+id, any=false;
+    var n=$('edName').value.trim(); if(n){ url+='&name='+encodeURIComponent(n); any=true; }
+    var t=$('edTrack').value; if(t){ url+='&track='+t; any=true; }
+    var ex=$('edExpiry').value;
+    if(ex){ var ts=Math.floor(new Date(ex).getTime()/1000); url+='&expiry='+ts; any=true; }
+    if($('edPinClear').checked){ url+='&pin='; any=true; }
+    else { var p=$('edPin').value.trim(); if(p){ if(!/^\d{4,6}$/.test(p)){ toast('ПИН: 4–6 цифр','err'); return; } url+='&pin='+p; any=true; } }
+    if(!any){ closeConfirm(); toast('Нечего менять',''); return; }
+    var r=await apiPost(url);
+    closeConfirm();
+    if(r.ok){ toast('Ключ обновлён','ok'); S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false); }
+    else if(r.status===409) toast('Такой ПИН уже занят','err');
+    else toast('Ошибка обновления ('+(r.data.err||r.status)+')','err');
+  };
+}
+async function dbBackup(){
+  var r=await apiPost('/api/dev/lock/db/backup');
+  if(!r.ok){ toast('Ошибка бэкапа','err'); return; }
+  // 5.2.0: крупная база (>~75 записей) в NVS-зеркало не влезает — это
+  // политика: контроллер пишет users.json.bak и честно докладывает режим
+  if(r.data.mirror==='skipped')
+    toast('База крупная: зеркало NVS не вмещает — бэкап записан в файл (users.json.bak)','ok');
+  else toast('Бэкап базы сохранён в NVS','ok');
+  pollStatus();   // 5.5.13: обновить возраст зеркала в статусе
+}
+function dbRestore(){
+  // 5.5.13: возраст зеркала — ДО подтверждения (инцидент 12.08: накатили
+  // старое зеркало вслепую и потеряли тип мастер-ключа)
+  var st=S.status||{}, mu=+st.mirror_u||0, mf=st.mirror_fw||'';
+  var age=mu>0 ? ('зеркало от '+new Date(mu*1000).toLocaleString('ru-RU')+(mf?', fw '+mf:''))
+               : 'зеркало старого формата — возраст НЕИЗВЕСТЕН';
+  openConfirm('Восстановить из NVS?', 'Текущая база пользователей будет заменена бэкапом ('+age+').', '', async function(){
+    var r=await apiPost('/api/dev/lock/db/restore');
+    toast(r.ok?'База восстановлена из NVS':'Ошибка восстановления', r.ok?'ok':'err');
+    if(r.ok){ S.keysFrom=0; $('usersList').innerHTML=''; loadKeys(false); }
+  });
+}
+</script>
+
+<script>
+// ============================================================================
+// ПАЗ
+// ============================================================================
+async function renderPaz(){
+  var d=S.status||{};
+  var h=null;
+  try{ var r=await api('/api/health'); if(r.ok) h=r.data; }catch(e){}
+  var rows='';
+  function row(icon,name,val,cls){
+    rows+='<div class="health-row"><span class="health-name">'+icon+' '+name+'</span><span class="'+(cls||'health-ok')+'">'+val+'</span></div>';
+  }
+  row('🛡️','Система ПАЗ', (d.forced===1||d.door_alarm===1)?'ТРЕВОГА':'Активна', (d.forced===1||d.door_alarm===1)?'health-crit':'health-ok');
+  if(h) row('⏱️','Watchdog задач (WDT)', h.wdt===1?'Работает':'Не активен', h.wdt===1?'health-ok':'health-warn');
+  row('🔓','Защита реле замка', 'Норма');
+  row('🚪','Датчик двери', d.door===1?'Открыта':'Закрыта', d.door===1?'health-warn':'health-ok');
+  row('⛔','Тревога «дверь открыта долго»', d.door_alarm===1?'СРАБОТАЛА':'Нет', d.door_alarm===1?'health-crit':'health-ok');
+  row('🚨','Тревога «проникновение»', d.forced===1?'СРАБОТАЛА':'Нет', d.forced===1?'health-crit':'health-ok');
+  row('🌐','Связь MQTT', d.mqtt===1?'Онлайн':'Офлайн', d.mqtt===1?'health-ok':'health-warn');
+  row('💳','Режим чтения карты', d.wread===1?'Активен (10 с)':'Не активен',
+      d.wread===1?'health-warn':'health-ok');
+  row('🔧','Ресурс замка', String(d.cycles||0)+' циклов', '');
+  $('pazRows').innerHTML=rows;
+  // Журнал паник (залежь №2): последние аварии, пережившие ребут.
+  // unix=0 — часы ещё не были выставлены, показываем аптайм.
+  var jb=$('pazJournal');
+  if(jb && h){
+    var jr='<div class="group-title" style="margin-top:14px;font-size:14px">📕 Журнал паник</div>';
+    if(h.journal && h.journal.length){
+      for(var i=0;i<h.journal.length;i++){
+        var j=h.journal[i];
+        var when=j.unix>0?new Date(j.unix*1000).toLocaleString('ru-RU'):('аптайм '+fmtUptime(j.up));
+        jr+='<div class="health-row"><span class="health-crit">●</span>'+
+          '<span style="flex:1"><b>'+esc(j.src)+'</b> — '+esc(j.msg)+'<br>'+
+          '<span class="health-msg" style="text-align:left">'+when+' · heap '+j.heap+' КБ</span></span></div>';
+      }
+    } else {
+      jr+='<div class="card-sub">Паник не зафиксировано — так держать!</div>';
+    }
+    jb.innerHTML=jr;
+  }
+  if(h){
+    var dot=$('healthDot');
+    dot.className='dot '+(h.criticals>0?'red':(h.warnings>0?'orange':'green'));
+  }
+}
+function pazReset(){
+  openConfirm('Сброс флага ПАЗ', 'Убедитесь, что реле замка исправно! Сирена и тревоги будут сняты.', '', async function(){
+    var r=await apiPost('/api/dev/lock/paz/reset');
+    if(r.ok){ toast('Флаг ПАЗ сброшен','ok'); pollStatus(); renderPaz(); }
+    else toast('Ошибка сброса','err');
+  });
+}
+
+// ============================================================================
+// СИСТЕМА
+// ============================================================================
+async function renderSys(){
+  var h=null, t=null;
+  try{ var r=await api('/api/health'); if(r.ok) h=r.data; }catch(e){}
+  try{ var r2=await api('/api/telemetry'); if(r2.ok) t=r2.data; }catch(e){}
+  var stats='';
+  function cell(l,v){ stats+='<div class="stat-cell"><div class="v">'+v+'</div><div class="l">'+l+'</div></div>'; }
+  if(h){
+    cell('Свободно heap', Math.round(h.heap_free/1024)+' КБ');
+    cell('Аптайм', fmtUptime(h.uptime_s));
+    cell('Watchdog', h.wdt===1?'🟢 вооружён':'🟡 нет');
+    cell('Состояние', h.healthy===1?'🟢 Здорова':('🔴 крит: '+h.criticals));
+  }
+  if(t){
+    if(t.bus_published!==undefined) cell('Событий шины', t.bus_published);
+    if(t.bus_dropped!==undefined) cell('Потеряно событий', t.bus_dropped);
+  }
+  if(S.sys){ cell('IP-адрес', esc(S.sys.ip||'—')); cell('Хост', esc(S.sys.host||'—')); }
+  $('sysStats').innerHTML=stats||'<div class="card-sub">Нет данных</div>';
+  if(h){
+    var rows='';
+    var stName=['Ок','Внимание','Критично'], stCls=['health-ok','health-warn','health-crit'];
+    for(var i=0;i<h.checks.length;i++){
+      var c=h.checks[i], st=Math.min(c.st,2);
+      rows+='<div class="health-row"><span class="health-name '+stCls[st]+'">●</span>'+
+        '<span style="flex:1;font-weight:600">'+esc(c.name)+'</span>'+
+        '<span class="health-msg">'+esc(c.msg||stName[st])+'</span></div>';
+    }
+    $('healthRows').innerHTML=rows||'<div class="card-sub">Проверок нет</div>';
+    var dot=$('healthDot');
+    dot.className='dot '+(h.criticals>0?'red':(h.warnings>0?'orange':'green'));
+  }
+  renderOta();
+}
+
+// ============================================================================
+// OTA (залежь №3): манифест на HA + загрузка образов из панели
+// ============================================================================
+async function renderOta(){
+  var r=await api('/api/ota/info');
+  if(!r.ok){
+    $('otaRows').innerHTML='<div class="card-sub">Сведения OTA недоступны ('+r.status+')</div>';
+    return;
+  }
+  var o=r.data;
+  var rows='';
+  function orow(n,v,cls){
+    rows+='<div class="health-row"><span class="health-name">'+n+'</span><span class="'+(cls||'')+'">'+v+'</span></div>';
+  }
+  orow('Текущая прошивка', esc(o.fw)+(o.build?' · сборка '+esc(o.build):'')+
+       (o.pending_verify===1?' · ⏳ идёт валидация':''),
+       o.pending_verify===1?'health-warn':'health-ok');
+  if(o.remote.checked===1){
+    orow('Прошивка на сервере HA', o.remote.version?esc(o.remote.version):'манифест недоступен',
+         o.update_available===1?'health-warn':'health-ok');
+    if(o.update_available===1) orow('Статус','⬆️ Доступно обновление!','health-warn');
+    if(o.remote.notes) rows+='<div class="health-row"><span class="health-name">Changelog</span>'+
+        '<span class="health-msg">'+esc(o.remote.notes)+'</span></div>';
+  } else {
+    orow('Прошивка на сервере HA','ещё не проверялась','');
+  }
+  rows+='<div class="health-row"><span class="health-name">Манифест</span>'+
+        '<span class="health-msg">'+esc(o.remote.url||'')+'</span></div>';
+  $('otaRows').innerHTML=rows;
+
+  var hs='';
+  if(o.history && o.history.length){
+    hs='<div class="group-title" style="margin-top:12px;font-size:14px">🕘 История OTA</div>';
+    for(var i=0;i<o.history.length;i++){
+      var e=o.history[i];
+      var when=e.unix>0?new Date(e.unix*1000).toLocaleString('ru-RU'):'—';
+      var what=e.src==='boot'?'Валидация после ребута':
+               e.src==='rollback'?'Откат на предыдущую':
+               ('Загрузка '+(e.type==='fs'?'файловой системы':'прошивки'));
+      hs+='<div class="health-row"><span class="'+(e.ok===1?'health-ok':'health-crit')+'">●</span>'+
+        '<span style="flex:1">'+what+(e.bytes?' · '+Math.round(e.bytes/1024)+' КБ':'')+
+        (e.dur_s?' · '+e.dur_s+' с':'')+
+        (e.ver?' · <b>'+esc(e.ver)+'</b>':'')+
+        (e.err && e.ok!==1?' · <span class="health-crit">'+esc(e.err)+'</span>':'')+
+        '<br><span class="health-msg" style="text-align:left">'+when+'</span></span></div>';
+    }
+  }
+  $('otaHistory').innerHTML=hs;
+  cfgBakInfo();
+  // Phase 4: страницу открыли/обновили посреди фоновой загрузки —
+  // подхватываем следилку, прогресс не потерян (качает само устройство).
+  if(o.dl && (o.dl.state==='fw'||o.dl.state==='fs')) otaDlPoll();
+}
+
+// Phase 4: обновление с сервера — устройство само скачивает образы.
+// Панель только запускает и следит за dl в /api/ota/info.
+var _otaDlTimer=null;
+async function otaRemote(){
+  toast('Запускаю обновление с сервера…','ok');
+  var r=await apiPost('/api/ota/update');
+  if(r.ok && r.data && r.data.started){ otaDlPoll(); return; }
+  var e=(r.data&&r.data.error)||r.status;
+  if(e==='already_running'){ toast('Загрузка уже идёт','ok'); otaDlPoll(); }
+  else if(e==='not_found') toast('На устройстве СТАРАЯ прошивка — обновите .bin!','err');
+  else if(e==='upload_active') toast('Идёт ручная загрузка — дождитесь финиша','err');
+  else toast('Не запустилось ('+e+')','err');
+}
+function otaDlPoll(){
+  if(_otaDlTimer) return;   // уже следим
+  $('otaBar').style.display='block';
+  _otaDlTimer=setInterval(async function(){
+    var r=await api('/api/ota/info');
+    if(!r.ok||!r.data) return;
+    var d=r.data.dl;
+    if(!d||d.state==='idle'){ otaDlStop(); renderOta(); return; }
+    if(d.state==='done'){
+      otaDlStop();
+      $('otaBarFill').style.width='100%';
+      $('otaBarTxt').textContent='Образы записаны! Перезагрузка контроллера…';
+      setTimeout(function(){location.reload();},12000);
+      return;
+    }
+    if(d.state==='failed'){
+      otaDlStop();
+      $('otaBar').style.display='none';
+      toast('Обновление с сервера не удалось: '+d.err,'err');
+      renderOta();
+      return;
+    }
+    var pct=d.total>0?Math.round(d.bytes*100/d.total):0;
+    $('otaBarFill').style.width=pct+'%';
+    $('otaBarTxt').textContent='Скачивание '+(d.state==='fs'?'файловой системы':'прошивки')+
+      ' с сервера '+(d.total>0?pct+'% ('+Math.round(d.bytes/1024)+' из '+Math.round(d.total/1024)+' КБ)':
+      Math.round(d.bytes/1024)+' КБ')+'…';
+  },1000);
+}
+function otaDlStop(){ clearInterval(_otaDlTimer); _otaDlTimer=null; }
+
+// NVS-бэкап конфигурации (5.0.9): переживает перепрошивку FS.
+// Восстановление — БЕЗ предупреждений, осознанное действие (явный заказ UX).
+async function cfgBackup(){
+  var r=await apiPost('/api/config/backup');
+  if(r.ok && r.data && r.data.ok){
+    toast('Бэкап сохранён в NVS ('+r.data.size+' Б)','ok');
+    cfgBakInfo();
+  } else if((r.data&&r.data.error)==='not_found'){
+    // Урок 5.0.10: панель новее прошивки — эндпоинта на устройстве нет
+    toast('На устройстве СТАРАЯ прошивка — обновите .bin!','err');
+  } else toast('Бэкап не удался ('+((r.data&&r.data.error)||r.status)+')','err');
+}
+async function cfgRestore(){
+  var r=await apiPost('/api/config/restore');
+  if(r.ok && r.data && r.data.ok){
+    toast('Восстановлено полей: '+r.data.applied+'. Перезагрузка…','ok');
+    $('cfgBakInfo').textContent='Конфигурация восстановлена из NVS — контроллер перезагружается…';
+    setTimeout(function(){location.reload();},9000);
+  } else {
+    var e=(r.data&&r.data.error)||'';
+    if(e==='not_found') toast('На устройстве СТАРАЯ прошивка — обновите .bin!','err');
+    else if(e==='backup_not_found') toast('Бэкап в NVS не найден — сначала сохраните','err');
+    else if(e==='backup_corrupt') toast('Бэкап повреждён или от другой системы','err');
+    else toast('Восстановление не удалось ('+(e||r.status)+')','err');
+  }
+}
+async function cfgBakInfo(){
+  var el=$('cfgBakInfo');
+  if(!el) return;
+  var r=await api('/api/config/backup');
+  if(!r.ok || !r.data){
+    // Урок 5.0.10: эндпоинта нет = панель новее прошивки — сказать явно,
+    // а не молча прятать строку.
+    el.innerHTML=(r.data&&r.data.error)==='not_found'
+      ? '⚠️ <b>Прошивка старее панели</b> — бэкап недоступен. Обновите .bin!'
+      : '';
+    return;
+  }
+  var b=r.data;
+  el.innerHTML=b.exists
+    ? '💾 Бэкап конфигурации: <b>'+(b.size/1024).toFixed(1)+' КБ</b> · '+
+      (b.unix>0?new Date(b.unix*1000).toLocaleString('ru-RU'):'без даты')+
+      ' · fw '+esc(b.fw||'?')
+    : '💾 Бэкап конфигурации: <b>отсутствует</b> — сохраните после настройки полей';
+}
+async function otaCheck(){
+  toast('Запрашиваю манифест у HA (до 4 с)…','ok');
+  var r=await apiPost('/api/ota/check');
+  if(r.ok && r.data){
+    if(r.data.update_available===1) toast('Доступна прошивка '+r.data.remote.version+'!','ok');
+    else if(r.data.remote.version) toast('Обновлений нет (сервер: '+r.data.remote.version+')','ok');
+    else toast('Манифест не получен (нет сети или HA)','err');
+    renderOta();
+  } else toast('Ошибка запроса','err');
+}
+function otaUpload(input, type){
+  var f=input.files && input.files[0];
+  input.value='';   // чтобы повторный выбор того же файла тоже сработал
+  if(!f) return;
+  openConfirm('Обновление '+(type==='fs'?'файловой системы':'прошивки'),
+    'Файл: '+f.name+' ('+Math.round(f.size/1024)+' КБ). После загрузки контроллер сам перезагрузится. Продолжить?','',async function(){
+    var xhr=new XMLHttpRequest();
+    var fd=new FormData();
+    fd.append('file', f, f.name);
+    $('otaBar').style.display='block';
+    $('otaBarFill').style.width='0%';
+    $('otaBarTxt').textContent='Подключение…';
+    xhr.upload.onprogress=function(ev){
+      if(ev.lengthComputable){
+        var p=Math.round(ev.loaded*100/ev.total);
+        $('otaBarFill').style.width=p+'%';
+        $('otaBarTxt').textContent='Загрузка '+p+'% ('+Math.round(ev.loaded/1024)+' из '+Math.round(ev.total/1024)+' КБ)…';
+      }
+    };
+    xhr.onload=function(){
+      if(xhr.status===200){
+        var ver='';
+        try{ ver=(JSON.parse(xhr.responseText).ver)||''; }catch(e){}
+        $('otaBarFill').style.width='100%';
+        $('otaBarTxt').textContent='Образ записан'+(ver?' ('+ver+')':'')+'! Перезагрузка контроллера…';
+        toast('Загружена прошивка '+(ver||'?')+', перезагрузка…','ok');
+        setTimeout(function(){ location.reload(); }, 12000);
+      } else {
+        $('otaBar').style.display='none';
+        var reason='';
+        try{ reason=(JSON.parse(xhr.responseText).rx||{}).err||''; }catch(e){}
+        toast('Ошибка загрузки: '+(reason||('HTTP '+xhr.status)),'err');
+        renderOta();
+      }
+    };
+    xhr.onerror=function(){
+      $('otaBar').style.display='none';
+      toast('Сбой связи при загрузке','err');
+    };
+    xhr.open('POST','/api/ota/upload?type='+type);
+    if(S.token) xhr.setRequestHeader('X-Auth-Token', S.token);
+    xhr.send(fd);
+  });
+}
+async function loadTechLog(){
+  $('techLog').textContent='Загрузка…';
+  var r=await api('/api/logs');
+  $('techLog').textContent = r.ok ? (r.data||'(пусто)') : 'Журнал недоступен ('+r.status+')';
+}
+function rebootDevice(){
+  openConfirm('Перезагрузка контроллера', 'Связь прервётся на ~30 секунд. Несохранённое будет потеряно.', '', async function(){
+    var r=await apiPost('/api/reboot');
+    if(r.ok){
+      toast('Контроллер перезагружается…','ok');
+      setTimeout(function(){ location.reload(); }, 12000);
+    } else toast('Ошибка перезагрузки','err');
+  });
+}
+
+// ============================================================================
+// ЖУРНАЛ АУДИТА
+// ============================================================================
+var journalLoaded=false;
+async function toggleJournal(){
+  togglePanel('journalPanel');
+  var opening=$('journalPanel').classList.contains('open');
+  if(opening && !journalLoaded){
+    journalLoaded=true;
+    $('journalList').innerHTML='<div class="card-sub" style="padding:8px">Загрузка…</div>';
+    var r=await api('/api/audit');
+    if(!r.ok){
+      $('journalList').innerHTML='<div class="card-sub" style="padding:8px">Журнал пуст или ещё не создан — события появятся после первых действий.</div>';
+      return;
+    }
+    var lines=String(r.data).split('\n').filter(function(l){ return l.trim().length>0; });
+    var html='';
+    for(var i=lines.length-1;i>=0 && html.split('log-item').length<61;i--){
+      var txt=lines[i], time='', ev='';
+      try{
+        var o=JSON.parse(txt);
+        if(o.t||o.ts||o.time){ var ts=+(o.t||o.ts||o.time); if(ts>1000000000) time=new Date(ts*1000).toLocaleString('ru-RU'); }
+        ev=o.ev||o.event||o.e||'';
+        delete o.t; delete o.ts; delete o.time; delete o.ev; delete o.event; delete o.e;
+        var rest=Object.keys(o).map(function(k){ return k+': '+o[k]; }).join(' · ');
+        txt=(ev?ev+' — ':'')+rest;
+      }catch(e){ /* строка не JSON — покажем как есть */ }
+      html+='<div class="log-item"><span class="log-time">'+esc(time)+'</span><span class="log-text">'+esc(txt)+'</span></div>';
+    }
+    $('journalList').innerHTML=html||'<div class="card-sub" style="padding:8px">Записей пока нет</div>';
+  }
+}
+
+// ============================================================================
+// АДМИН: смена пароля / мастер-ключ / выход
+// ============================================================================
+async function changePassword(){
+  var o=$('admOld').value, n=$('admNew').value, n2=$('admNew2').value;
+  if(n.length<4||n.length>32||/\s/.test(n)){ toast('Новый пароль: 4–32 символа без пробелов','err'); return; }
+  if(n!==n2){ toast('Новые пароли не совпадают','err'); return; }
+  var r=await apiPost('/api/auth/change?old='+encodeURIComponent(o)+'&new='+encodeURIComponent(n));
+  if(r.ok && r.data.token){
+    S.token=r.data.token; sessionStorage.setItem('mos_token',S.token);
+    $('admOld').value=''; $('admNew').value=''; $('admNew2').value='';
+    toast('Пароль изменён, сессия обновлена','ok');
+  } else if(r.status===403) toast('Действующий пароль неверен','err');
+  else toast('Ошибка смены пароля','err');
+}
+function masterDelete(){
+  openConfirm('Удалить Мастер-ключ?', 'Добавление новых карт кнопкой станет невозможным до назначения нового мастера.', 'DELETE', async function(){
+    var r=await apiPost('/api/dev/lock/master/delete?confirm=DELETE');
+    if(r.ok){ toast('Мастер-ключ удалён','ok'); pollStatus(); }
+    else toast('Ошибка удаления','err');
+  });
+}
+
+// ============================================================================
+// МОДАЛКА ПОДТВЕРЖДЕНИЯ
+// ============================================================================
+function openConfirm(title, text, requireInput, onOk, raw){
+  $('cfTitle').textContent=title;
+  $('cfText').textContent=text;
+  $('cfInputWrap').classList.toggle('hidden', !requireInput);
+  if(requireInput && !raw){
+    $('cfInputWrap').innerHTML='<label>Введите '+requireInput+' для подтверждения</label>'+
+      '<input id="cfInput" placeholder="'+requireInput+'" autocomplete="off" style="text-align:center;letter-spacing:2px">';
+  }
+  $('cfBtn').onclick=function(){
+    if(requireInput && !raw){
+      var v=$('cfInput').value.trim();
+      if(v!==requireInput){ toast('Введите '+requireInput,'err'); return; }
+    }
+    closeConfirm();
+    if(onOk) onOk();
+  };
+  $('confirmModal').classList.add('show');
+}
+function closeConfirm(){ $('confirmModal').classList.remove('show'); }
+
+// ============================================================================
+// ИНИЦИАЛИЗАЦИЯ
+// ============================================================================
+async function init(){
+  applyTheme();
+  applySkin();
+  loadVoiceMap();
+  // PWA: service worker (статика из кэша, /api — строго в сеть)
+  if('serviceWorker' in navigator){
+    try{ await navigator.serviceWorker.register('/web/sw.js'); }catch(e){}
+  }
+  var r=await api('/api/system').catch(function(){ return null; });
+  if(r && r.ok){
+    S.sys=r.data;
+    S.provisioned = r.data.setup!==1;
+  }
+  // Восстановление сессии: админ — по токену ядра, жилец — по токену utok
+  // (серверная проверка + скользящее продление; истёк — вход заново)
+  if(S.provisioned && S.token){
+    var h=await api('/api/health').catch(function(){ return null; });
+    if(h && h.ok){ S.role='admin'; enterAdmin(); return; }
+    S.token=''; sessionStorage.removeItem('mos_token');
+  }
+  if(S.provisioned && S.userTok){
+    var u=await apiPost('/api/dev/lock/user/auth?utok='+encodeURIComponent(S.userTok)).catch(function(){ return null; });
+    if(u && u.ok && u.data.ok){
+      S.role='user'; S.userName=u.data.name||S.userName||'Жилец';
+      sessionStorage.setItem('lock_username',S.userName);
+      enterResident(); return;
+    }
+    sessionStorage.removeItem('lock_utok'); S.userTok='';
+  }
+  showAuth();
+}
+init();
+</script>
+</body>
+</html>
