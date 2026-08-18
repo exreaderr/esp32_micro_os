@@ -25,7 +25,8 @@ bool EspTempDriver::init() {
     // На классическом ESP32 сенсор грубый (±5°C), но чтение всегда даёт
     // конечное значение; NAN означало бы отсутствие сенсора на цели.
     _healthy = !isnan(t);
-    if (_healthy) _lastTempC = t;
+    if (_healthy) { _lastTempC = t; _readSeq++; }
+    _bootGraceUntilMs = millis() + ESP_TEMP_BOOT_GRACE_MS;
     return _healthy;
 }
 
@@ -43,6 +44,7 @@ void EspTempDriver::poll() {
     }
     _healthy = true;
     _lastTempC = tempC;
+    _readSeq++;   // пульс: дежурный смотрит на него, а не на значение
 
     // --- ФАКТ: всегда публикуем измерение (для телеметрии/графиков) -------
     // code = температура x10 в целых (52.4°C -> 524) — без float в payload.
@@ -63,15 +65,36 @@ void EspTempDriver::poll() {
             break;
         case TempState::Warning:
             if (tempC >= _critC)      newState = TempState::Critical;
-            else if (tempC < _warnC - ESP_TEMP_HYSTERESIS_C)
-                                               newState = TempState::Normal;
+            else if (tempC < _warnC - _hystC)  newState = TempState::Normal;
             break;
         case TempState::Critical:
-            if (tempC < _critC - ESP_TEMP_HYSTERESIS_C)
-                                               newState = TempState::Warning;
+            if (tempC < _critC - _hystC)       newState = TempState::Warning;
             break;
     }
-    if (newState != _state) publishTransition(newState, tempC);
+    if (newState != _state) {
+        // Бут-грейс: пороги из конфига могли ещё не доехать до драйвера
+        // (TelemetryService применяет в init-фазе) — переход запоминаем,
+        // публикацию откладываем; после окна poll сам опубликует факт.
+        if ((int32_t)(millis() - _bootGraceUntilMs) >= 0) {
+            publishTransition(newState, tempC);
+        } else {
+            _state = newState;   // молча: публикация после грейс-окна
+        }
+    }
+
+    // --- ТЕРМИЧЕСКАЯ ПАНИКА (залежь №2) -------------------------------------
+    // Отдельно от стейт-машины: crit — «всё плохо, пора бить тревогу»,
+    // panic — «кристалл варится, это почти наверняка кончится аварией».
+    // Одноразовый фронт + свой гистерезис: HealthMonitor запишет в журнал
+    // паник — после остывания/ребута будет видно, ЧТО именно случилось.
+    if (tempC >= _panicC && !_panicActive) {
+        _panicActive = true;
+        ShEventData d; d.clear();
+        d.code = (int32_t)(tempC * 10.0f);
+        EventBus::getInstance().post(DRV_EVENT_TEMP_PANIC, &d);
+    } else if (_panicActive && tempC < _panicC - 3.0f) {
+        _panicActive = false;
+    }
 }
 
 // ============================================================================

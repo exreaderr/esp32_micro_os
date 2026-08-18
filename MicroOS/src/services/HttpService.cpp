@@ -15,6 +15,8 @@
 #include "../core/Events.h"
 #include "../core/Kernel.h"
 #include <esp_random.h>
+#include <new>          // placement nothrow: heap-буфер JSON в init()
+#include <Update.h>   // U_FLASH / U_SPIFFS для OTA-приёма (залежь №3)
 
 // Страница админки (PROGMEM) и её обработчик — в конце файла.
 
@@ -27,12 +29,19 @@ HttpService& HttpService::getInstance() {
 // ЖИЗНЕННЫЙ ЦИКЛ
 // ============================================================================
 void HttpService::init() {
+    // JSON-буфер — ОДИН блок heap на всю жизнь (урок outbox 5.1.0:
+    // фиксированные бюджеты BSS не жонглируем, но один статический heap-блок
+    // легален). nothrow: провал → fallback 2 КБ, сервер всё равно поднимется.
+    _jsonBuf = new (std::nothrow) char[HTTP_JSON_BUF];
+    if (_jsonBuf) _jsonBuf[0] = '\0';
+
     // Объявляем нестандартный заголовок ДО begin: иначе WebServer его
     // не соберёт и checkAdmin() всегда будет видеть пустой токен.
     const char* headerKeys[] = { "X-Auth-Token" };
     _server.collectHeaders(headerKeys, 1);
     _initialized = true;
-    log(LogLevel::Info, "init: web server ready (port 80)");
+    log(LogLevel::Info, "init: web server ready (port 80, json buf %u %s)",
+        (unsigned)jsonBufSize(), _jsonBuf ? "heap" : "FALLBACK");
 }
 
 void HttpService::start()  { _started = true; }
@@ -40,7 +49,13 @@ void HttpService::stop()   { serverStop(); _started = false; }
 
 void HttpService::tick() {
     // Стейт-машина: сервер жив только при реальной сети
-    bool want = NetworkService::getInstance().isConnected();
+    bool net = NetworkService::getInstance().isConnected();
+    if (!net) _netUpSinceMs = 0;
+    else if (_netUpSinceMs == 0) _netUpSinceMs = millis();
+    // 5.8.0, HTTP-гард: пауза после подъёма сети (см. HTTP_WEB_DELAY_MS) —
+    // в бут-шторм не добавляем lwIP-сокеты веб-клиентов. Safe Mode тоже
+    // ждёт: 10 с до recovery-консоли — приемлемая цена живого ядра.
+    bool want = net && (uint32_t)(millis() - _netUpSinceMs) >= HTTP_WEB_DELAY_MS;
     if (want != _serverUp) {
         if (want) serverStart(); else serverStop();
     }
@@ -87,10 +102,20 @@ void HttpService::registerRoutes() {
     _server.on("/api/telemetry",  HTTP_GET,  [this]() { handleApiTelemetry(); });
     _server.on("/api/config",     HTTP_GET,  [this]() { handleApiConfigGet(); });
     _server.on("/api/config",     HTTP_POST, [this]() { handleApiConfigSet(); });
+    // NVS-бэкап конфигурации (5.0.9): переживает перепрошивку FS
+    _server.on("/api/config/backup",  HTTP_GET,  [this]() { handleApiConfigBackupInfo(); });
+    _server.on("/api/config/backup",  HTTP_POST, [this]() { handleApiConfigBackup(); });
+    _server.on("/api/config/restore", HTTP_POST, [this]() { handleApiConfigRestore(); });
     _server.on("/api/logs",       HTTP_GET,  [this]() { handleApiLogs(); });
     _server.on("/api/audit",      HTTP_GET,  [this]() { handleApiAudit(); });
     _server.on("/api/reboot",     HTTP_POST, [this]() { handleApiReboot(); });
-    _server.on("/api/ota",        HTTP_POST, [this]() { handleApiOta(); });
+    // OTA (залежь №3): состояние, проверка манифеста, приём образа
+    _server.on("/api/ota/info",   HTTP_GET,  [this]() { handleApiOtaInfo(); });
+    _server.on("/api/ota/check",  HTTP_POST, [this]() { handleApiOtaCheck(); });
+    _server.on("/api/ota/update", HTTP_POST, [this]() { handleApiOtaUpdate(); });
+    _server.on("/api/ota/upload", HTTP_POST,
+               [this]() { handleApiOtaUploadDone(); },
+               [this]() { handleApiOtaUploadChunk(); });
     _server.on("/api/health",     HTTP_GET,  [this]() { handleApiHealth(); });
     _server.on("/api/auth/change",HTTP_POST, [this]() { handleApiAuthChange(); });
     _server.on("/api/time/sync",  HTTP_POST, [this]() { handleApiTimeSync(); });
@@ -178,7 +203,23 @@ void HttpService::dropToken(const char* token) {
 // УТИЛИТЫ ОТВЕТОВ
 // ============================================================================
 void HttpService::sendJson(int code, const char* json) {
+    // 5.8.0, HTTP-гард: закрытие соединения — явно (на ядре 3.3.11
+    // WebServer и сам шлёт Connection: close; дублируем на случай ядер
+    // с keep-alive: сокет — ~4 КБ lwIP, урок просадки heap 14.08).
+    _server.sendHeader("Connection", "close");
     _server.send(code, "application/json; charset=utf-8", json);
+}
+
+// 5.8.0, «Скачать журнал»: потоковая отдача (см. HttpService.h)
+bool HttpService::streamFileDownload(fs::File& f, const char* downloadName) {
+    if (!f) return false;
+    _server.sendHeader("Cache-Control", "no-store");
+    _server.sendHeader("Content-Disposition",
+                       String("attachment; filename=\"") +
+                       (downloadName ? downloadName : "download.bin") + "\"");
+    // streamFile: файл уходит кусками, целиком в heap НЕ поднимается
+    size_t sent = _server.streamFile(f, "application/x-ndjson");
+    return sent > 0;
 }
 
 bool HttpService::requireAdmin() {
@@ -263,7 +304,7 @@ void HttpService::handleApiSystem() {
     NetworkService& net = NetworkService::getInstance();
     char ip[16];
     net.ipString(ip, sizeof(ip));
-    snprintf(_jsonBuf, sizeof(_jsonBuf),
+    snprintf(jsonBuf(), jsonBufSize(),
         "{\"id\":\"%s\",\"host\":\"%s\",\"ip\":\"%s\","
         "\"level\":%u,\"uptime\":%lu,\"setup\":%d,\"safe\":%d,"
         "\"version\":\"5.0.0\"}",
@@ -272,7 +313,7 @@ void HttpService::handleApiSystem() {
         (unsigned long)(millis() / 1000),
         AuthService::getInstance().isProvisioned() ? 0 : 1,
         Kernel::getInstance().isSafeMode() ? 1 : 0);
-    sendJson(200, _jsonBuf);
+    sendJson(200, jsonBuf());
 }
 
 // ============================================================================
@@ -283,22 +324,22 @@ void HttpService::handleApiAuth() {
 
     // Блокировка rate-limiter'а — честный ответ о сроке
     if (auth.isRateLimited("admin")) {
-        snprintf(_jsonBuf, sizeof(_jsonBuf),
+        snprintf(jsonBuf(), jsonBufSize(),
                  "{\"error\":\"locked\",\"sec\":%lu}",
                  (unsigned long)auth.rateLimitRemainingSec("admin"));
-        sendJson(401, _jsonBuf);
+        sendJson(401, jsonBuf());
         return;
     }
     if (!_server.hasArg("pin") ||
         !auth.verifyAdminPin(_server.arg("pin").c_str(), "web")) {
-        snprintf(_jsonBuf, sizeof(_jsonBuf),
+        snprintf(jsonBuf(), jsonBufSize(),
                  "{\"error\":\"bad_pin\",\"locked\":%d}",
                  auth.isRateLimited("admin") ? 1 : 0);
-        sendJson(401, _jsonBuf);
+        sendJson(401, jsonBuf());
         return;
     }
-    snprintf(_jsonBuf, sizeof(_jsonBuf), "{\"token\":\"%s\"}", issueToken());
-    sendJson(200, _jsonBuf);
+    snprintf(jsonBuf(), jsonBufSize(), "{\"token\":\"%s\"}", issueToken());
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiSetup() {
@@ -314,9 +355,9 @@ void HttpService::handleApiSetup() {
         return;
     }
     // Provisioning завершён — сразу выдаём сессию владельцу
-    snprintf(_jsonBuf, sizeof(_jsonBuf),
+    snprintf(jsonBuf(), jsonBufSize(),
              "{\"token\":\"%s\",\"provisioned\":1}", issueToken());
-    sendJson(200, _jsonBuf);
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiLogout() {
@@ -332,15 +373,15 @@ void HttpService::handleApiLogout() {
 // ============================================================================
 void HttpService::handleApiTelemetry() {
     if (!requireAdmin()) return;
-    TelemetryService::getInstance().toJson(_jsonBuf, sizeof(_jsonBuf));
-    sendJson(200, _jsonBuf);
+    TelemetryService::getInstance().toJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiConfigGet() {
     if (!requireAdmin()) return;
     // SECRET-поля исключены самим ConfigService — устройство их не отдаёт
-    ConfigService::getInstance().toJson(_jsonBuf, sizeof(_jsonBuf));
-    sendJson(200, _jsonBuf);
+    ConfigService::getInstance().toJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiConfigSet() {
@@ -351,15 +392,59 @@ void HttpService::handleApiConfigSet() {
     }
     bool ok = ConfigService::getInstance().set(
         _server.arg("key").c_str(), _server.arg("value").c_str());
-    snprintf(_jsonBuf, sizeof(_jsonBuf), "{\"%s\":\"%s\"}",
+    snprintf(jsonBuf(), jsonBufSize(), "{\"%s\":\"%s\"}",
              _server.arg("key").c_str(), ok ? "ok" : "rejected");
-    sendJson(ok ? 200 : 400, _jsonBuf);
+    sendJson(ok ? 200 : 400, jsonBuf());
+}
+
+// ============================================================================
+// NVS-БЭКАП КОНФИГУРАЦИИ (5.0.9): «Вжжух, вжжух — и готово» после перепрошивки
+// ============================================================================
+void HttpService::handleApiConfigBackupInfo() {
+    if (!requireAdmin()) return;
+    ConfigService::getInstance().backupInfoJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
+}
+
+void HttpService::handleApiConfigBackup() {
+    if (!requireAdmin()) return;
+    size_t size = 0;
+    bool ok = ConfigService::getInstance().backupToNvs(
+        (uint32_t)TimeService::getInstance().getUnixTime(),
+        UpdateService::getInstance().firmwareVersion(), &size);
+    if (!ok) {
+        sendJson(500, "{\"error\":\"backup_failed\"}");
+        return;
+    }
+    snprintf(jsonBuf(), jsonBufSize(), "{\"ok\":1,\"size\":%u}",
+             (unsigned)size);
+    sendJson(200, jsonBuf());
+}
+
+void HttpService::handleApiConfigRestore() {
+    if (!requireAdmin()) return;
+    // БЕЗ подтверждений и предупреждений — осознанное действие оператора
+    // (явный заказ UX). Ребут обязателен: половина полей CFG_CRITICAL,
+    // применение конфигурации — при загрузке.
+    int applied = ConfigService::getInstance().restoreFromNvs();
+    if (applied < 0) {
+        sendJson(404, "{\"error\":\"backup_not_found\"}");
+        return;
+    }
+    if (applied == 0) {
+        sendJson(422, "{\"error\":\"backup_corrupt\"}");
+        return;
+    }
+    snprintf(jsonBuf(), jsonBufSize(),
+             "{\"ok\":1,\"applied\":%d,\"reboot_in_ms\":1500}", applied);
+    sendJson(200, jsonBuf());
+    _restartAtMs = millis() + HTTP_RESTART_DELAY_MS;
 }
 
 void HttpService::handleApiLogs() {
     if (!requireAdmin()) return;
-    LogService::getInstance().tail(_jsonBuf, sizeof(_jsonBuf), 40);
-    _server.send(200, "text/plain; charset=utf-8", _jsonBuf);
+    LogService::getInstance().tail(jsonBuf(), jsonBufSize(), 40);
+    _server.send(200, "text/plain; charset=utf-8", jsonBuf());
 }
 
 void HttpService::handleApiAudit() {
@@ -431,23 +516,107 @@ void HttpService::handleApiReboot() {
     _restartAtMs = millis() + HTTP_RESTART_DELAY_MS;
 }
 
-void HttpService::handleApiOta() {
+// ============================================================================
+// OTA (залежь №3): состояние / манифест / приём образа из панели
+// ============================================================================
+void HttpService::handleApiOtaInfo() {
     if (!requireAdmin()) return;
-    if (!_server.hasArg("url")) {
-        sendJson(400, "{\"error\":\"url_required\"}");
+    UpdateService::getInstance().otaInfoJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
+}
+
+void HttpService::handleApiOtaCheck() {
+    if (!requireAdmin()) return;
+    // Блокирует loop до 4 с (GET version.json с HA) — кнопка админа, редкая;
+    // WDT 10 с не достаёт, но телеметрия может отметить tick-overrun.
+    UpdateService::getInstance().checkRemote();
+    // Ответ всегда 200 с полным состоянием: «не удалось получить манифест»
+    // — тоже валидный исход, панель раскрасит сама.
+    UpdateService::getInstance().otaInfoJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
+}
+
+void HttpService::handleApiOtaUpdate() {
+    if (!requireAdmin()) return;
+    // Phase 4: запуск фоновой загрузки — сама работа в UpdateService::tick
+    // (кооперативно), здесь только постановка в очередь и ответ «поехали».
+    UpdateService& ota = UpdateService::getInstance();
+    if (ota.uploadActive()) {
+        sendJson(409, "{\"error\":\"upload_active\"}");
         return;
     }
-    // A1: PENDING_VERIFY + авто-валидация/откат — забота UpdateService
-    bool ok = UpdateService::getInstance().startHttpUpdate(
-        _server.arg("url").c_str());
-    snprintf(_jsonBuf, sizeof(_jsonBuf), "{\"ok\":%d}", ok ? 1 : 0);
-    sendJson(ok ? 200 : 500, _jsonBuf);
+    if (ota.downloadActive()) {
+        sendJson(409, "{\"error\":\"already_running\"}");
+        return;
+    }
+    // type=fw — только прошивка; без аргумента — полное (fw + ФС, если
+    // в манифесте есть fs_url). Ребут после записи — сам, из tick.
+    bool withFs = !_server.hasArg("type") || _server.arg("type") != "fw";
+    ota.requestRemoteUpdate(withFs);
+    sendJson(200, "{\"ok\":1,\"started\":1}");
+}
+
+void HttpService::handleApiOtaUploadChunk() {
+    HTTPUpload& up = _server.upload();
+    UpdateService& ota = UpdateService::getInstance();
+
+    if (up.status == UPLOAD_FILE_START) {
+        // Авторизация ДО первого байта; 401 отправит финиш-обработчик
+        // (если ответить здесь, тело multipart задушит ответ).
+        _otaAuthFail = !checkAdmin();
+        _otaRxFailed = false;
+        _otaRxOk = false;
+        if (_otaAuthFail) return;
+        // ?type=fs -> файловая система (U_SPIFFS), иначе прошивка (U_FLASH).
+        // Content-Length включает multipart-обвязку — размер неизвестен.
+        int cmd = (_server.arg("type") == "fs") ? U_SPIFFS : U_FLASH;
+        if (!ota.uploadBegin(cmd, 0)) _otaRxFailed = true;
+        log(LogLevel::Info, "OTA upload start: %s (%s)",
+            up.filename.c_str(), cmd == U_SPIFFS ? "fs" : "fw");
+        return;
+    }
+    if (_otaAuthFail || _otaRxFailed) return;   // глотаем, не пишем
+
+    if (up.status == UPLOAD_FILE_WRITE) {
+        if (!ota.uploadWrite(up.buf, up.currentSize)) _otaRxFailed = true;
+    } else if (up.status == UPLOAD_FILE_END) {
+        _otaRxOk = ota.uploadEnd();
+    } else if (up.status == UPLOAD_FILE_ABORTED) {
+        ota.uploadAbort();
+        _otaRxOk = false;
+    }
+}
+
+void HttpService::handleApiOtaUploadDone() {
+    if (_otaAuthFail) {
+        _otaAuthFail = false;
+        sendJson(401, "{\"error\":\"auth_required\"}");
+        return;
+    }
+    if (_otaRxOk) {
+        // Образ цел и записан. A/B-валидация после ребута — штатная
+        // (UpdateService::init/tick): 60 с стабильной работы = VALID,
+        // падение до валидации = загрузчик сам вернёт старый раздел.
+        // Версия из app descriptor — панель покажет, ЧТО именно залили
+        // (урок 5.0.7: рассинхрон прошивка/FS от «не того» .bin).
+        snprintf(jsonBuf(), jsonBufSize(),
+                 "{\"ok\":1,\"reboot_in_ms\":1500,\"ver\":\"%s\"}",
+                 UpdateService::getInstance().lastUploadedVersion());
+        sendJson(200, jsonBuf());
+        _restartAtMs = millis() + HTTP_RESTART_DELAY_MS;
+    } else {
+        _otaRxFailed = false;
+        // Причина — из UpdateService (bad magic / write / end): панель
+        // покажет осмысленный текст вместо голого HTTP 500.
+        UpdateService::getInstance().otaInfoJson(jsonBuf(), jsonBufSize());
+        sendJson(500, jsonBuf());
+    }
 }
 
 void HttpService::handleApiHealth() {
     if (!requireAdmin()) return;
-    HealthMonitor::getInstance().reportJson(_jsonBuf, sizeof(_jsonBuf));
-    sendJson(200, _jsonBuf);
+    HealthMonitor::getInstance().reportJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiAuthChange() {
@@ -464,18 +633,18 @@ void HttpService::handleApiAuthChange() {
         return;
     }
     // Пароль сменился — выдаём свежую сессию владельцу нового пароля
-    snprintf(_jsonBuf, sizeof(_jsonBuf),
+    snprintf(jsonBuf(), jsonBufSize(),
              "{\"ok\":1,\"token\":\"%s\"}", issueToken());
-    sendJson(200, _jsonBuf);
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiTimeSync() {
     if (!requireAdmin()) return;
     // Асинхронно: SNTP-ответ придёт позже, факт зафиксирует TimeService
     bool ok = TimeService::getInstance().forceNtpSync();
-    snprintf(_jsonBuf, sizeof(_jsonBuf),
+    snprintf(jsonBuf(), jsonBufSize(),
              "{\"ok\":%d,\"async\":1}", ok ? 1 : 0);
-    sendJson(ok ? 200 : 400, _jsonBuf);
+    sendJson(ok ? 200 : 400, jsonBuf());
 }
 
 void HttpService::handleApiTimeSet() {
@@ -501,8 +670,8 @@ void HttpService::handleApiTimeSet() {
                                              String(off).c_str());
         }
     }
-    snprintf(_jsonBuf, sizeof(_jsonBuf), "{\"ok\":%d}", ok ? 1 : 0);
-    sendJson(ok ? 200 : 400, _jsonBuf);
+    snprintf(jsonBuf(), jsonBufSize(), "{\"ok\":%d}", ok ? 1 : 0);
+    sendJson(ok ? 200 : 400, jsonBuf());
 }
 
 // ============================================================================
@@ -531,19 +700,23 @@ void HttpService::handleApiDev() {
 
     int status = 200;
     const char* tail = _server.uri().c_str() + strlen("/api/dev/");
-    bool handled = _ui->handleApi(tail, req, _jsonBuf, sizeof(_jsonBuf),
+    bool handled = _ui->handleApi(tail, req, jsonBuf(), jsonBufSize(),
                                   status);
     if (!handled) {
         sendJson(404, "{\"error\":\"unknown_dev_api\"}");
         return;
     }
-    sendJson(status, _jsonBuf);
+    // 5.8.0: status==0 — провайдер уже отправил ответ сам (потоковая
+    // отдача файла через streamFileDownload). JSON поверх потока — порча
+    // обоих, поэтому молчим.
+    if (status == 0) return;
+    sendJson(status, jsonBuf());
 }
 
 void HttpService::handleNotFound() {
-    snprintf(_jsonBuf, sizeof(_jsonBuf), "{\"error\":\"not_found\",\"uri\":\"%s\"}",
+    snprintf(jsonBuf(), jsonBufSize(), "{\"error\":\"not_found\",\"uri\":\"%s\"}",
              _server.uri().c_str());
-    sendJson(404, _jsonBuf);
+    sendJson(404, jsonBuf());
 }
 
 // ============================================================================
@@ -685,17 +858,30 @@ async function aud(c){
   переживает перезагрузку, ротация 3 поколения.</p>
   <p><a href="/api/audit?token=${T}">Скачать /audit.log</a></p></div>`}
 async function ota(c){
-  c.innerHTML=`<div class=card><h3>Обновление прошивки</h3>
-  <div class=r><input id=u placeholder="http://…/firmware.bin" style="flex:2;min-width:240px">
-  <button onclick=doOta()>Запустить OTA</button></div><p id=om></p>
-  <p class=dim>A/B-разделы: новая прошивка стартует в режиме проверки; при сбое —
-  автоматический откат на предыдущую (A1).</p></div>`}
-async function doOta(){
-  const u=document.getElementById('u').value;
-  const r=await api('POST','/api/ota','url='+encodeURIComponent(u));
-  document.getElementById('om').innerHTML=r.ok
-    ?'<span class=ok>OTA запущено, устройство перезагрузится</span>'
-    :'<span class=bad>Ошибка запуска OTA</span>'}
+  let j={};try{j=await(await api('GET','/api/ota/info')).json()}catch(e){}
+  const rmt=j.remote||{};
+  c.innerHTML=`<div class=card><h3>Обновление прошивки</h3><table>
+  <tr><td>Текущая версия</td><td>${H(j.fw||'?')}${j.build?' · сборка '+H(j.build):''}${
+    j.pending_verify===1?' · ⏳ идёт валидация':''}</td></tr>
+  <tr><td>На сервере HA</td><td>${rmt.checked===1
+    ?(rmt.version?H(rmt.version):'манифест недоступен'):'ещё не проверялась'}</td></tr>
+  <tr><td>Манифест</td><td>${H(rmt.url||'')}</td></tr></table>
+  <div class=r style="margin-top:8px"><button class=sec onclick=otaChk()>Проверить обновление</button>
+  <button onclick=otaGo()>Обновить с сервера HA (прошивка + ФС)</button></div><p id=om></p>
+  <p class=dim>Манифест: http://&lt;mqtt.host&gt;:8123/&lt;sys.ota_path&gt;/&lt;host&gt;/version.json.
+  A/B-разделы: новая прошивка стартует в режиме проверки; при сбое —
+  автоматический откат на предыдущую (A1). Ручная загрузка образов — через
+  профильную панель (карточка OTA на вкладке «Система»).</p></div>`}
+async function otaChk(){
+  await api('POST','/api/ota/check','');
+  ota(document.getElementById('c'))}
+async function otaGo(){
+  if(!confirm('Скачать прошивку (+ ФС) с сервера HA и обновиться? Устройство перезагрузится.'))return;
+  const r=await api('POST','/api/ota/update','');
+  const j=await r.json().catch(()=>({}));
+  document.getElementById('om').innerHTML=(r.ok&&j.started)
+    ?'<span class=ok>Загрузка образов запущена, устройство перезагрузится</span>'
+    :'<span class=bad>Не запустилось: '+H(j.error||('HTTP '+r.status))+'</span>'}
 boot();
 </script></body></html>
 )ADM";

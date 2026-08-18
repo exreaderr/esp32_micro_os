@@ -24,13 +24,21 @@ void TelemetryService::registerExtensions() {
           "Телеметрия", "Период сбора метрик, с" },
     });
     // Пороги ПАЗ температуры кристалла (Phase 2 из шапки EspTempDriver.h).
-    // Умолчания — монолит (60/75); закрытый корпус законно живёт выше —
-    // поднимать ОСОЗНАННО, это ручка ПАЗ, а не «убрать красное».
+    // Умолчания 75/90/105 (решение владельца 14.08.2026, +15 к монолитным
+    // 60/75/90): датчик меряет КРИСТАЛЛ, а не корпус; WT32-ETH01 в закрытом
+    // корпусе с активным PHY законно живёт на ~79 °C — постоянный «критикал»
+    // обесценивал событие. Поднимать дальше — ОСОЗНАННО, это ручка ПАЗ,
+    // а не «убрать красное».
     ConfigService::getInstance().addFields("Система", {
-        { "sys.temp_warn_c", ConfigType::INT, "60", 30, 100, CFG_NONE,
+        { "sys.temp_warn_c", ConfigType::INT, "75", 30, 100, CFG_NONE,
           "Система", "CPU: предупреждение по температуре, °C" },
-        { "sys.temp_crit_c", ConfigType::INT, "75", 40, 125, CFG_NONE,
+        { "sys.temp_crit_c", ConfigType::INT, "90", 40, 125, CFG_NONE,
           "Система", "CPU: критическая температура, °C" },
+        { "sys.temp_panic_c", ConfigType::INT, "105", 50, 125, CFG_NONE,
+          "Система", "CPU: ТЕРМИЧЕСКАЯ ПАНИКА (журнал ПАЗ), °C" },
+        // 5.8.1 (урок №22): ширина перевзвода warn/crit — тоже ручка.
+        { "sys.temp_hyst_c", ConfigType::INT, "2", 0, 10, CFG_NONE,
+          "Система", "CPU: гистерезис температурных порогов, °C" },
     });
 }
 
@@ -41,10 +49,12 @@ void TelemetryService::init() {
 }
 
 void TelemetryService::applyTempThresholds() {
-    // Пороги — драйверу (санитизация внутри setThresholds)
-    EspTempDriver::getInstance().setThresholds(
-        (float)cfgGetInt("sys.temp_warn_c", 60),
-        (float)cfgGetInt("sys.temp_crit_c", 75));
+    // Пороги — драйверу (санитизация внутри setThresholds/setPanic)
+    EspTempDriver& t = EspTempDriver::getInstance();
+    t.setThresholds((float)cfgGetInt("sys.temp_warn_c", 75),
+                    (float)cfgGetInt("sys.temp_crit_c", 90),
+                    (float)cfgGetInt("sys.temp_hyst_c", 2));
+    t.setPanic((float)cfgGetInt("sys.temp_panic_c", 105));
 }
 
 void TelemetryService::onEvent(int32_t eventId, const ShEventData* data) {
@@ -52,7 +62,9 @@ void TelemetryService::onEvent(int32_t eventId, const ShEventData* data) {
     // без подписки правка из панели ждала бы рестарта (ловушка UX 5.0.4).
     if (eventId != CFG_EVENT_CHANGED || data == nullptr) return;
     if (strcmp(data->payload, "sys.temp_warn_c") == 0 ||
-        strcmp(data->payload, "sys.temp_crit_c") == 0) {
+        strcmp(data->payload, "sys.temp_crit_c") == 0 ||
+        strcmp(data->payload, "sys.temp_panic_c") == 0 ||
+        strcmp(data->payload, "sys.temp_hyst_c") == 0) {
         applyTempThresholds();
     }
 }
@@ -88,9 +100,13 @@ void TelemetryService::collect() {
     _snap.busDropped   = bus.getDroppedCount();
     _snap.busHighWater = (uint16_t)bus.getHighWatermark();
 
-    // Температура — от единственного источника (драйвер платформы)
+    // Температура — от единственного источника (драйвер платформы).
+    // cpuSeq — пульс ЧТЕНИЙ драйвера: дежурный HealthMonitor следит за
+    // ним, а не за значением (урок 15.08.2026: в терморавновесии значение
+    // неподвижно часами — ложные STUCK; остановившиеся чтения — настоящие).
     auto* temp = DriverRegistry::getInstance().findAs<EspTempDriver>("esp_temp");
     _snap.cpuTenths = temp ? (int16_t)(temp->getTemperature() * 10.0f) : 0;
+    _snap.cpuSeq    = temp ? (int16_t)temp->getReadSeq() : 0;
 
     // Сеть — уровень деградации и качество канала до шлюза
     NetworkService& net = NetworkService::getInstance();

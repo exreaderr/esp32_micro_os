@@ -3,6 +3,7 @@
 // ============================================================================
 #include "Kernel.h"
 #include "Events.h"
+#include "Version.h"
 #include "../platform/BaseProfile.h"
 #include "BusManager.h"
 #include "DriverRegistry.h"
@@ -22,6 +23,8 @@
 #include "../services/MqttTransport.h"
 #include "../services/HttpService.h"
 #include "../services/AudioService.h"
+#include "../services/ScheduleService.h"
+#include "../services/CounterService.h"
 #include <esp_system.h>
 
 // ============================================================================
@@ -32,7 +35,7 @@
 // полном выключении питания (что и требуется: включение "с нуля" — это
 // осознанное действие, а не звено цикла ребутов).
 // ============================================================================
-constexpr uint32_t RTC_MAGIC = 0x5AFE2026;
+constexpr uint32_t RTC_MAGIC = 0x5AFE2027;  // 5.8.1: +lastTick/tickSeq — смена раскладки, ре-инициализация
 
 __attribute__((section(".noinit"))) static Kernel::RtcPersist s_rtc;
 
@@ -55,6 +58,8 @@ void Kernel::captureBootDiagnostics() {
         s_rtc.bootloopCount = 0;
         s_rtc.lastResetReason = 0;
         s_rtc.safeRequested = 0;
+        s_rtc.lastTick[0] = '\0';
+        s_rtc.tickSeq = 0;
     }
 
     // Аварийный предыдущий старт (паника, WDT, brownout) = нестабильная
@@ -70,6 +75,13 @@ void Kernel::captureBootDiagnostics() {
 
     Serial.printf("[KERNEL] Reset reason: %d, bootloop count: %u\n",
                   (int)reason, _bootloopCount);
+
+    // Урок №20: на аварийном рестарте сразу в лог — где застрял loopTask.
+    if (unstable) {
+        Serial.printf("[KERNEL] last tick: %s (seq %lu)\n",
+                      s_rtc.lastTick[0] ? s_rtc.lastTick : "(между тиками)",
+                      (unsigned long)s_rtc.tickSeq);
+    }
 
     s_rtc.lastResetReason = (uint8_t)reason;
 }
@@ -119,8 +131,12 @@ Kernel::SafeModeReason Kernel::detectSafeMode(int8_t safeModePin) {
 // ============================================================================
 void Kernel::boot(IDeviceProfile* profile) {
     Serial.begin(115200);
-    Serial.printf("\n[KERNEL] MicroOS 5.0 boot, profile: %s\n",
-                  profile->profileId());
+    Serial.printf("\n[KERNEL] MicroOS %s boot, profile: %s\n",
+                  MICROOS_VERSION, profile->profileId());
+    // ODR-use метки версии: гарантия, что строка доживёт до .bin
+    // (constexpr + used без использования --gc-sections выбросил, 5.0.12),
+    // а заодно тег виден в мониторе порта — как Build Master его и ищет.
+    Serial.printf("[KERNEL] bin tag: %s\n", MICROOS_BIN_TAG);
 
     // Шаг 1: диагностика предыдущего старта
     captureBootDiagnostics();
@@ -129,6 +145,10 @@ void Kernel::boot(IDeviceProfile* profile) {
     // bootloop/команду — для этого сначала запросим манифест "на сухую")
     HardwareManifest manifest;
     profile->describeHardware(manifest);   // манифест нужен и для safe_mode_pin
+    // Выбор платы платформы (5.3.0): ДО claim'а ресурсов, BusManager и
+    // NetworkService — все они читают пины из platform::board().
+    platform::selectBoard(manifest.boardId);
+    Serial.printf("[KERNEL] board: %s\n", platform::board().name);
     _safeReason = detectSafeMode(manifest.safeModePin);
 
     if (isSafeMode()) {
@@ -138,14 +158,33 @@ void Kernel::boot(IDeviceProfile* profile) {
                       (int)_safeReason);
     }
 
-    // Шаг 3: ресурсы платформы (WT32-ETH01 + DS3231) — защищаем базовые
-    // пины от посягательств профилей
+    // Шаг 3: ресурсы платформы — защищаем базовые пины выбранной платы
+    // (5.3.0: набор зависит от BoardDesc: WT32-ETH01 vs ESP32-S3-POE-ETH)
     ResourceManager& rm = ResourceManager::getInstance();
-    rm.claimGpio(16, "platform.eth_phy_power");   // питание PHY LAN8720
-    rm.claimGpio(32, "platform.i2c_sda");
-    rm.claimGpio(33, "platform.i2c_scl");
-    rm.claimI2cAddress(0x68, "platform.ds3231");
+    const platform::BoardDesc& bd = platform::board();
+    if (bd.ethPowerPin >= 0) {   // RMII: питание PHY LAN8720
+        rm.claimGpio((uint8_t)bd.ethPowerPin, "platform.eth_phy_power");
+    }
+    if (bd.ethKind == platform::EthKind::SpiW5500) {
+        rm.claimGpio((uint8_t)bd.ethCs,   "platform.eth_cs");
+        rm.claimGpio((uint8_t)bd.ethIrq,  "platform.eth_irq");
+        rm.claimGpio((uint8_t)bd.ethRst,  "platform.eth_rst");
+        rm.claimGpio((uint8_t)bd.ethSck,  "platform.eth_sck");
+        rm.claimGpio((uint8_t)bd.ethMiso, "platform.eth_miso");
+        rm.claimGpio((uint8_t)bd.ethMosi, "platform.eth_mosi");
+    }
+    rm.claimGpio(bd.i2cSda, "platform.i2c_sda");
+    rm.claimGpio(bd.i2cScl, "platform.i2c_scl");
+    // 5.8.1: адрес RTC занимаем только платам с RTC фактом (на мастере
+    // DS3231 нет — нечего резервировать).
+    if (bd.rtcPresent) rm.claimI2cAddress(0x68, "platform.ds3231");
     rm.claimUart(0, "platform.console");          // UART0 — Serial-консоль
+    if (bd.sdPresent) {          // слот microSD — отдельная SPI-шина платы
+        rm.claimGpio((uint8_t)bd.sdCs,   "platform.sd_cs");
+        rm.claimGpio((uint8_t)bd.sdSck,  "platform.sd_sck");
+        rm.claimGpio((uint8_t)bd.sdMiso, "platform.sd_miso");
+        rm.claimGpio((uint8_t)bd.sdMosi, "platform.sd_mosi");
+    }
 
     // Шаг 4: валидация манифеста периферии профиля через реестр (A2).
     // Конфликт -> профиль не стартует, но система продолжает в Safe Mode-
@@ -181,6 +220,13 @@ void Kernel::boot(IDeviceProfile* profile) {
     // Ядерный модуль — нужен и в Safe Mode (recovery-UI защищён ПИНом).
     registerModule(&AuthService::getInstance(),    /*prio*/ 1, /*tickMs*/ 0);
     registerModule(&TimeService::getInstance(),    /*prio*/ 2, /*tickMs*/ 0);
+    // ScheduleService: prio 2, сразу после времени — доменные временные
+    // правила (ночной режим и т.п.) опираются только на TimeService,
+    // а их события могут понадобиться уже ранним подписчикам.
+    registerModule(&ScheduleService::getInstance(),/*prio*/ 2, /*tickMs*/ 0);
+    // CounterService: prio 3 — счётчики опираются на Config/Storage,
+    // а их потребители (профильные исполнители) стартуют позже.
+    registerModule(&CounterService::getInstance(), /*prio*/ 3, /*tickMs*/ 0);
     // NetworkService: prio 2 (конфиг уже загружен). Ядерный — в Safe Mode
     // сеть обязательна: веб-интерфейс восстановления и OTA.
     registerModule(&NetworkService::getInstance(), /*prio*/ 2, /*tickMs*/ 0);
@@ -206,7 +252,12 @@ void Kernel::boot(IDeviceProfile* profile) {
     // жило только от NTP/браузера, а Fail-Safe кнопки выхода (мёртвый RTC
     // = разрешена всегда) законно отменял расписание. BusManager к этому
     // моменту уже поднял I2C (фаза init реестра — после BusManager).
-    DriverRegistry::getInstance().add(&Ds3231Driver::getInstance());
+    // 5.8.1: регистрация только платам с RTC фактом (board().rtcPresent) —
+    // иначе на без-RTC мастере: [E] init FAILED + фантомные I2C fault
+    // (полевой лог 17.08). TimeService на таких платах честно живёт по NTP.
+    if (bd.rtcPresent) {
+        DriverRegistry::getInstance().add(&Ds3231Driver::getInstance());
+    }
 
     // 6c. Профильные драйверы и модули — только в штатном режиме.
     if (!isSafeMode()) {
@@ -338,6 +389,12 @@ void Kernel::loop() {
         if (now - s.lastTickMs < interval) continue;
         s.lastTickMs = now;
 
+        // Урок №20: след для TWDT — имя модуля ДО входа в его tick().
+        // Запись в .noinit ~бесплатна (десяток байт в RTC RAM).
+        strncpy(s_rtc.lastTick, s.module->getName(), sizeof(s_rtc.lastTick) - 1);
+        s_rtc.lastTick[sizeof(s_rtc.lastTick) - 1] = '\0';
+        s_rtc.tickSeq++;
+
         uint32_t t0 = micros();
         s.module->tick();
         uint32_t elapsedMs = (micros() - t0) / 1000;
@@ -352,5 +409,20 @@ void Kernel::loop() {
         }
     }
 
+    // Проход завершён: loopTask "между тиками" — авария в этой фазе будет
+    // читаться как пустой lastTick (ядро Arduino/lwIP/колбэки, не модуль).
+    s_rtc.lastTick[0] = '\0';
+
     // Phase 1: esp_task_wdt_reset() + HealthMonitor.tick здесь же.
+}
+
+// ============================================================================
+// 5.8.1: ПОСМЕРТНЫЙ СЛЕД ТИКА (урок №20)
+// ============================================================================
+bool Kernel::lastTickTrace(char* buf, size_t n) const {
+    if (buf == nullptr || n == 0) return false;
+    if (s_rtc.magic != RTC_MAGIC) { buf[0] = '\0'; return false; }
+    strncpy(buf, s_rtc.lastTick, n - 1);
+    buf[n - 1] = '\0';
+    return true;
 }

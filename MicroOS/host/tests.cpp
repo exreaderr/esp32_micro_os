@@ -14,6 +14,7 @@
 // ============================================================================
 #include <cstdio>
 #include <cstring>
+#include <ctime>          // timegm — эталон для secondsFromCivil
 
 // Шим Arduino ПЕРЕД инклудами ядра (подменяет <Arduino.h> по -I shim)
 #include "../src/catalog/wiegand/WiegandFormats.h"
@@ -21,6 +22,11 @@
 #include "../src/drivers/BcdUtils.h"
 #include "../src/services/TimeInterval.h"
 #include "../src/services/AudioQueue.h"
+#include "../src/services/DataLogCore.h"
+#include "../src/services/ScheduleCore.h"
+#include "../src/services/CounterCore.h"
+#include "../src/services/MqttOutbox.h"
+#include "../src/services/SpeechCore.h"
 #include "../src/core/ResourceManager.h"
 
 // ============================================================================
@@ -189,6 +195,31 @@ static void testIntervals() {
     CHECK( minutesInInterval(22 * 60,      22 * 60, 6 * 60));
     // Вырожденный: start == end -> пустой дневной интервал (не "всегда"!)
     CHECK(!minutesInInterval(12 * 60, 9 * 60, 9 * 60));
+
+    // --- Гражданское время -> unix UTC (RTC хранит UTC-wall, 5.0.x) ------
+    // Сверка с эталонным timegm libc: алгоритм days_from_civil обязан
+    // совпадать на всём рабочем диапазоне (TZ на host не влияет — timegm).
+    {
+        struct { int y; unsigned mo, d, h, mi, s; } cases[] = {
+            { 1970,  1,  1,  0,  0,  0 },   // эпоха
+            { 2000,  2, 29, 23, 59, 59 },   // високосный
+            { 2024,  2, 29, 12,  0,  0 },   // високосный (наша эра)
+            { 2026,  8,  1,  4, 59, 51 },   // дата полевого инцидента
+            { 2038,  1, 19,  3, 14,  7 },   // край int32 unix
+            { 2025, 12, 31, 23, 59, 59 },
+        };
+        for (const auto& c : cases) {
+            struct tm t = {};
+            t.tm_year = c.y - 1900; t.tm_mon = (int)c.mo - 1; t.tm_mday = (int)c.d;
+            t.tm_hour = (int)c.h;   t.tm_min = (int)c.mi;     t.tm_sec  = (int)c.s;
+            int64_t expect = (int64_t)timegm(&t);
+            int64_t got = sh_time::secondsFromCivil(c.y, c.mo, c.d,
+                                                    c.h, c.mi, c.s);
+            CHECK(got == expect);
+        }
+        CHECK(sh_time::secondsFromCivil(1970, 1, 1, 0, 0, 0) == 0);
+        CHECK(sh_time::daysFromCivil(1970, 1, 1) == 0);
+    }
 }
 
 // ============================================================================
@@ -334,15 +365,37 @@ static void testCardDb() {
     // --- Нормализация ID ----------------------------------------------------
     char id[9];
     CHECK( carddb::normalizeId("a1b2c3d4", id) && strcmp(id, "A1B2C3D4") == 0);
-    CHECK(!carddb::normalizeId("A1B2C3D",  id));  // короткий
-    CHECK(!carddb::normalizeId("A1B2C3D4E",id));  // длинный
+    CHECK(!carddb::normalizeId("A1B2C3D4E",id));  // длинный (>8)
+    CHECK(!carddb::normalizeId("A1B",      id));  // короче 4 — мусор
     CHECK(!carddb::normalizeId("A1B2C3DZ", id));  // не-HEX
     CHECK(!carddb::normalizeId(nullptr,    id));
+    // 5.1.1: ЛЕВЫЙ паддинг 4..8 -> 8. W26-считыватель публикует %06lX,
+    // панель принимает 4..8 — ручной ввод с брелока и событие считывателя
+    // обязаны сходиться в один ключ (жук «ложный дубликат» 5.1.0).
+    CHECK( carddb::normalizeId("898989",  id) && strcmp(id, "00898989") == 0);
+    CHECK( carddb::normalizeId("ab12",    id) && strcmp(id, "0000AB12") == 0);
+    CHECK( carddb::normalizeId("A1B2C3D", id) && strcmp(id, "0A1B2C3D") == 0);
+
+    // --- Поиск containsCI (5.1.2): ASCII + кириллица UTF-8 -------------------
+    CHECK( carddb::containsCI("Ирина",  "ирина"));
+    CHECK( carddb::containsCI("Ирина",  "ИРИНА"));
+    CHECK( carddb::containsCI("Сергей", "рг"));        // внутри слова
+    CHECK( carddb::containsCI("Александр", "сандр"));
+    CHECK( carddb::containsCI("00898989", "8989"));
+    CHECK( carddb::containsCI("BC32AD12", "bc32"));    // HEX нижним регистром
+    CHECK( carddb::containsCI("Ёлка",   "ёлка"));      // Ё/ё — особая пара
+    CHECK(!carddb::containsCI("Ирина",  "оль"));
+    CHECK( carddb::containsCI("Максим", ""));          // пустой = истина
+    CHECK(!carddb::containsCI(nullptr,  "а"));
+    CHECK(!carddb::containsCI("Ирина",  nullptr));
 
     // --- Санитизация имени ---------------------------------------------------
     char nm[65];
     carddb::sanitizeName("Иван \"The\" \\ Петр\n", nm, sizeof(nm));
     CHECK(strcmp(nm, "Иван The  Петр") == 0);
+    // 5.2.0: скобки под нож — потоковый загрузчик режет записи подсчётом {}
+    carddb::sanitizeName("Те{ст}овый {Случай}", nm, sizeof(nm));
+    CHECK(strcmp(nm, "Тестовый Случай") == 0);
 
     // --- Круговая: serialize -> parse ---------------------------------------
     SlUser src[3] = {};
@@ -363,6 +416,43 @@ static void testCardDb() {
     CHECK(strcmp(dst[0].id, "A1B2C3D4") == 0 && dst[0].type == 0);
     CHECK(strcmp(dst[1].name, "Иван") == 0 && dst[1].track == 7);
     CHECK(dst[2].type == 3 && dst[2].expiry == 1893456000UL);
+
+    // --- 5.2.0: потоковые serializeOne/parseOne ------------------------------
+    // serialize == конкатенация serializeOne (единый источник формата)
+    {
+        char flow[4096]; size_t fp = 0;
+        fp += (size_t)snprintf(flow + fp, sizeof(flow) - fp, "{\"users\":[");
+        for (int i = 0; i < 3; ++i) {
+            size_t w = carddb::serializeOne(src[i], i == 0,
+                                            flow + fp, sizeof(flow) - fp);
+            CHECK(w > 0);
+            fp += w;
+        }
+        fp += (size_t)snprintf(flow + fp, sizeof(flow) - fp, "]}");
+        CHECK(strcmp(flow, buf) == 0);   // поток == монолитная сериализация
+    }
+    // parseOne: полная запись, с пробелами вокруг, с чужими ключами
+    {
+        SlUser one;
+        CHECK(carddb::parseOne(
+            "{ \"id\":\"a1b2c3d4\", \"name\":\"Ольга\", \"type\":\"one-time\","
+            "\"track\":9, \"expiry\":10, \"has_pass\":true, \"unknown\":null }",
+            one) == 0);
+        CHECK(strcmp(one.id, "A1B2C3D4") == 0);      // паддинг/регистр
+        CHECK(strcmp(one.name, "Ольга") == 0);
+        CHECK(one.type == 3 && one.track == 9 && one.expiry == 10);
+        CHECK(one.pin[0] == '\0' && one.uses == 0);  // умолчания
+        // Мусор вокруг скобок / битый id / обрыв — порча
+        CHECK(carddb::parseOne("{\"id\":\"A1B2C3D4\"} ", one) == 0); // хвост-пробел ок
+        CHECK(carddb::parseOne("{\"id\":\"ZZ\"}", one) != 0);
+        CHECK(carddb::parseOne("{\"id\":\"A1B2C3D4\"", one) != 0);
+        CHECK(carddb::parseOne("x{\"id\":\"A1B2C3D4\"}", one) != 0);
+        CHECK(carddb::parseOne(nullptr, one) != 0);
+        // ПИН битый — запись жива, веб-доступ снят (не порча файла)
+        CHECK(carddb::parseOne(
+            "{\"id\":\"A1B2C3D4\",\"pin\":\"12x\"}", one) == 0);
+        CHECK(one.pin[0] == '\0');
+    }
 
     // --- Личный веб-ПИН: нормализация (строго 4..6 цифр или пусто) ----------
     char pin[7];
@@ -457,6 +547,489 @@ static void testCardDb() {
 }
 
 // ============================================================================
+// ДАТАЛОГГЕР (DataLogCore.h — кольцо, агрегаты, децимация)
+// ============================================================================
+static void testDataLog() {
+    printf("== DataLogCore ==\n");
+
+    // --- Кольцо: порядок и переполнение --------------------------------------
+    dlog::Ring ring;
+    for (uint32_t i = 0; i < DLOG_RAW_CAP + 40; ++i) {
+        ring.push(1000 + i * 60, (float)i);   // на 40 точек больше ёмкости
+    }
+    CHECK(ring.count == DLOG_RAW_CAP);
+    DlogPoint snap[DLOG_RAW_CAP];
+    uint16_t n = ring.snapshot(snap, DLOG_RAW_CAP, 0);
+    CHECK(n == DLOG_RAW_CAP);
+    // Хронология: старейшая — 40-я из записанных (первые 40 вытеснены)
+    CHECK(snap[0].ts == 1000 + 40 * 60 && snap[0].v == 40.0f);
+    CHECK(snap[n - 1].ts == 1000 + (DLOG_RAW_CAP + 39) * 60);
+    for (uint16_t i = 1; i < n; ++i) CHECK(snap[i].ts > snap[i - 1].ts);
+
+    // --- Кольцо: фильтр by fromTs ---------------------------------------------
+    n = ring.snapshot(snap, DLOG_RAW_CAP, 1000 + (DLOG_RAW_CAP + 20) * 60);
+    CHECK(n == 20);   // i=380..399 последнего витка (ts >= from), включая край
+    CHECK(n == 0 || snap[0].ts >= 1000 + (DLOG_RAW_CAP + 20) * 60);
+
+    // --- Ведро: агрегация и перекрытие часа -----------------------------------
+    dlog::Bucket b;
+    DlogAggr rolled;
+    CHECK(!b.add(3600, 10.0f, 3600, rolled));      // час 01:00, ведро новое
+    CHECK(!b.add(3660, 20.0f, 3600, rolled));
+    CHECK(!b.add(3700, 5.0f, 3600, rolled));
+    CHECK(b.add(7200, 99.0f, 3600, rolled));       // новый час -> roll
+    CHECK(rolled.ts == 3600);
+    CHECK(rolled.mn == 5.0f && rolled.mx == 20.0f);
+    CHECK(rolled.avg > 11.66f && rolled.avg < 11.67f);   // 35/3
+    // Новое ведро началось с точки 99.0
+    dlog::Bucket b2 = b;
+    CHECK(b2.n == 1 && b2.periodStart == 7200);
+
+    // --- Ведро: flush на пустом/непустом --------------------------------------
+    dlog::Bucket empty;
+    CHECK(!empty.flush(rolled));
+    CHECK(b.flush(rolled) && rolled.ts == 7200 && rolled.avg == 99.0f);
+    CHECK(b.n == 0);
+
+    // --- Ведро: точка из «прошлого» после roll (нерегулярный приём) -----------
+    dlog::Bucket b3;
+    b3.add(86400, 1.0f, 3600, rolled);             // сутки 2, 00:00
+    CHECK(b3.add(90000, 2.0f, 3600, rolled));      // час спустя -> roll
+    b3.add(86460, 3.0f, 3600, rolled);             // запоздавшая в тот же час?
+    // 86460 -> период 86400, а ведро уже 90000: откроет НОВОЕ ведро назад
+    // (документированная честность: нерегулярность не ломает математику)
+    CHECK(b3.periodStart == 86400 && b3.n == 1 && b3.mn == 3.0f);
+
+    // --- Децимация RAW: влезть в потолок, края честные ------------------------
+    DlogPoint dense[600], dec[DLOG_JSON_POINTS];
+    for (uint16_t i = 0; i < 600; ++i) {
+        dense[i].ts = 5000 + i * 30;
+        dense[i].v  = (float)(i % 7);
+    }
+    n = dlog::decimateRaw(dense, 600, dec, DLOG_JSON_POINTS);
+    CHECK(n <= DLOG_JSON_POINTS && n >= 190);   // stride=3 -> 200 + хвост
+    CHECK(dec[0].ts == dense[0].ts);
+    CHECK(dec[n - 1].ts == dense[599].ts);         // последняя сохранена
+    for (uint16_t i = 1; i < n; ++i) CHECK(dec[i].ts > dec[i - 1].ts);
+
+    // --- Децимация агрегатов: min/max не теряются ------------------------------
+    DlogAggr ag[500], agd[DLOG_JSON_POINTS];
+    for (uint16_t i = 0; i < 500; ++i) {
+        ag[i].ts  = i * 3600;
+        ag[i].mn  = (float)(i == 250 ? -50 : 0);   // выброс посередине
+        ag[i].mx  = (float)(i == 250 ? 150 : 10);
+        ag[i].avg = 5.0f;
+    }
+    n = dlog::decimateAggr(ag, 500, agd, DLOG_JSON_POINTS);
+    CHECK(n <= DLOG_JSON_POINTS);
+    bool keptMin = false, keptMax = false;
+    for (uint16_t i = 0; i < n; ++i) {
+        if (agd[i].mn <= -50.0f) keptMin = true;
+        if (agd[i].mx >= 150.0f) keptMax = true;
+    }
+    CHECK(keptMin && keptMax);                     // экстремумы пережили слив
+
+    // --- Маленькие серии не трогаем -------------------------------------------
+    n = dlog::decimateRaw(dense, 100, dec, DLOG_JSON_POINTS);
+    CHECK(n == 100 && dec[99].ts == dense[99].ts);
+    n = dlog::decimateAggr(ag, 100, agd, DLOG_JSON_POINTS);
+    CHECK(n == 100);
+}
+
+// ============================================================================
+// ПЛАНИРОВЩИК (ScheduleCore.h — парсер правил, маски дней, фронты)
+// ============================================================================
+static void testScheduleCore() {
+    printf("== ScheduleCore ==\n");
+    uint16_t mn = 0;
+
+    // --- parseHHMM ---
+    CHECK(sched::parseHHMM("22:00", mn) && mn == 1320);
+    CHECK(sched::parseHHMM("00:00", mn) && mn == 0);
+    CHECK(sched::parseHHMM("7:05", mn) && mn == 425);   // одна цифра часа
+    CHECK(sched::parseHHMM("23:59", mn) && mn == 1439);
+    CHECK(!sched::parseHHMM("24:00", mn));              // час вне диапазона
+    CHECK(!sched::parseHHMM("12:60", mn));              // минута вне диапазона
+    CHECK(!sched::parseHHMM("1200", mn));               // без двоеточия
+    CHECK(!sched::parseHHMM("12:5", mn));               // минута одной цифрой
+    CHECK(!sched::parseHHMM("", mn));
+    CHECK(!sched::parseHHMM(nullptr, mn));
+
+    // --- dayBit: tm_wday (0=вс) -> бит0=пн ---
+    CHECK(sched::dayBit(1) == 0x01);   // понедельник
+    CHECK(sched::dayBit(2) == 0x02);   // вторник
+    CHECK(sched::dayBit(6) == 0x20);   // суббота
+    CHECK(sched::dayBit(0) == 0x40);   // воскресенье
+    CHECK(sched::dayBit(7) == 0);      // вне диапазона
+    CHECK(sched::dayBit(-1) == 0);
+
+    // --- parseDayMask ---
+    uint8_t mask = 0;
+    CHECK(sched::parseDayMask("*", mask) && mask == SCHED_DAYS_ALL);
+    CHECK(sched::parseDayMask("12345", mask) && mask == 0x1F);  // будни
+    CHECK(sched::parseDayMask("67", mask) && mask == 0x60);     // выходные
+    CHECK(sched::parseDayMask("7", mask) && mask == 0x40);
+    CHECK(!sched::parseDayMask("", mask));
+    CHECK(!sched::parseDayMask("0", mask));     // нумерация с 1
+    CHECK(!sched::parseDayMask("8", mask));
+    CHECK(!sched::parseDayMask("112", mask));   // дубликат = опечатка
+    CHECK(!sched::parseDayMask("1,3", mask));   // запятые не поддерживаем
+
+    // --- parseRule: валидные ---
+    SchedRule r;
+    CHECK(sched::parseRule("ночь|22:00|06:00|*|1", r));
+    CHECK(strcmp(r.name, "ночь") == 0);
+    CHECK(r.type == SCHED_RULE_INTERVAL);
+    CHECK(r.startMin == 1320 && r.endMin == 360);
+    CHECK(r.dayMask == SCHED_DAYS_ALL && r.periodCode == 1 && r.enabled);
+
+    CHECK(sched::parseRule("будни|09:00|18:00|12345|2", r));
+    CHECK(r.startMin == 540 && r.endMin == 1080 && r.dayMask == 0x1F);
+
+    // Точечное правило: пустое «ПО»
+    CHECK(sched::parseRule("полив|06:30||135|4", r));
+    CHECK(r.type == SCHED_RULE_POINT);
+    CHECK(r.startMin == 390 && r.endMin == 390);
+    CHECK(r.dayMask == 0x15 && r.periodCode == 4);    // пн+ср+пт
+
+    // Пробелы вокруг имени — прощаем; хвостовые — обрезаем
+    CHECK(sched::parseRule("  рассвет |05:45||*|9", r));
+    CHECK(strcmp(r.name, "рассвет") == 0 && r.periodCode == 9);
+
+    // --- parseRule: брак (правило отбрасывается целиком) ---
+    CHECK(!sched::parseRule("", r));
+    CHECK(!sched::parseRule(nullptr, r));
+    CHECK(!sched::parseRule("|22:00|06:00|*|1", r));        // пустое имя
+    CHECK(!sched::parseRule("x|22:00|06:00|*", r));         // 4 поля
+    CHECK(!sched::parseRule("x|22:00|06:00|*|1|9", r));     // 6 полей
+    CHECK(!sched::parseRule("x|25:00|06:00|*|1", r));       // битое время
+    CHECK(!sched::parseRule("x|22:00|22:00|*|1", r));       // вырожденный
+    CHECK(!sched::parseRule("x|22:00|06:00||1", r));        // пустые дни
+    CHECK(!sched::parseRule("x|22:00|06:00|*|0", r));       // код 0 = ядро
+    CHECK(!sched::parseRule("x|22:00|06:00|*|256", r));     // код велик
+    CHECK(!sched::parseRule("x|22:00|06:00|*|1a", r));      // код не число
+    // имя длиннее буфера — отбраковываем, не обрезаем молча
+    CHECK(!sched::parseRule("оченьоченьдлинноеимяправила|22:00|06:00|*|1", r));
+
+    // --- activeAt: дневной интервал ---
+    SchedRule work;  // будни 09:00–18:00
+    CHECK(sched::parseRule("w|09:00|18:00|12345|2", work));
+    CHECK( sched::activeAt(work, 600, 1));    // пн 10:00
+    CHECK( sched::activeAt(work, 540, 5));    // пт 09:00 (start включается)
+    CHECK(!sched::activeAt(work, 1080, 1));   // пн 18:00 (end исключается)
+    CHECK(!sched::activeAt(work, 539, 1));    // пн 08:59
+    CHECK(!sched::activeAt(work, 600, 6));    // сб 10:00 — не в маске
+    CHECK(!sched::activeAt(work, 600, 0));    // вс — тоже
+
+    // --- activeAt: ночной интервал через полночь (маска по дню НАЧАЛА) ---
+    SchedRule night;  // будничные ночи 22:00–06:00
+    CHECK(sched::parseRule("n|22:00|06:00|12345|1", night));
+    CHECK( sched::activeAt(night, 1380, 1));  // пн 23:00
+    CHECK( sched::activeAt(night, 1320, 5));  // пт 22:00 (граница вкл.)
+    CHECK( sched::activeAt(night, 300, 2));   // вт 05:00 — открыли в пн
+    CHECK( sched::activeAt(night, 359, 6));   // сб 05:59 — открыли в пт
+    CHECK(!sched::activeAt(night, 360, 2));   // вт 06:00 (end искл.)
+    CHECK(!sched::activeAt(night, 720, 1));   // пн 12:00
+    CHECK(!sched::activeAt(night, 1380, 6));  // сб 23:00 — ночи выходных нет
+    CHECK(!sched::activeAt(night, 300, 0));   // вс 05:00 — открыли бы в сб
+    CHECK(!sched::activeAt(night, 300, 1));   // пн 05:00 — вчера было вс,
+                                              // не в маске: ночь с вс на пн
+                                              // не входит в «будничные ночи»
+
+    // --- pointDue ---
+    SchedRule alarm;  // 07:30 ежедневно
+    CHECK(sched::parseRule("a|07:30||*|3", alarm));
+    CHECK( sched::pointDue(alarm, 450, 3));
+    CHECK(!sched::pointDue(alarm, 451, 3));
+    CHECK(!sched::pointDue(alarm, 449, 3));
+    SchedRule alarm135;
+    CHECK(sched::parseRule("a|07:30||135|3", alarm135));
+    CHECK( sched::pointDue(alarm135, 450, 1));   // пн
+    CHECK(!sched::pointDue(alarm135, 450, 2));   // вт не в маске
+
+    // --- intervalEdge: фронты ---
+    bool now = false;
+    CHECK(sched::intervalEdge(false, night, 1380, 1, now) == SCHED_EDGE_ENTER && now);
+    CHECK(sched::intervalEdge(true,  night, 1390, 1, now) == SCHED_EDGE_NONE  && now);
+    CHECK(sched::intervalEdge(true,  night, 720,  1, now) == SCHED_EDGE_EXIT  && !now);
+    CHECK(sched::intervalEdge(false, night, 720,  1, now) == SCHED_EDGE_NONE  && !now);
+    // точечное правило фронтов не даёт
+    CHECK(sched::intervalEdge(false, alarm, 450, 1, now) == SCHED_EDGE_NONE && !now);
+    // выключенное правило неактивно
+    night.enabled = false;
+    CHECK(!sched::activeAt(night, 1380, 1));
+}
+
+// ============================================================================
+// СЧЁТЧИКИ (CounterCore.h — политика батч-сброса, PCNT-дельта)
+// ============================================================================
+static void testCounterCore() {
+    printf("== CounterCore ==\n");
+
+    // --- shouldFlush ---
+    CHECK(!cnt::shouldFlush(0, 10, 999999, 600000));   // писать нечего — никогда
+    CHECK(!cnt::shouldFlush(5, 10, 1000, 600000));     // ни один порог не достигнут
+    CHECK( cnt::shouldFlush(10, 10, 1000, 600000));    // порог по числу
+    CHECK( cnt::shouldFlush(11, 10, 0, 600000));       // превышение числа
+    CHECK( cnt::shouldFlush(3, 10, 600000, 600000));   // порог по времени
+    CHECK( cnt::shouldFlush(1, 10, 600001, 600000));   // время + минимальный pending
+    CHECK(!cnt::shouldFlush(5, 0, 0, 0));              // оба порога выключены
+    CHECK( cnt::shouldFlush(5, 0, 700000, 600000));    // только временной порог
+    CHECK( cnt::shouldFlush(7, 5, 0, 0));              // только числовой порог
+
+    // --- pcntDelta: обычный ход ---
+    CHECK(cnt::pcntDelta(100, 0) == 100);
+    CHECK(cnt::pcntDelta(32767, 32700) == 67);
+    CHECK(cnt::pcntDelta(0, 0) == 0);
+
+    // --- pcntDelta: оборачивания 16-битного регистра ---
+    CHECK(cnt::pcntDelta(-32768, 32767) == 1);         // 32767 + 1 -> -32768
+    CHECK(cnt::pcntDelta(-32760, 32760) == 16);        // wrap через верх
+    // дельта 65535 — ВНЕ представимого окна: 16-битная арифметика
+    // даёт -1; сервис отбросит (delta > 0). Документ честной границы:
+    // между чтениями должно набегать МЕНЬШЕ 32768 импульсов.
+    CHECK(cnt::pcntDelta(32767, -32768) == -1);
+    CHECK(cnt::pcntDelta(-1, -32768) == 32767);        // максимум корректной дельты
+    // отрицательная дельта (внешний clear) — сырьё для сервиса, тот отбросит
+    CHECK(cnt::pcntDelta(0, 100) == -100);
+}
+
+// ============================================================================
+// MQTT OUTBOX (MqttOutbox.h — кольцо, retained-дедуп, вытеснение)
+// ============================================================================
+static void testMqttOutbox() {
+    printf("== MqttOutbox ==\n");
+    mqtt_ob::Outbox ob;
+    ob.reset();
+
+    // --- базовый FIFO ---
+    CHECK(ob.size() == 0 && ob.peek() == nullptr);
+    CHECK(ob.push("a/b/events/ACCESS_GRANTED", "0|card1", 1, false));
+    CHECK(ob.push("a/b/events/ACCESS_DENIED", "3|card2", 1, false));
+    CHECK(ob.size() == 2);
+    const MqttObSlot* s = ob.peek();
+    CHECK(s && strcmp(s->topic, "a/b/events/ACCESS_GRANTED") == 0);
+    CHECK(strcmp(s->body, "0|card1") == 0 && s->qos == 1 && !s->retained);
+    ob.pop();
+    s = ob.peek();
+    CHECK(s && strcmp(s->topic, "a/b/events/ACCESS_DENIED") == 0);
+    ob.pop();
+    CHECK(ob.size() == 0 && ob.peek() == nullptr);
+    ob.pop();   // pop по пустому — не авария
+    CHECK(ob.size() == 0);
+
+    // --- отказы ---
+    CHECK(!ob.push(nullptr, "x", 1, false));       // нет топика
+    CHECK(!ob.push("", "x", 1, false));            // пустой топик
+    char longTopic[MQTT_OB_TOPIC_LEN + 8];
+    memset(longTopic, 't', sizeof(longTopic) - 1);
+    longTopic[sizeof(longTopic) - 1] = '\0';
+    CHECK(!ob.push(longTopic, "x", 1, false));     // топик не влез — отказ,
+    CHECK(ob.size() == 0);                         // обрезать нельзя
+
+    // --- тело обрезается, сообщение живёт ---
+    char longBody[MQTT_OB_BODY_LEN + 40];
+    memset(longBody, 'b', sizeof(longBody) - 1);
+    longBody[sizeof(longBody) - 1] = '\0';
+    CHECK(ob.push("t/1", longBody, 0, false));
+    s = ob.peek();
+    CHECK(s && strlen(s->body) == MQTT_OB_BODY_LEN - 1);
+    ob.pop();
+
+    // --- retained-дедупликация: свежее состояние замещает лежащее ---
+    CHECK(ob.push("h/cover/1/state", "closed", 1, true));
+    CHECK(ob.push("a/b/events/X", "1|", 1, false));      // чужое — между
+    CHECK(ob.push("h/cover/1/state", "open", 1, true));  // LWW-замещение
+    CHECK(ob.size() == 2);                               // не третье сообщение!
+    s = ob.peek();
+    CHECK(s && strcmp(s->topic, "h/cover/1/state") == 0);
+    CHECK(strcmp(s->body, "open") == 0);                 // тело обновлено
+    // non-retained по тому же топику — НЕ дедуплицируется (события равны)
+    CHECK(ob.push("h/cover/1/state", "open", 1, false));
+    CHECK(ob.size() == 3);
+    ob.reset();
+    CHECK(ob.size() == 0 && ob.dropped == 0);
+
+    // --- переполнение: вытеснение старейшего + счётчик ---
+    for (uint8_t i = 0; i < MQTT_OB_MAX; ++i) {
+        char t[16], b[16];
+        snprintf(t, sizeof(t), "t/%u", i);
+        snprintf(b, sizeof(b), "m%u", i);
+        CHECK(ob.push(t, b, 1, false));
+    }
+    CHECK(ob.size() == MQTT_OB_MAX && ob.dropped == 0);
+    CHECK(ob.push("t/new", "mnew", 1, false));           // девятое
+    CHECK(ob.size() == MQTT_OB_MAX);                     // кольцо не растёт
+    CHECK(ob.dropped == 1);                              // потеря посчитана
+    s = ob.peek();
+    CHECK(s && strcmp(s->topic, "t/1") == 0);            // t/0 вытеснен
+    // дренаж до дна: порядок FIFO сохранён, "t/new" — последний
+    char last[16] = {0};
+    while ((s = ob.peek()) != nullptr) {
+        snprintf(last, sizeof(last), "%s", s->topic);
+        ob.pop();
+    }
+    CHECK(strcmp(last, "t/new") == 0);
+    CHECK(ob.size() == 0);
+
+    // --- полное кольцо + retained-дедуп: замещение без вытеснения ---
+    for (uint8_t i = 0; i < MQTT_OB_MAX; ++i) {
+        char t[16]; snprintf(t, sizeof(t), "r/%u", i);
+        CHECK(ob.push(t, "v1", 1, true));
+    }
+    CHECK(ob.dropped == 1);                              // со времён прошлого
+    CHECK(ob.push("r/3", "v2", 1, true));                // замещение в полном
+    CHECK(ob.size() == MQTT_OB_MAX && ob.dropped == 1);  // вытеснения не было
+    // retained без пары в полном кольце — обычное вытеснение
+    CHECK(ob.push("r/new", "v", 1, true));
+    CHECK(ob.dropped == 2);
+    ob.reset();
+    CHECK(ob.dropped == 0 && ob.size() == 0);
+}
+
+// ============================================================================
+// СОСТАВНАЯ РЕЧЬ (SpeechCore.h — цепочки чисел/единиц/времени)
+// ============================================================================
+// Эталон: цепочка (folder,track) сравнивается с ожидаемым массивом треков
+// папки 05/06 (раскладка — из manifest.json конвейера).
+static bool chainEq(const SpeechTrack* got, uint8_t gotLen,
+                    const uint8_t* expTracks, uint8_t expLen,
+                    uint8_t expFolder) {
+    if (gotLen != expLen) return false;
+    for (uint8_t i = 0; i < expLen; ++i)
+        if (got[i].folder != expFolder || got[i].track != expTracks[i])
+            return false;
+    return true;
+}
+
+static void testSpeechCore() {
+    printf("== SpeechCore ==\n");
+    SpeechTrack ch[SB_MAX_CHAIN];
+
+    // --- pluralForm ---
+    CHECK(speech::pluralForm(0) == SB_PL_MANY);    // ноль часов
+    CHECK(speech::pluralForm(1) == SB_PL_ONE);
+    CHECK(speech::pluralForm(2) == SB_PL_FEW);
+    CHECK(speech::pluralForm(4) == SB_PL_FEW);
+    CHECK(speech::pluralForm(5) == SB_PL_MANY);
+    CHECK(speech::pluralForm(11) == SB_PL_MANY);   // исключение подростков
+    CHECK(speech::pluralForm(14) == SB_PL_MANY);
+    CHECK(speech::pluralForm(21) == SB_PL_ONE);
+    CHECK(speech::pluralForm(22) == SB_PL_FEW);
+    CHECK(speech::pluralForm(25) == SB_PL_MANY);
+    CHECK(speech::pluralForm(101) == SB_PL_ONE);
+    CHECK(speech::pluralForm(111) == SB_PL_MANY);
+    CHECK(speech::pluralForm(-1) == SB_PL_ONE);    // по модулю
+
+    // --- numberTracks: база ---
+    const uint8_t e0[] = {1};                              // ноль
+    CHECK(chainEq(ch, speech::numberTracks(0, SB_MASC, ch, SB_MAX_CHAIN),
+                  e0, 1, 5));
+    const uint8_t e1m[] = {2}, e1f[] = {3};                // один/одна
+    CHECK(chainEq(ch, speech::numberTracks(1, SB_MASC, ch, SB_MAX_CHAIN), e1m, 1, 5));
+    CHECK(chainEq(ch, speech::numberTracks(1, SB_FEM,  ch, SB_MAX_CHAIN), e1f, 1, 5));
+    const uint8_t e2m[] = {4}, e2f[] = {5};                // два/две
+    CHECK(chainEq(ch, speech::numberTracks(2, SB_MASC, ch, SB_MAX_CHAIN), e2m, 1, 5));
+    CHECK(chainEq(ch, speech::numberTracks(2, SB_FEM,  ch, SB_MAX_CHAIN), e2f, 1, 5));
+    const uint8_t e9[] = {12}, e11[] = {14}, e19[] = {22}; // девять/один-ть/девят-ть
+    CHECK(chainEq(ch, speech::numberTracks(9, SB_MASC, ch, SB_MAX_CHAIN), e9, 1, 5));
+    CHECK(chainEq(ch, speech::numberTracks(11, SB_MASC, ch, SB_MAX_CHAIN), e11, 1, 5));
+    CHECK(chainEq(ch, speech::numberTracks(19, SB_MASC, ch, SB_MAX_CHAIN), e19, 1, 5));
+    const uint8_t e20[] = {23}, e90[] = {30};              // двадцать/девяносто
+    CHECK(chainEq(ch, speech::numberTracks(20, SB_MASC, ch, SB_MAX_CHAIN), e20, 1, 5));
+    CHECK(chainEq(ch, speech::numberTracks(90, SB_MASC, ch, SB_MAX_CHAIN), e90, 1, 5));
+    const uint8_t e21[] = {23, 2};                         // двадцать один
+    CHECK(chainEq(ch, speech::numberTracks(21, SB_MASC, ch, SB_MAX_CHAIN), e21, 2, 5));
+    const uint8_t e99[] = {30, 12};                        // девяносто девять
+    CHECK(chainEq(ch, speech::numberTracks(99, SB_MASC, ch, SB_MAX_CHAIN), e99, 2, 5));
+
+    // --- numberTracks: сотни ---
+    const uint8_t e100[] = {31};                           // сто
+    CHECK(chainEq(ch, speech::numberTracks(100, SB_MASC, ch, SB_MAX_CHAIN), e100, 1, 5));
+    const uint8_t e101[] = {31, 2};                        // сто один
+    CHECK(chainEq(ch, speech::numberTracks(101, SB_MASC, ch, SB_MAX_CHAIN), e101, 2, 5));
+    const uint8_t e115[] = {31, 18};                       // сто пятнадцать
+    CHECK(chainEq(ch, speech::numberTracks(115, SB_MASC, ch, SB_MAX_CHAIN), e115, 2, 5));
+    const uint8_t e999[] = {39, 30, 12};                   // девятьсот девяносто девять
+    CHECK(chainEq(ch, speech::numberTracks(999, SB_MASC, ch, SB_MAX_CHAIN), e999, 3, 5));
+
+    // --- numberTracks: тысячи (род всегда женский) ---
+    const uint8_t e1000[] = {3, 40};                       // одна тысяча
+    CHECK(chainEq(ch, speech::numberTracks(1000, SB_MASC, ch, SB_MAX_CHAIN), e1000, 2, 5));
+    const uint8_t e2000[] = {5, 41};                       // две тысячи
+    CHECK(chainEq(ch, speech::numberTracks(2000, SB_MASC, ch, SB_MAX_CHAIN), e2000, 2, 5));
+    const uint8_t e4321[] = {7, 41, 33, 23, 2};            // четыре тысячи триста
+    CHECK(chainEq(ch, speech::numberTracks(4321, SB_MASC, ch, SB_MAX_CHAIN), e4321, 5, 5));
+                                                         // двадцать один
+    // --- numberTracks: минус и границы ---
+    const uint8_t em25[] = {42, 23, 8};                    // минус двадцать пять
+    CHECK(chainEq(ch, speech::numberTracks(-25, SB_MASC, ch, SB_MAX_CHAIN), em25, 3, 5));
+    CHECK(speech::numberTracks(4999, SB_MASC, ch, SB_MAX_CHAIN) > 0);
+    CHECK(speech::numberTracks(5000, SB_MASC, ch, SB_MAX_CHAIN) == 0);  // нет «тысяч»
+    CHECK(speech::numberTracks(-4999, SB_MASC, ch, SB_MAX_CHAIN) > 0);
+    CHECK(speech::numberTracks(-5000, SB_MASC, ch, SB_MAX_CHAIN) == 0);
+    CHECK(speech::numberTracks(21, SB_MASC, ch, 0) == 0);  // maxOut=0
+    CHECK(speech::numberTracks(999, SB_MASC, ch, 2) == 0); // не влезло — 0,
+                                                           // полуфразы не бывает
+    // -4999: минус + 5 треков = 6; буфер 5 -> отказ
+    CHECK(speech::numberTracks(-4999, SB_MASC, ch, 5) == 0);
+    CHECK(speech::numberTracks(-4999, SB_MASC, ch, 6) == 6);
+
+    // --- unitTrack: триады и фиксированные ---
+    CHECK(speech::unitTrack(1, SB_UNIT_HOUR_ONE, 0) == SB_UNIT_HOUR_ONE);   // час
+    CHECK(speech::unitTrack(3, SB_UNIT_HOUR_ONE, 0) == SB_UNIT_HOUR_FEW);   // часа
+    CHECK(speech::unitTrack(12, SB_UNIT_HOUR_ONE, 0) == SB_UNIT_HOUR_MANY); // часов
+    CHECK(speech::unitTrack(21, SB_UNIT_MIN_ONE, 0) == SB_UNIT_MIN_ONE);    // минута
+    CHECK(speech::unitTrack(55, SB_UNIT_MIN_ONE, 0) == SB_UNIT_MIN_MANY);   // минут
+    CHECK(speech::unitTrack(1, 0, SB_UNIT_DEGREES) == SB_UNIT_DEGREES);     // фикс.
+    CHECK(speech::unitTrack(21, 0, SB_UNIT_DEGREES) == SB_UNIT_DEGREES);
+
+    // --- numberUnitTracks: «двадцать один градусов», «три минуты» ---
+    uint8_t len = speech::numberUnitTracks(21, SB_MASC, 0, SB_UNIT_DEGREES,
+                                           ch, SB_MAX_CHAIN);
+    CHECK(len == 3);
+    CHECK(ch[0].folder == 5 && ch[0].track == 23);
+    CHECK(ch[1].folder == 5 && ch[1].track == 2);
+    CHECK(ch[2].folder == 6 && ch[2].track == SB_UNIT_DEGREES);
+    len = speech::numberUnitTracks(3, SB_FEM, SB_UNIT_MIN_ONE, 0,
+                                   ch, SB_MAX_CHAIN);
+    CHECK(len == 2);
+    CHECK(ch[0].folder == 5 && ch[0].track == 6);        // три
+    CHECK(ch[1].folder == 6 && ch[1].track == SB_UNIT_MIN_FEW);  // минуты
+    len = speech::numberUnitTracks(1, SB_FEM, SB_UNIT_MIN_ONE, 0,
+                                   ch, SB_MAX_CHAIN);
+    CHECK(len == 2 && ch[0].track == 3 && ch[1].track == SB_UNIT_MIN_ONE);
+
+    // --- timeTracks ---
+    // 12:00 -> двенадцать(15) часов(9) ровно(43)
+    len = speech::timeTracks(12, 0, ch, SB_MAX_CHAIN);
+    CHECK(len == 3);
+    CHECK(ch[0].track == 15 && ch[0].folder == 5);
+    CHECK(ch[1].track == SB_UNIT_HOUR_MANY && ch[1].folder == 6);
+    CHECK(ch[2].track == 43 && ch[2].folder == 5);
+    // 0:30 -> ноль(1) часов(9) тридцать(24) минут(12)
+    len = speech::timeTracks(0, 30, ch, SB_MAX_CHAIN);
+    CHECK(len == 4);
+    CHECK(ch[0].track == 1 && ch[1].track == SB_UNIT_HOUR_MANY);
+    CHECK(ch[2].track == 24 && ch[3].track == SB_UNIT_MIN_MANY);
+    // 1:01 -> один(2) час(7) одна(3) минута(10)
+    len = speech::timeTracks(1, 1, ch, SB_MAX_CHAIN);
+    CHECK(len == 4);
+    CHECK(ch[0].track == 2 && ch[1].track == SB_UNIT_HOUR_ONE);
+    CHECK(ch[2].track == 3 && ch[3].track == SB_UNIT_MIN_ONE);
+    // 23:59 -> двадцать три часа пятьдесят девять минут = 6 треков
+    len = speech::timeTracks(23, 59, ch, SB_MAX_CHAIN);
+    CHECK(len == 6);
+    CHECK(ch[1].track == 6 && ch[2].track == SB_UNIT_HOUR_FEW);
+    CHECK(ch[3].track == 26 && ch[4].track == 12 &&
+          ch[5].track == SB_UNIT_MIN_MANY);
+    // брак
+    CHECK(speech::timeTracks(24, 0, ch, SB_MAX_CHAIN) == 0);
+    CHECK(speech::timeTracks(12, 60, ch, SB_MAX_CHAIN) == 0);
+    CHECK(speech::timeTracks(12, 0, ch, 5) == 0);   // буфер < 6
+}
+
+// ============================================================================
 int main() {
     printf("==== МикроОС 5.0 — host-тесты (D2) ====\n");
     testWiegand();
@@ -465,6 +1038,11 @@ int main() {
     testResourceManager();
     testAudioQueue();
     testCardDb();
+    testDataLog();
+    testScheduleCore();
+    testCounterCore();
+    testMqttOutbox();
+    testSpeechCore();
     printf("==== ИТОГ: %d PASS, %d FAIL ====\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -87,9 +87,19 @@ bool Ds3231Driver::getDateTime(struct tm& out) {
     if (!bus.i2cLock()) return false;
 
     uint8_t r[7];
-    bool ok = readRegs(0x00, r, 7);
     uint8_t status = 0;
-    if (ok) ok = readRegs(0x0F, &status, 1);
+    bool ok = false;
+    // 5.5.12: до 3 попыток внутри ОДНОЙ логической операции — I2C-флаки
+    // после power-on (модуль RTC отпускает шину не сразу) роняли boot-чтение
+    // TimeService, и замок стартовал без времени до первого NTP. busFault
+    // засчитываем ОДИН на всю операцию: иначе 3 быстрых ретрая сами
+    // доходили до порога BUS_MAX_FAULTS_BEFORE_RECOVERY и провоцировали
+    // лишний recovery шины.
+    for (uint8_t attempt = 0; attempt < 3 && !ok; ++attempt) {
+        if (attempt > 0) delay(10);
+        ok = readRegs(0x00, r, 7);
+        if (ok) ok = readRegs(0x0F, &status, 1);
+    }
     bus.i2cUnlock();
 
     if (!ok) { bus.busFault(); _healthy = false; return false; }

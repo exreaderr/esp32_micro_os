@@ -16,22 +16,31 @@ BusManager& BusManager::getInstance() {
 void BusManager::init() {
     ensureMutex();
 
-    // Пины и частота — из платформы (WT32-ETH01: 32/33, 400 кГц).
+    // Пины — из выбранной платы (5.3.0: WT32-ETH01 32/33, S3-POE-ETH 16/17),
+    // частота — общая платформенная 400 кГц.
     // Пины уже заняты за "platform.i2c_*" в реестре ресурсов ядром —
     // драйверы профилей занять их не смогут (A2).
-    Wire.begin(platform::I2C_SDA_PIN, platform::I2C_SCL_PIN);
+    Wire.begin(platform::board().i2cSda, platform::board().i2cScl);
     Wire.setClock(platform::I2C_FREQ_HZ);
     Wire.setTimeOut(50);   // таймаут транзакции, мс: без него зависший
                            // slave подвешивает Wire.endTransmission()
 
-    _busAlive = probe(platform::DS3231_ADDR);
-    if (_busAlive) {
-        log(LogLevel::Info, "I2C up: DS3231 found at 0x%02X",
-            platform::DS3231_ADDR);
+    // 5.8.1: канарейка 0x68 — только платам с RTC фактом (rtcPresent).
+    // На без-RTC плате (мастер) проба несуществующего адреса давала
+    // фантомный "bus recovery pending" и фолты при каждом буте (17.08).
+    if (platform::board().rtcPresent) {
+        _busAlive = probe(platform::DS3231_ADDR);
+        if (_busAlive) {
+            log(LogLevel::Info, "I2C up: DS3231 found at 0x%02X",
+                platform::DS3231_ADDR);
+        } else {
+            // RTC — критичное железо, но не фатальное: TimeService уйдёт на
+            // NTP-only, ПАЗ будет дожимать recovery. Просто фиксируем.
+            log(LogLevel::Warning, "DS3231 NOT found on boot, bus recovery pending");
+        }
     } else {
-        // RTC — критичное железо, но не фатальное: TimeService уйдёт на
-        // NTP-only, ПАЗ будет дожимать recovery. Просто фиксируем.
-        log(LogLevel::Warning, "DS3231 NOT found on boot, bus recovery pending");
+        _busAlive = true;   // пробовать нечего: шина есть, устройств нет
+        log(LogLevel::Info, "I2C up: no RTC on this board, canary off");
     }
     _initialized = true;
 }
@@ -49,6 +58,10 @@ void BusManager::stop() {
 // ============================================================================
 void BusManager::tick() {
     if (!takeMutex()) return;
+
+    // 5.8.1: без RTC на плате канарейки нет — tick пуст, фантомных
+    // DEAD/RECOVERED событий быть не должно.
+    if (!platform::board().rtcPresent) { giveMutex(); return; }
 
     bool alive = probe(platform::DS3231_ADDR);
     if (alive != _busAlive) {
@@ -118,32 +131,34 @@ bool BusManager::recover() {
 
     // Отпускаем Wire и переключаем пины на ручное управление
     Wire.end();
-    pinMode(platform::I2C_SCL_PIN, OUTPUT);
-    pinMode(platform::I2C_SDA_PIN, INPUT_PULLUP);
+    pinMode(platform::board().i2cScl, OUTPUT);
+    pinMode(platform::board().i2cSda, INPUT_PULLUP);
 
     for (uint8_t i = 0; i < BUS_RECOVERY_CLOCK_PULSES; ++i) {
-        digitalWrite(platform::I2C_SCL_PIN, HIGH);
+        digitalWrite(platform::board().i2cScl, HIGH);
         delayMicroseconds(5);
-        digitalWrite(platform::I2C_SCL_PIN, LOW);
+        digitalWrite(platform::board().i2cScl, LOW);
         delayMicroseconds(5);
     }
     // STOP-условие: SDA LOW->HIGH при SCL HIGH
-    pinMode(platform::I2C_SDA_PIN, OUTPUT);
-    digitalWrite(platform::I2C_SDA_PIN, LOW);
-    digitalWrite(platform::I2C_SCL_PIN, HIGH);
+    pinMode(platform::board().i2cSda, OUTPUT);
+    digitalWrite(platform::board().i2cSda, LOW);
+    digitalWrite(platform::board().i2cScl, HIGH);
     delayMicroseconds(5);
-    digitalWrite(platform::I2C_SDA_PIN, HIGH);
+    digitalWrite(platform::board().i2cSda, HIGH);
     delayMicroseconds(5);
 
     // Повторный подъём шины штатным драйвером
-    Wire.begin(platform::I2C_SDA_PIN, platform::I2C_SCL_PIN);
+    Wire.begin(platform::board().i2cSda, platform::board().i2cScl);
     Wire.setClock(platform::I2C_FREQ_HZ);
     Wire.setTimeOut(50);
 
     _recoveryCount++;
     _consecutiveFaults = 0;
 
-    _busAlive = probe(platform::DS3231_ADDR);
+    // 5.8.1: без RTC пробовать нечего — переinit шины и есть recovery.
+    _busAlive = platform::board().rtcPresent ? probe(platform::DS3231_ADDR)
+                                             : true;
     ShEventData d; d.clear();
     d.code = 0;
     if (_busAlive) {

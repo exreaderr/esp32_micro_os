@@ -7,7 +7,11 @@
 #include "TelemetryService.h"
 #include "UpdateService.h"
 #include "../core/Events.h"
+#include "../core/Kernel.h"   // lastTickTrace (урок №20, BOOT 5.8.1)
+#include "../core/Version.h"
 #include <mqtt_client.h>           // встроенный IDF esp-mqtt
+#include <esp_system.h>            // esp_reset_reason (BOOT-событие 5.8.0)
+#include <new>                     // std::nothrow (outbox — heap-блок init)
 
 // ============================================================================
 // ТРАМПЛИН СОБЫТИЙ esp-mqtt (mqtt-задача -> экземпляр)
@@ -64,13 +68,19 @@ void MqttTransport::registerExtensions() {
           "MQTT", "Зеркалировать события в брокер" },
         { "mqtt.ha_discovery", ConfigType::BOOL, "true", 0, 0, CFG_NONE,
           "MQTT", "Авто-объявление в Home Assistant" },
+        { "mqtt.outbox", ConfigType::BOOL, "true", 0, 0, CFG_NONE,
+          "MQTT", "Outbox: копить сообщения при офлайне (replay)" },
     });
 }
 
 void MqttTransport::init() {
+    // Outbox — один heap-блок, раньше фрагментации (см. комментарий в .h).
+    _outbox = new (std::nothrow) mqtt_ob::Outbox();
+    if (_outbox) _outbox->reset();
     _initialized = true;
-    log(LogLevel::Info, "init: bridge %s",
-        cfgGetBool("mqtt.enabled", false) ? "ENABLED" : "disabled");
+    log(LogLevel::Info, "init: bridge %s, outbox %s",
+        cfgGetBool("mqtt.enabled", false) ? "ENABLED" : "disabled",
+        _outbox ? "ready" : "ALLOC FAILED (disabled)");
 }
 
 // ============================================================================
@@ -143,7 +153,18 @@ void MqttTransport::tick() {
         memcpy(pl, s.payload, sizeof(pl));
         pl[sizeof(pl) - 1] = '\0';
         s.dirty = false;
-        if (s.handler != nullptr) s.handler(s.topic, pl);
+        // 5.5.1: handler получает РЕАЛЬНЫЙ топик сообщения (msgTopic),
+        // а не фильтр подписки — иначе wildcard-подписчик видит "prefix/#"
+        // и не может определить адресата. Для точных подписок (погода)
+        // msgTopic == topic, поведение не меняется.
+        if (s.handler != nullptr) s.handler(s.msgTopic, pl);
+    }
+
+    // --- Outbox: потери не молчат (урок v2.5.0) ------------------------------
+    if (_outbox != nullptr && _outbox->dropped != _outboxDroppedSeen) {
+        log(LogLevel::Warning, "outbox: %lu msg dropped (ring full)",
+            (unsigned long)(_outbox->dropped - _outboxDroppedSeen));
+        _outboxDroppedSeen = _outbox->dropped;
     }
 }
 
@@ -160,6 +181,7 @@ bool MqttTransport::subscribeExternal(const char* topic,
     safeStrCopy(s.topic, sizeof(s.topic), topic);
     s.handler = handler;
     s.payload[0] = '\0';
+    s.msgTopic[0] = '\0';
     s.dirty = false;
     log(LogLevel::Info, "ext sub: %s", s.topic);
     if (_mqttUp) {   // уже подключены — подписываем сразу
@@ -230,10 +252,56 @@ void MqttTransport::clientStop() {
 // ============================================================================
 // КОЛБЭКИ esp-mqtt (контекст mqtt-задачи!)
 // ============================================================================
+// 5.8.0, BOOT-событие: причина сброса словами — журнал мастера отвечает
+// «кто и почему перезагрузился» без монитора порта (урок ночи 14→15.08:
+// два самоперезапуска замка остались без улик).
+static const char* resetReasonStr(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power_on";
+        case ESP_RST_SW:        return "sw_restart";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
 void MqttTransport::onMqttConnected() {
     _mqttUp = true;
     // Сессия: online + подписки (канонический паттерн — прямо из колбэка)
     publishState("online", true);
+    // BOOT — один раз за старт, на первом коннекте (реконнекты не шумят).
+    if (!_bootEventSent) {
+        _bootEventSent = true;
+        char prefix[CFG_VALUE_LEN];
+        cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+        char topic[MQTT_TOPIC_LEN];
+        snprintf(topic, sizeof(topic), "%s/%s/events/BOOT",
+                 prefix, NetworkService::getInstance().deviceId());
+        char body[MQTT_BODY_LEN];
+        snprintf(body, sizeof(body), "0|%s fw %s",
+                 resetReasonStr(esp_reset_reason()), MICROOS_VERSION);
+        // 5.8.1 (урок №20): на аварийных причинах добавляем след тика —
+        // модуль, в котором застрял loopTask ("lt=-" = между тиками).
+        // Журнал мастера отвечает не только "почему ребут", но и "где".
+        esp_reset_reason_t rr = esp_reset_reason();
+        if (rr == ESP_RST_PANIC || rr == ESP_RST_TASK_WDT ||
+            rr == ESP_RST_INT_WDT || rr == ESP_RST_WDT) {
+            char lt[24];
+            if (Kernel::getInstance().lastTickTrace(lt, sizeof(lt))) {
+                size_t bl = strlen(body);
+                snprintf(body + bl, sizeof(body) - bl, " lt=%s",
+                         lt[0] ? lt : "-");
+            }
+        }
+        esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
+                                topic, body, 0, 1, 0);
+        log(LogLevel::Info, "boot: reset=%s", resetReasonStr(esp_reset_reason()));
+    }
     auto h = (esp_mqtt_client_handle_t)_client;
     esp_mqtt_client_subscribe(h, _topicCmdOwn, 1);
     esp_mqtt_client_subscribe(h, _topicCmdAll, 1);
@@ -242,10 +310,59 @@ void MqttTransport::onMqttConnected() {
     for (uint8_t i = 0; i < _extSubCount; ++i) {
         esp_mqtt_client_subscribe(h, _extSubs[i].topic, 0);
     }
+    // Replay накопленного за офлайн (5.1.0) — ДО свежей телеметрии:
+    // retained-снимок в хвосте перекрывает возможные retained-значения
+    // из очереди (самое свежее состояние — последним).
+    drainOutbox();
     publishTelemetry();   // свежий снимок — сразу после подключения
 }
 
+void MqttTransport::drainOutbox() {
+    if (_outbox == nullptr) return;
+    const MqttObSlot* s;
+    uint8_t sent = 0;
+    while ((s = _outbox->peek()) != nullptr) {
+        // Копии в стек до pop — слот инвалидируется.
+        char topic[MQTT_OB_TOPIC_LEN];
+        char body[MQTT_OB_BODY_LEN];
+        memcpy(topic, s->topic, sizeof(topic));
+        memcpy(body, s->body, sizeof(body));
+        const uint8_t qos = s->qos;
+        const bool retained = s->retained;
+        _outbox->pop();
+        esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
+                                topic, body, 0, qos, retained ? 1 : 0);
+        ++sent;
+    }
+    if (sent > 0) {
+        log(LogLevel::Info, "outbox: replayed %u msg", sent);
+    }
+}
+
 void MqttTransport::onMqttDisconnected() { _mqttUp = false; }
+
+// Матчер MQTT-фильтров (+ один уровень, # хвост любой глубины; '#' по
+// спецификации матчит и «пустой» хвост: "a/#" покрывает "a"). Нужен для
+// внешних подписок с wildcard — мост M2 слушает <prefix>/# (5.5.0).
+static bool mqttTopicMatch(const char* f, const char* t) {
+    for (;;) {
+        if (*f == '\0') return *t == '\0';
+        if (*f == '#') return true;
+        // Спецификация: "a/#" покрывает и саму "a" (хвост нулевой глубины,
+        // слэш поглощается) — поймано мини-тестом матчера (5.5.0).
+        if (*f == '/' && f[1] == '#' && *t == '\0') return true;
+        if (*f == '+') {
+            while (*t != '\0' && *t != '/') ++t;
+            ++f;
+            if (*f == '\0') return *t == '\0';
+            if (*t != '/') return false;
+            ++f; ++t;
+            continue;
+        }
+        if (*f != *t) return false;
+        ++f; ++t;
+    }
+}
 
 void MqttTransport::onMqttMessage(const char* topic, int topicLen,
                                   const char* data, int dataLen) {
@@ -257,14 +374,21 @@ void MqttTransport::onMqttMessage(const char* topic, int topicLen,
     memcpy(tbuf, topic, tl); tbuf[tl] = '\0';
     memcpy(bbuf, data, bl);  bbuf[bl] = '\0';
 
-    // Внешние подписки профилей — точное совпадение топика, без разбора
-    // схемы <prefix>/... (погода и прочие чужие топики живут вне её)
+    // Внешние подписки профилей — матч по MQTT-фильтру (5.5.0: было точное
+    // совпадение; wildcard нужен мосту M2, погода и прочие чужие топики
+    // живут вне схемы <prefix>/...). Первый совпавший — диспетчер.
+    // ВАЖНО: НЕ return, а break — ядерный разбор <prefix>/<id>/cmd|events
+    // ниже обязан увидеть команду СВОЕМУ устройству, даже если её поймал
+    // wildcard-мост (урок проектирования M2: мост не должен глотать
+    // собственные команды хозяина).
     for (uint8_t i = 0; i < _extSubCount; ++i) {
-        if (strcmp(tbuf, _extSubs[i].topic) == 0) {
+        if (mqttTopicMatch(_extSubs[i].topic, tbuf)) {
             memcpy(_extSubs[i].payload, bbuf, sizeof(_extSubs[i].payload) - 1);
             _extSubs[i].payload[sizeof(_extSubs[i].payload) - 1] = '\0';
+            safeStrCopy(_extSubs[i].msgTopic, sizeof(_extSubs[i].msgTopic),
+                        tbuf);           // 5.5.1: реальный топик, не фильтр
             _extSubs[i].dirty = true;    // разбор — в tick(), не здесь
-            return;
+            break;
         }
     }
 
@@ -301,6 +425,12 @@ void MqttTransport::onMqttMessage(const char* topic, int topicLen,
 // КОМАНДЫ ИЗ БРОКЕРА
 // ============================================================================
 void MqttTransport::handleCommand(const char* verb, const char* body) {
+    // 5.5.1: собственный ACK ("cmd/result") мы подписаны cmd/# и слышим
+    // сами (MQTT 3.1.1 не имеет no-local; через мост M2 эхо возвращается
+    // ещё и со стороны верхнего брокера). Это не команда — глотаем молча,
+    // иначе каждый ack плодит "unknown cmd 'result'" (стенд 08.08).
+    if (strcmp(verb, "result") == 0) return;
+
     log(LogLevel::Info, "cmd '%s' body '%s'", verb, body);
 
     if (strcmp(verb, "reboot") == 0) {
@@ -328,9 +458,22 @@ void MqttTransport::handleCommand(const char* verb, const char* body) {
         esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
                                 topic, res, 0, 0, 0);
     } else if (strcmp(verb, "ota") == 0) {
-        // body: URL прошивки -> UpdateService (A1: PENDING_VERIFY + откат)
-        if (!UpdateService::getInstance().startHttpUpdate(body)) {
-            log(LogLevel::Warning, "ota command rejected");
+        // Залежь №3: «ota»/«ota check» — проверить манифест на HA (GET
+        // выполнит UpdateService::tick в контексте loop — esp-mqtt задача
+        // с её ~6 КБ стека для HTTPClient мала); «ota rollback» — откат.
+        // Phase 4: «ota update» — полное обновление с сервера (fw+ФС),
+        // «ota update_fw» — только прошивка. Качалка тоже в tick().
+        if (strcmp(body, "rollback") == 0) {
+            UpdateService::getInstance().requestRollback();
+        } else if (strcmp(body, "update") == 0) {
+            UpdateService::getInstance().requestRemoteUpdate(true);
+            log(LogLevel::Info, "ota: remote update scheduled (fw+fs)");
+        } else if (strcmp(body, "update_fw") == 0) {
+            UpdateService::getInstance().requestRemoteUpdate(false);
+            log(LogLevel::Info, "ota: remote update scheduled (fw only)");
+        } else {
+            UpdateService::getInstance().requestRemoteCheck();
+            log(LogLevel::Info, "ota: manifest check scheduled");
         }
     } else {
         // Неизвестную ядру команду пробуем отдать профилю (замок: "open")
@@ -391,13 +534,42 @@ bool MqttTransport::canHandleEvent(int32_t eventId) const {
 }
 
 void MqttTransport::onEvent(int32_t eventId, const ShEventData* data) {
-    if (!_mqttUp) return;   // нет соединения — outbox не копим
     if (eventId == TEL_EVENT_SNAPSHOT) {
-        publishTelemetry();
+        if (_mqttUp) publishTelemetry();   // ретро-снимки не копим: после
+        return;                            // реконнекта уйдёт свежая
+    }
+    if (!cfgGetBool("mqtt.pub_events", true)) return;
+    const char* name = mirrorName(eventId);
+    if (name == nullptr) return;
+    // 5.8.1: направление смены уровня сети значимо. Восстановление в FULL
+    // зеркалилось как "DEGRADED" и путало журнал (17.08: соседом боевого
+    // BOOT task_wdt стоял DEGRADED "0|FULL"). Вниз — DEGRADED, возврат
+    // в FULL — RECOVERED. Контракт тела не меняется (payload = уровень).
+    if (eventId == SH_EVENT_DEGRADED_LEVEL && data != nullptr &&
+        strcmp(data->payload, "FULL") == 0) {
+        name = "RECOVERED";
+    }
+
+    if (_mqttUp) {
+        mirrorEvent(eventId, data);
         return;
     }
-    if (cfgGetBool("mqtt.pub_events", true)) {
-        mirrorEvent(eventId, data);
+    // Офлайн: событие — в outbox (5.1.0). В разрыве случается самое
+    // важное (доступ, тревоги, OTA) — молчаливая потеря здесь была
+    // главным «слепым пятном» моста.
+    if (_outbox == nullptr || !cfgGetBool("mqtt.outbox", true)) return;
+
+    char prefix[CFG_VALUE_LEN];
+    cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+    char topic[MQTT_TOPIC_LEN];
+    snprintf(topic, sizeof(topic), "%s/%s/events/%s",
+             prefix, NetworkService::getInstance().deviceId(), name);
+    char body[MQTT_BODY_LEN];
+    snprintf(body, sizeof(body), "%ld|%s",
+             (long)(data ? data->code : 0),
+             (data && data->payload[0]) ? data->payload : "");
+    if (!_outbox->push(topic, body, /*qos=*/1, /*retained=*/false)) {
+        log(LogLevel::Warning, "outbox: event %s rejected", name);
     }
 }
 
@@ -434,12 +606,18 @@ void MqttTransport::publishState(const char* state, bool retained) {
 // ============================================================================
 bool MqttTransport::publishRaw(const char* fullTopic, const char* payload,
                                bool retained) {
-    if (_client == nullptr || !_mqttUp || fullTopic == nullptr) return false;
+    if (_client == nullptr || fullTopic == nullptr) return false;
     // Из mqtt-задачи и из диспетчера шины вызывать одинаково безопасно
-    // (esp-mqtt thread-safe); из панели результат виден по возврату false.
-    return esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
-                                   fullTopic, payload, 0, 1,
-                                   retained ? 1 : 0) >= 0;
+    // (esp-mqtt thread-safe).
+    if (_mqttUp) {
+        return esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
+                                       fullTopic, payload, 0, 1,
+                                       retained ? 1 : 0) >= 0;
+    }
+    // Офлайн: копим в outbox (5.1.0) — «принято к доставке». Retained
+    // дедуплицируется по топику (свежее состояние замещает лежащее).
+    if (_outbox == nullptr || !cfgGetBool("mqtt.outbox", true)) return false;
+    return _outbox->push(fullTopic, payload, /*qos=*/1, retained);
 }
 
 bool MqttTransport::publishStateSuffix(const char* suffix, const char* payload,

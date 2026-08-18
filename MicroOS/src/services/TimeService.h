@@ -24,10 +24,28 @@
 #include "../core/ModuleBase.h"
 #include "TimeInterval.h"   // чистая логика интервалов (D2: host-тесты)
 #include <ctime>
+#include <IPAddress.h>
 
 // Периоды (из монолита v2.5.0)
 constexpr uint32_t TIME_SYNC_INTERVAL_MS = 3600000; // RTC -> системное, 1 час
 constexpr uint32_t TIME_TICK_MS          = 1000;    // контроль раз в секунду
+
+// NTP (5.5.7+, свой SNTP-клиент): тайминги конечного автомата
+constexpr uint32_t NTP_DISPATCH_TIMEOUT_MS = 5000;   // исполнение задания tcpip_thread (5.5.8)
+constexpr uint32_t NTP_REPLY_TIMEOUT_MS   = 5000;    // ответ сервера
+constexpr uint32_t NTP_DNS_TIMEOUT_MS     = 15000;   // резолв hostname (5.5.10: холодный DNS MikroTik отвечает 5-15 с — урок бенча 5.5.9)
+constexpr uint32_t NTP_RETRY_INTERVAL_MS  = 60000;   // переарм после неудачи
+constexpr uint32_t NTP_RESYNC_INTERVAL_MS = 86400000; // ресинк раз в сутки
+
+/// Состояния NTP-автомата — видны в API/панели (самодиагностика 5.5.7+)
+enum class NtpState : uint8_t {
+    IDLE = 0,    // не запускался (нет сети / выключен в конфиге)
+    DISPATCHING, // задание отправлено в tcpip_thread (5.5.8)
+    RESOLVING,   // hostname в резолве (async DNS)
+    REQUESTED,   // запрос на проводе, ждём ответ
+    SYNCED,      // синхронизирован в этой сессии
+    WAIT_RETRY,  // неудача, ждём переарма (NTP_RETRY_INTERVAL_MS)
+};
 
 class TimeService : public ModuleBase {
 public:
@@ -35,7 +53,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "TimeService"; }
-    const char* getVersion() const override { return "5.0.0"; }
+    const char* getVersion() const override { return "5.5.10"; }  // 5.5.10: DNS-таймаут 15 с под холодный upstream (урок бенча 5.5.9)
     ModuleId getModuleId() const override { return 0x0006; }
 
     void registerExtensions() override;   // схема sys.ntp_* / sys.tz_offset
@@ -54,6 +72,17 @@ public:
     /// Достоверно ли время СЕЙЧАС. Важно для Fail-Safe: монолит при мёртвом
     /// RTC всегда разрешал кнопку выхода — правило живёт на этом флаге.
     bool isTimeValid() const { return _timeValid; }
+
+    // Источник достоверности — для панелей/API (5.5.6: у home_master нет
+    // RTC, и время было нигде не видно; замок часы показывает, мастер — нет)
+    bool ntpSynced() const { return _ntpSynced; }
+    bool rtcAlive()  const { return _rtcAlive; }
+
+    // Самодиагностика NTP (5.5.7): состояние автомата и счётчики — в API
+    NtpState   ntpState()    const { return _ntpState; }
+    uint32_t   ntpAttempts() const { return _ntpAttempts; }
+    uint32_t   ntpLastRttMs() const { return _ntpLastRttMs; }
+    const char* ntpStateStr() const;
 
     /// Локальное время в struct tm. false — время недостоверно.
     bool getLocalTime(struct tm& out) const;
@@ -82,7 +111,8 @@ private:
     /// Прочитать RTC и обновить системное время + флаг достоверности.
     void syncFromRtc(const char* reason);
 
-    /// Запустить NTP-синхронизацию (вызывается по NET_EVENT_IP_CHANGED).
+    /// Запустить NTP-цикл (из tick: _ntpPending / переарм / ресинк).
+    /// ТОЛЬКО loopTask: конфиг + пост задания в tcpip_thread (5.5.8).
     void requestNtp();
 
     bool     _timeValid = false;       // время достоверно
@@ -90,7 +120,17 @@ private:
     uint32_t _lastSyncMs = 0;          // последняя синхронизация RTC->system
     uint32_t _uptimeOffsetSec = 0;     // резерв: millis-подобное время без RTC
 
-    // NTP (Фаза 3): ждём ответа SNTP после появления IP
-    bool     _ntpRequested = false;    // configTime вызван, ждём ответ
-    bool     _ntpSynced    = false;    // NTP отработал в этой сессии сети
+    // NTP (5.5.7+): конечный автомат со своим SNTP-клиентом (SntpCore.h).
+    // Каждый переход — строка в журнале: стек больше не молчит.
+    // 5.5.8: ни одного вызова lwIP вне tcpip_thread — сетевые события и
+    // HTTP-API ставят только флаг _ntpPending, исполняет tick (loopTask).
+    NtpState _ntpState    = NtpState::IDLE;
+    bool     _ntpSynced   = false;     // был РЕАЛЬНЫЙ ответ сервера (не порог!)
+    uint32_t _ntpAttempts = 0;         // отправлено запросов за сессию
+    uint32_t _ntpLastRttMs = 0;        // RTT последнего ответа
+    uint32_t _ntpStateSinceMs = 0;     // когда вошли в текущее состояние
+    uint32_t _ntpResyncAtMs = 0;       // суточный ресинк после успеха
+    volatile bool _ntpPending = false; // заявка на запуск (onEvent/forceNtpSync)
+    static constexpr size_t NTP_SERVER_LEN = 64;
+    char     _ntpServer[NTP_SERVER_LEN] = {0}; // сервер из конфига (для лога)
 };

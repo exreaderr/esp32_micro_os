@@ -4,6 +4,7 @@
 #include "NetworkManager.h"
 #include "ConfigService.h"
 #include "../core/Events.h"
+#include "../core/Kernel.h"        // isSafeMode — fallback 5.5.5
 
 #include <ETH.h>                  // Ethernet LAN8720 (библиотека ядра)
 #include <WiFi.h>                 // WiFi.onEvent — общая точка сетевых событий
@@ -19,6 +20,10 @@
 // чужих задач — статический локал с guard-переменной недопустим).
 // ============================================================================
 static NetworkService* s_nm = nullptr;
+
+// Safe Mode: сколько ждём DHCP-лизу до статического fallback (5.5.5).
+// Не конфиг-поле: Safe Mode — не поверхность тюнинга, а аварийный вход.
+static constexpr uint32_t SAFE_DHCP_TIMEOUT_MS = 15000;
 
 // Сетевые события: вызываются из задачи Arduino event loop (не ISR!).
 // Только флаги — никаких событий шины и логов с аллокациями отсюда.
@@ -99,6 +104,16 @@ void NetworkService::registerExtensions() {
           "Сеть", "DNS-сервер" },
         { "net.ping_gw",   ConfigType::BOOL, "true", 0, 0, CFG_NONE,
           "Сеть", "Контроль шлюза (деградация LOCAL_NET)" },
+        // 5.5.1: в контуре без интернет-шлюза ping по net.gateway обречён —
+        // устройство честно деградирует до LOCAL_NET при живой локалке
+        // (стенд 08.08, home_master). probe_host позволяет целиться в
+        // реальный якорь контура (напр., сервер HA); пусто = фактический
+        // шлюз: при DHCP — выданный сервером (5.5.2), при статике —
+        // net.gateway.
+        // Тип STRING, не IP: пустое значение легально ("как раньше"), а
+        // валидатор IP требует 4 октета. Синтаксис проверит ipaddr_aton.
+        { "net.probe_host", ConfigType::STRING, "", 0, 0, CFG_NONE,
+          "Сеть", "Кого пинговать (пусто = шлюз по факту)" },
         { "net.gw_period", ConfigType::UINT, "30", 10, 300, CFG_NONE,
           "Сеть", "Период проверки шлюза, с" },
         // hostname — в группе «Сеть» (урок 5.0.x: в «Системе» его видела
@@ -117,6 +132,17 @@ void NetworkService::init() {
     buildIdentity();
 
     _netEnabled = cfgGetBool("net.enabled", true);
+    // Плата без Ethernet (EthKind::None — узел шины RS485, напр. C3
+    // SuperMini): сети нет ФАКТОМ железа. Это тот же локальный режим, что
+    // net.enabled=false, но не по конфигу — по BoardDesc: конфиг не может
+    // «включить» несуществующий интерфейс, а ETH.begin с фиктивными пинами
+    // был бы UB. Идёт по штатному пути локального режима: честный
+    // AUTONOMOUS, NET_EVENT_DISABLED в start(), HTTP/MQTT не стартуют.
+    if (_netEnabled && platform::board().ethKind == platform::EthKind::None) {
+        _netEnabled = false;
+        log(LogLevel::Info, "init: board '%s' has no Ethernet — bus node, local mode",
+            platform::board().name);
+    }
     if (!_netEnabled) {
         // Локальный режим (из монолита: устройство без сети — честный
         // AUTONOMOUS без аварийных событий). Пин PHY не трогаем вовсе.
@@ -135,15 +161,31 @@ void NetworkService::init() {
 
     applyNetConfig();   // статика при net.dhcp=false — ДО begin
 
-    // WT32-ETH01, каноническая инициализация (проверена монолитом v2.5.0):
-    //   PHY LAN8720, адрес 1, MDC=23, MDIO=18, power=GPIO16,
-    //   тактирование 50 МГц — внешний генератор платы, вход GPIO0.
-    // NB: если на иной ревизии платы link не поднимается — кандидат на
-    // замену ETH_CLOCK_GPIO17_OUT (генерация из ESP32); см. BaseProfile.h.
-    bool ok = ETH.begin(ETH_PHY_LAN8720, /*phy_addr*/ 1,
-                        /*mdc*/ 23, /*mdio*/ 18,
-                        /*power*/ platform::ETH_PHY_POWER_PIN,
-                        ETH_CLOCK_GPIO0_IN);
+    // Инициализация Ethernet — по выбранной плате (5.3.0, A4):
+    //   · WT32-ETH01 (RmiiLan8720), каноника монолита v2.5.0: PHY LAN8720,
+    //     адрес 1, MDC=23, MDIO=18, power=GPIO16, такт 50 МГц — внешний
+    //     генератор платы, вход GPIO0 (иначе — ETH_CLOCK_GPIO17_OUT);
+    //   · ESP32-S3-POE-ETH (SpiW5500): у S3 нет внутреннего EMAC — внешний
+    //     MAC/PHY W5500 на SPI2_HOST, пины из BoardDesc (вики Waveshare).
+    bool ok = false;
+    const platform::BoardDesc& bd = platform::board();
+    if (bd.ethKind == platform::EthKind::SpiW5500) {
+        ok = ETH.begin(ETH_PHY_W5500, /*phy_addr*/ 1,
+                       bd.ethCs, bd.ethIrq, bd.ethRst,
+                       (spi_host_device_t)bd.ethSpiHost,
+                       bd.ethSck, bd.ethMiso, bd.ethMosi);
+    } else {
+#if CONFIG_ETH_USE_ESP32_EMAC
+        ok = ETH.begin(ETH_PHY_LAN8720, /*phy_addr*/ 1,
+                       /*mdc*/ 23, /*mdio*/ 18,
+                       /*power*/ platform::ETH_PHY_POWER_PIN,
+                       ETH_CLOCK_GPIO0_IN);
+#else
+        // RMII-плата на кристалле без EMAC (символы LAN8720 не существуют
+        // в этом таргете) — ошибка конфигурации boardId, громко в лог.
+        log(LogLevel::Error, "init: RMII board selected on non-EMAC target");
+#endif
+    }
 
     // Hostname — СТРОГО ПОСЛЕ begin (урок 5.0.x, найдено в исходниках ядра
     // Arduino ESP32 3.3.11): NetworkInterface::setHostname тихо возвращает
@@ -187,6 +229,27 @@ void NetworkService::stop() {
 // ============================================================================
 void NetworkService::tick() {
     if (!_netEnabled) return;
+
+    // --- Safe Mode: статический fallback при мёртвом DHCP (5.5.5) ---------
+    // Взвод: link есть, IP нет, Safe Mode, net.dhcp=true. ~15 с лизы нет →
+    // статика из net.ip/mask/gateway. В нормальном режиме ветка мертва
+    // (политика владельца: без DHCP — зажал Safe Mode, получил предустановленный IP).
+    if (!_safeFallbackDone && _linkUp && !_hasIp &&
+        Kernel::getInstance().isSafeMode() && cfgGetBool("net.dhcp", true)) {
+        if (_safeDhcpSinceMs == 0) {
+            _safeDhcpSinceMs = millis();
+        } else if (millis() - _safeDhcpSinceMs >= SAFE_DHCP_TIMEOUT_MS) {
+            applySafeStaticFallback();
+        }
+    }
+    if (_hasIp) _safeDhcpSinceMs = 0;   // DHCP успел — взвод снимаем
+    // ETH.config() на живом интерфейсе НЕ генерирует GOT_IP (то событие —
+    // только от DHCP-клиента): факт адреса добираем опросом netif, дальше
+    // штатный путь флагов и NET_EVENT_IP_CHANGED (HTTP/realty поднимутся сами).
+    if (_safeFallbackDone && !_hasIp && _linkUp) {
+        IPAddress lip = ETH.localIP();
+        if (lip != IPAddress(0, 0, 0, 0)) _hasIp = true;
+    }
 
     // --- Переходы link/IP -> NET_* события --------------------------------
     // Флаги выставляются колбэками сетевого стека; события публикуем из
@@ -242,8 +305,12 @@ void NetworkService::tick() {
 void NetworkService::buildIdentity() {
     // deviceId = MAC интерфейса ETH — уникален и стабилен для экземпляра
     // железа; используется в MQTT-топиках и реестре УД (Фаза 3).
+    // У платы без Ethernet (EthKind::None) ETH-MAC не существует — берём
+    // базовый MAC из eFuse (ESP_MAC_WIFI_STA): чтение eFuse НЕ трогает
+    // радио, уникальность и стабильность те же.
     uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_ETH);
+    esp_read_mac(mac, platform::board().ethKind == platform::EthKind::None
+                      ? ESP_MAC_WIFI_STA : ESP_MAC_ETH);
     snprintf(_deviceId, sizeof(_deviceId), "%02x%02x%02x%02x%02x%02x",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
@@ -290,11 +357,67 @@ void NetworkService::applyNetConfig() {
 }
 
 // ============================================================================
+// SAFE MODE: СТАТИЧЕСКИЙ FALLBACK (5.5.5, закрытие бэклога сетевой политики)
+// ============================================================================
+// Сценарий владельца: «у соседа нет DHCP — он зажимает Safe Mode, грузится
+// с предустановленным IP, выставляет нужный и работает». До 5.5.5 Safe Mode
+// поднимал сеть строго по конфигу: при net.dhcp=true и отсутствии DHCP-
+// сервера устройство оставалось БЕЗ адреса — recovery-веб недостижим,
+// противоречие смыслу Safe Mode.
+// 5.5.5 брал статику из net.ip/mask/gateway конфига — ОТКАЗАНО бенчем:
+// «настраиваю дома по памяти сеть соседа, приезжаю — сеть другая, а свой
+// статический IP забыл и не записал» => устройство недостижимо НАВСЕГДА.
+// 5.5.6: аварийный адрес — КОНСТАНТА ПРОШИВКИ, конфиг игнорируется
+// полностью. Safe Mode = режим «я ничего не помню»: адрес известен заранее
+// (пишется в инструкции/на этикетке), недостижимой админки быть не может.
+// One-shot за сессию: дальнейшая смена адреса — через конфиг + ребут.
+// Побочный штатный эффект: probe (5.5.2) целится в ETH.gatewayIP
+// = шлюзу fallback'а — на тупом коммутаторе честный LOCAL_NET.
+static constexpr char SAFE_FALLBACK_IP[]   = "192.168.1.50";
+static constexpr char SAFE_FALLBACK_MASK[] = "255.255.255.0";
+static constexpr char SAFE_FALLBACK_GW[]   = "192.168.1.1";
+void NetworkService::applySafeStaticFallback() {
+    _safeFallbackDone = true;
+    IPAddress lip, lmask, lgw;
+    lip.fromString(SAFE_FALLBACK_IP);
+    lmask.fromString(SAFE_FALLBACK_MASK);
+    lgw.fromString(SAFE_FALLBACK_GW);
+    // config() на живом интерфейсе: DHCP-клиент останавливается, адрес
+    // встаёт немедленно; события GOT_IP не будет — факт добираем в tick().
+    // DNS не задаём осмысленно: recovery-контур изолирован, NTP тут мёртв.
+    ETH.config(lip, lgw, lmask, IPAddress(0, 0, 0, 0));
+    log(LogLevel::Warning,
+        "SAFE MODE: DHCP-сервер не найден за %u с — АВАРИЙНЫЙ IP %s "
+        "(маска %s, шлюз %s, зашит в прошивку). Recovery-веб: http://%s/",
+        (unsigned)(SAFE_DHCP_TIMEOUT_MS / 1000),
+        SAFE_FALLBACK_IP, SAFE_FALLBACK_MASK, SAFE_FALLBACK_GW,
+        SAFE_FALLBACK_IP);
+}
+
+// ============================================================================
 // КОНТРОЛЬ ШЛЮЗА (ex-ПАЗ): esp_ping, одна сессия за раз
 // ============================================================================
 void NetworkService::startGatewayPing() {
     char gw[CFG_VALUE_LEN];
-    cfgGetStr("net.gateway", gw, sizeof(gw), "");
+    // Цель probe — по ФАКТИЧЕСКИМ настройкам (решение владельца 08.08):
+    // 1) явный net.probe_host (якорь контура) — в приоритете;
+    // 2) DHCP — шлюз, выданный сервером (ETH.gatewayIP()), а не
+    //    конфиг-поле net.gateway: при dhcp=1 там заводской дефолт
+    //    192.168.1.1, которого в чужой подсети нет — ложный LOCAL_NET
+    //    (стенд 08.08, home_master 5.5.0);
+    // 3) статика — конфиг net.gateway (он же реальный шлюз интерфейса).
+    cfgGetStr("net.probe_host", gw, sizeof(gw), "");
+    if (gw[0] == '\0') {
+        if (cfgGetBool("net.dhcp", true)) {
+            IPAddress dgw = ETH.gatewayIP();
+            if (dgw != IPAddress(0, 0, 0, 0)) {
+                snprintf(gw, sizeof(gw), "%u.%u.%u.%u",
+                         dgw[0], dgw[1], dgw[2], dgw[3]);
+            }
+        } else {
+            cfgGetStr("net.gateway", gw, sizeof(gw), "");
+        }
+    }
     if (gw[0] == '\0') return;
 
     ip_addr_t target;

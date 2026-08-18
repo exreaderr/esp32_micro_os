@@ -107,6 +107,12 @@ void AuditService::onEvent(int32_t eventId, const ShEventData* data) {
     if (!cfgGetBool("audit.enabled", true)) return;
     const char* name = eventName(eventId);
     if (name == nullptr) return;
+    // 5.8.1: та же правка направления, что в MQTT-зеркале — возврат
+    // уровня сети в FULL пишется RECOVERED, а не DEGRADED.
+    if (eventId == SH_EVENT_DEGRADED_LEVEL && data != nullptr &&
+        strcmp(data->payload, "FULL") == 0) {
+        name = "RECOVERED";
+    }
 
     // Время: unix от TimeService, если достоверно; иначе 0 (потребитель
     // смотрит на "up" — uptime всегда есть). Формат JSON-lines:

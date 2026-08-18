@@ -84,6 +84,29 @@ bool StorageService::atomicWrite(const char* path, const uint8_t* data, size_t l
 }
 
 // ============================================================================
+// ПОТОКОВАЯ АТОМАРНАЯ ЗАПИСЬ (5.2.0: openTemp -> пишем кусками -> commitTemp)
+// ============================================================================
+File StorageService::openTemp(const char* path) {
+    char tmpPath[64];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
+    File f = _fsReady ? LittleFS.open(tmpPath, "w") : File();
+    if (!f) log(LogLevel::Error, "openTemp: cannot open %s", tmpPath);
+    return f;
+}
+
+bool StorageService::commitTemp(const char* path) {
+    if (!_fsReady) return false;
+    char tmpPath[64];
+    snprintf(tmpPath, sizeof(tmpPath), "%s.tmp", path);
+    LittleFS.remove(path);
+    if (!LittleFS.rename(tmpPath, path)) {
+        log(LogLevel::Error, "commitTemp: rename failed %s -> %s", tmpPath, path);
+        return false;
+    }
+    return true;
+}
+
+// ============================================================================
 // ДОБАВЛЕНИЕ В КОНЕЦ (журналы)
 // ============================================================================
 bool StorageService::appendFile(const char* path, const char* text) {
@@ -257,6 +280,26 @@ bool StorageService::nvsExists(const char* ns, const char* key) {
     size_t len = prefs.getBytesLength(key);
     prefs.end();
     return len > 0;
+}
+
+bool StorageService::nvsRemove(const char* ns, const char* key) {
+    Preferences prefs;
+    if (!prefs.begin(ns, false)) return false;
+    bool ok = prefs.remove(key);
+    prefs.end();
+    return ok;
+}
+
+// ============================================================================
+// ДЕМОНТИРОВАНИЕ ПЕРЕД ПЕРЕЗАПИСЬЮ РАЗДЕЛА (OTA ФС)
+// ============================================================================
+void StorageService::unmountFs() {
+    if (!_fsReady) return;    // уже размонтирована/не была — идемпотентно
+    log(LogLevel::Warning,
+        "LittleFS UNMOUNT: раздел уходит под перезапись, до ребута "
+        "файловые записи сервисов будут no-op (RAM/NVS живы)");
+    LittleFS.end();
+    _fsReady = false;         // все write-пути -> безопасный no-op
 }
 
 // ============================================================================

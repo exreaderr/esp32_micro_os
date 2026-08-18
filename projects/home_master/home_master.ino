@@ -16,9 +16,9 @@
 #include "src/HomeMasterProfile.h"
 
 void setup() {
-    Kernel::getInstance().run<HomeMasterProfile>();
+  Kernel::getInstance().run<HomeMasterProfile>();
 }
 
 void loop() {
-    Kernel::getInstance().loop();
+  Kernel::getInstance().loop();
 }

@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include "../platform/BaseProfile.h"   // BoardId: плата платформы (5.3.0)
 
 class ResourceManager;
 class Kernel;
@@ -35,6 +36,11 @@ struct ManifestGpio {
 };
 
 struct HardwareManifest {
+    // --- Аппаратная плата платформы (5.3.0: вторая плата, проверка A4) ---
+    // Ядро вызывает platform::selectBoard() сразу после describeHardware —
+    // до claim'а ресурсов, BusManager (I2C-пины) и NetworkService (ETH).
+    platform::BoardId boardId = platform::BoardId::Wt32Eth01;   // дефолт
+
     // --- Системная кнопка Safe Mode (обрабатывает ядро, не профиль!) -----
     int8_t  safeModePin = -1;    // у smart_lock = GPIO14 (кнопка EXIT)
 

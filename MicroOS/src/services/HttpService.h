@@ -32,13 +32,23 @@
 #include "IUiProvider.h"
 #include <WebServer.h>
 
+namespace fs { class File; }   // streamFileDownload — без таскания FS.h в шапку
+
 // Бюджеты
 constexpr uint8_t  HTTP_TOKEN_SLOTS   = 4;     // одновременных админ-сессий
 constexpr uint8_t  HTTP_TOKEN_LEN     = 9;     // 8 hex + '\0'
 constexpr uint32_t HTTP_SESSION_MS    = 30UL * 60 * 1000;  // скользящее окно
 constexpr uint32_t HTTP_RESTART_DELAY_MS = 1500; // ack успеет уйти
-constexpr size_t   HTTP_JSON_BUF      = 8192;  // config JSON (схемы модулей)
+// 5.6.1: 16 КБ -> 24 КБ под CFG_MAX_FIELDS=96 (×~250 Б/поле с запасом).
+constexpr size_t   HTTP_JSON_BUF      = 24576; // config JSON (схемы модулей).
+// 5.1.1: схема 61 поля ≈ 10 КБ — 8 КБ МОЛЧА обрезали хвост (потерянные поля
+// панели 5.1.0). Буфер — HEAP в init() (урок outbox: BSS dram0_0_seg полон).
 constexpr size_t   HTTP_PAGE_BUF      = 4096;  // публичная страница (динамич.)
+// 5.8.0, HTTP-гард: веб поднимаем НЕ сразу за сетью, а через паузу —
+// бут-шторм (NTP/MQTT/брокер/SD) не делим с lwIP-сокетами браузеров
+// (урок 14.08: три браузера на загрузке замка уронили heap до 5 КБ;
+//  вкладки сами переподключаются через пару секунд — потерь нет).
+constexpr uint32_t HTTP_WEB_DELAY_MS  = 10000; // пауза после подъёма сети
 
 class HttpService : public ModuleBase {
 public:
@@ -46,7 +56,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HttpService"; }
-    const char* getVersion() const override { return "5.0.0"; }
+    const char* getVersion() const override { return "5.1.2"; }
     ModuleId getModuleId() const override { return 0x0102; }   // транспорт
 
     void init() override;
@@ -67,6 +77,13 @@ public:
     /// Валиден ли токен админской сессии (для IUiProvider: админские
     /// эндпоинты профиля). Скользящее окно продлевается, как у checkAdmin.
     bool isAdminToken(const char* token);
+
+    /// 5.8.0, «Скачать журнал»: потоковая отдача файла как attachment
+    /// (Content-Disposition + streamFile кусками — файл целиком в heap
+    /// НЕ поднимается). Ответ уходит ПОЛНОСТЬЮ внутри вызова: провайдер
+    /// API обязан вернуть statusCode=0 (см. handleApiDev), иначе ядро
+    /// пошлёт JSON поверх потока. false — файл не открыт/пустой вызов.
+    bool streamFileDownload(fs::File& f, const char* downloadName);
 
 private:
     HttpService() = default;
@@ -96,10 +113,17 @@ private:
     void handleApiTelemetry();         // admin: снимок B1
     void handleApiConfigGet();         // admin: значения (без секретов)
     void handleApiConfigSet();         // admin: key&value -> ConfigService
+    void handleApiConfigBackupInfo();  // admin GET: есть ли бэкап в NVS
+    void handleApiConfigBackup();      // admin POST: снимок всех полей -> NVS
+    void handleApiConfigRestore();     // admin POST: NVS -> поля + ребут
     void handleApiLogs();              // admin: tail лога
     void handleApiAudit();             // admin: выгрузка /audit.log
     void handleApiReboot();            // admin
-    void handleApiOta();               // admin: url -> UpdateService (A1)
+    void handleApiOtaInfo();           // admin: состояние OTA (залежь №3)
+    void handleApiOtaCheck();          // admin: проверить манифест на HA
+    void handleApiOtaUpdate();         // admin: фоновая загрузка (Phase 4)
+    void handleApiOtaUploadDone();     // admin: финиш приёма образа (POST)
+    void handleApiOtaUploadChunk();    // куски образа (upload-обработчик)
     void handleApiHealth();            // admin: сводка ПАЗ (HealthMonitor)
     void handleApiAuthChange();        // смена пароля: old+new (rate-limited)
     void handleApiTimeSync();          // admin: принудительный NTP-запрос
@@ -114,6 +138,7 @@ private:
     // --- ДАННЫЕ -----------------------------------------------------------------
     WebServer _server{80};
     bool     _serverUp = false;
+    uint32_t _netUpSinceMs = 0;   // 0 = сети нет (HTTP-гард, см. выше)
     IUiProvider* _ui = nullptr;
 
     // Сессии (RAM-only)
@@ -122,6 +147,14 @@ private:
 
     char     _currentToken[HTTP_TOKEN_LEN] = "";  // токен текущего запроса
     uint32_t _restartAtMs = 0;
+
+    // Приём OTA-образа (залежь №3): флаги на время одного multipart-запроса.
+    // WebServer шлёт куски в upload-обработчик, а HTTP-ответ формирует
+    // финиш-обработчик — поэтому 401 здесь откладывается (флаг ниже),
+    // иначе тело запроса задушило бы ответ.
+    bool     _otaAuthFail = false;
+    bool     _otaRxFailed = false;
+    bool     _otaRxOk = false;
 
     // Кольцевой буфер аргументов для uiArgTrampoline (профиль читает
     // несколько аргументов подряд — одного буфера мало).
@@ -133,7 +166,15 @@ private:
     char     _argRing[HTTP_ARG_RING][48];
     uint8_t  _argRingPos = 0;
 
-    // Рабочие буферы (BSS, не стек)
-    char     _jsonBuf[HTTP_JSON_BUF];
+    // Рабочие буферы. JSON — heap-указатель (выделяется ОДИН раз в init(),
+    // new(std::nothrow): 16 КБ в BSS не влезают — урок переполнения dram0_0_seg
+    // на 1832 байта). nullptr = аллокация не удалась → малый статический
+    // запасной: API работает, но длинные схемы снова усечены (громкий лог
+    // ConfigService::toJson это зафиксирует).
+    char*    _jsonBuf = nullptr;
+    char     _jsonBufFallback[2048];
+    char*    jsonBuf()           { return _jsonBuf ? _jsonBuf : _jsonBufFallback; }
+    size_t   jsonBufSize() const { return _jsonBuf ? HTTP_JSON_BUF
+                                                   : sizeof(_jsonBufFallback); }
     char     _pageBuf[HTTP_PAGE_BUF];
 };

@@ -12,6 +12,7 @@
 #include "../core/Events.h"
 #include "../core/ResourceManager.h"
 #include <Preferences.h>
+#include <cstdlib>   // malloc/free — транзиентные буферы снимков
 
 ConfigService& ConfigService::getInstance() {
     static ConfigService instance;
@@ -85,6 +86,34 @@ bool ConfigService::addFields(const char* group, const ConfigField* fields,
         _fieldCount++;
     }
     return true;
+}
+
+// 5.8.0, аккордеон «Служебные» (см. ConfigService.h): профильный список
+// групп, которые панель прячет в свёрнутый блок. Только отображение.
+void ConfigService::setHiddenGroups(const char* csv) {
+    safeStrCopy(_hiddenGroups, sizeof(_hiddenGroups), csv ? csv : "");
+    if (_hiddenGroups[0] != '\0') {
+        log(LogLevel::Info, "config: служебные группы (аккордеон): \"%s\"",
+            _hiddenGroups);
+    }
+}
+
+bool ConfigService::groupHidden(const char* group) const {
+    if (group == nullptr || group[0] == '\0' || _hiddenGroups[0] == '\0') {
+        return false;
+    }
+    const size_t gl = strlen(group);
+    const char* p = _hiddenGroups;
+    while (*p != '\0') {
+        const char* comma = strchr(p, ',');
+        size_t tl = comma ? (size_t)(comma - p) : strlen(p);
+        while (tl > 0 && *p == ' ') { ++p; --tl; }        // "А, Б" — пробелы
+        while (tl > 0 && p[tl - 1] == ' ') --tl;          // по краям не значат
+        if (tl == gl && strncmp(p, group, gl) == 0) return true;
+        if (comma == nullptr) break;
+        p = comma + 1;
+    }
+    return false;
 }
 
 // ============================================================================
@@ -166,6 +195,10 @@ bool ConfigService::validate(const ConfigField& f, const char* value) const {
         case ConfigType::BOOL:
             return strlen(value) <= 5;   // "0","1","true","false","on","off"
         case ConfigType::IP: {
+            // Пустое = «не задан» — легитимно: изолированная сеть без
+            // шлюза/DNS (урок бенча 5.5.5: пустой net.gateway отклонялся,
+            // конфигурацию «сети без выхода» было не сохранить).
+            if (value[0] == '\0') return true;
             // Грубая проверка: 4 числа через точку (точную делает сеть)
             uint8_t dots = 0;
             for (const char* p = value; *p; ++p) if (*p == '.') dots++;
@@ -245,25 +278,51 @@ void ConfigService::scheduleSave() {
 // ============================================================================
 // JSON: плоский {"key":"value",...} — ручной парсер/сериализатор
 // ============================================================================
-void ConfigService::saveToJson() {
-    char buf[CFG_MAX_FIELDS * (CFG_KEY_LEN + CFG_VALUE_LEN + 6)];
+size_t ConfigService::snapshotJson(char* buf, size_t bufSize,
+                                   bool withSecrets) const {
     size_t pos = 0;
     buf[pos++] = '{';
     bool first = true;
     for (uint8_t i = 0; i < _fieldCount; ++i) {
-        if (_fields[i].flags & CFG_SECRET) continue;   // секреты — не в JSON
+        // Секреты: в файл — никогда, в NVS-снимок — да (не покидает устройство)
+        if ((_fields[i].flags & CFG_SECRET) && !withSecrets) continue;
         // READONLY — ХРАНИМ (урок 5.0.x: счётчик циклов замка писался только
         // в RAM и «считал и сбрасывался» на каждом ребуте; монолит держал
         // cycle_count в NVS). Износ флеша не аргумент: запись debounced
         // scheduleSave, счётчики меняются редко (цикл замка, не милисекунды).
-        int n = snprintf(buf + pos, sizeof(buf) - pos, "%s\"%s\":\"%s\"",
+        int n = snprintf(buf + pos, bufSize - pos, "%s\"%s\":\"%s\"",
                          first ? "" : ",", _fields[i].key, _values[i]);
-        if (n < 0) break;
+        // Дисциплина буфера: при усечении snprintf возвращает ЖЕЛАЕМУЮ
+        // длину (> остатка) — pos ушёл бы за границу. Откатываем
+        // незавершённое поле: JSON остаётся валидным.
+        if (n < 0 || (size_t)n >= bufSize - pos) {
+            if (!first) buf[pos] = '\0';
+            else pos = 1;
+            break;
+        }
         pos += (size_t)n;
         first = false;
     }
-    if (pos < sizeof(buf) - 2) buf[pos++] = '}';
+    if (pos < bufSize - 2) buf[pos++] = '}';
     buf[pos] = '\0';
+    return pos;
+}
+
+// Буфер снимка — из КУЧИ на время операции. Два урока: (1) стек —
+// цепочка HTTP-обработчик -> restoreFromNvs -> saveToJson вложила бы
+// 2×5.5 КБ в loop-задачу (8 КБ) = переполнение; (2) статика — 11 КБ BSS
+// не влезли в dram0_0_seg (урок линковки: сегмент не резиновый, запас
+// был ~700 байт). Куча держит 80+ КБ свободными — транзиентным буферам туда.
+constexpr size_t CFG_SNAPSHOT_CAP =
+    CFG_MAX_FIELDS * (CFG_KEY_LEN + CFG_VALUE_LEN + 6);
+
+void ConfigService::saveToJson() {
+    char* buf = (char*)malloc(CFG_SNAPSHOT_CAP);
+    if (buf == nullptr) {
+        log(LogLevel::Error, "config save: no heap for snapshot");
+        return;
+    }
+    snapshotJson(buf, CFG_SNAPSHOT_CAP, false);
 
     if (!StorageService::getInstance().atomicWrite(CFG_FILE_PATH, buf)) {
         ShEventData d; d.clear();
@@ -271,14 +330,148 @@ void ConfigService::saveToJson() {
         postEvent(CFG_EVENT_SAVE_FAILED, &d);
         log(LogLevel::Error, "config save failed");
     }
+    free(buf);
+}
+
+// ============================================================================
+// NVS-БЭКАП ПОЛНОГО СНИМКА (паттерн БД пользователей CardStore, 5.0.9)
+// ============================================================================
+// Зачем: перепрошивка FS стирает /config.json — оператор шёл по ВСЕМ полям
+// и восстанавливал значения руками. NVS-раздел перепрошивкой FS/app не
+// затрагивается: снимок переживает и новую FS, и смену версии. После
+// перепрошивки: прошивка -> FS -> «Восстановить из NVS» -> ребут -> готово.
+// ============================================================================
+bool ConfigService::backupToNvs(uint32_t unixNow, const char* fwVer,
+                                size_t* outSize) {
+    char* buf = (char*)malloc(CFG_SNAPSHOT_CAP);
+    if (buf == nullptr) {
+        log(LogLevel::Error, "config backup: no heap for snapshot");
+        return false;
+    }
+    size_t n = snapshotJson(buf, CFG_SNAPSHOT_CAP, true);  // ПОЛНЫЙ, с секретами
+
+    StorageService& fs = StorageService::getInstance();
+    if (!fs.nvsBackup(CFG_NVS_NS, CFG_BAK_KEY, buf, n)) {
+        free(buf);
+        log(LogLevel::Error, "config backup to NVS failed");
+        return false;
+    }
+    free(buf);
+    // Метаданные отдельным ключом: панель показывает «когда/сколько/какая
+    // прошивка», не вычитывая весь снимок (он с секретами — не для HTTP).
+    char inf[96];
+    int m = snprintf(inf, sizeof(inf),
+                     "{\"unix\":%lu,\"size\":%u,\"fw\":\"%s\"}",
+                     (unsigned long)unixNow, (unsigned)n,
+                     (fwVer != nullptr) ? fwVer : "?");
+    if (m > 0) fs.nvsBackup(CFG_NVS_NS, CFG_BAK_INFO, inf, (size_t)m);
+
+    if (outSize != nullptr) *outSize = n;
+    log(LogLevel::Info, "config backup: %u bytes to NVS",
+        (unsigned)n);
+    return true;
+}
+
+int ConfigService::restoreFromNvs() {
+    StorageService& fs = StorageService::getInstance();
+    if (!fs.nvsExists(CFG_NVS_NS, CFG_BAK_KEY)) return -1;
+
+    uint8_t* buf = (uint8_t*)malloc(CFG_SNAPSHOT_CAP + 1);
+    if (buf == nullptr) {
+        log(LogLevel::Error, "config restore: no heap for snapshot");
+        return -1;
+    }
+    size_t n = fs.nvsRestore(CFG_NVS_NS, CFG_BAK_KEY, buf, CFG_SNAPSHOT_CAP);
+    if (n == 0) { free(buf); return -1; }
+    buf[n] = '\0';
+
+    // Тот же ручной парсер, что в loadFromJson: битый/чужой blob просто
+    // не даст совпадений — applied останется нулём и ничего не изменится.
+    // Неизвестные текущей схеме ключи (бэкап с более новой прошивки)
+    // пропускаются — как и при загрузке файла.
+    uint8_t applied = 0;
+    const char* p = (const char*)buf;
+    while ((p = strchr(p, '"')) != nullptr) {
+        p++;
+        const char* keyEnd = strchr(p, '"');
+        if (keyEnd == nullptr) break;
+        char key[CFG_KEY_LEN];
+        size_t klen = (size_t)(keyEnd - p);
+        if (klen >= sizeof(key)) { p = keyEnd + 1; continue; }
+        memcpy(key, p, klen);
+        key[klen] = '\0';
+
+        p = keyEnd + 1;
+        if (p[0] != ':' || p[1] != '"') continue;
+        p += 2;
+        const char* valEnd = strchr(p, '"');
+        if (valEnd == nullptr) break;
+
+        int8_t i = findFieldIndex(key);
+        if (i >= 0) {
+            size_t vlen = (size_t)(valEnd - p);
+            if (vlen < CFG_VALUE_LEN) {
+                memcpy(_values[i], p, vlen);
+                _values[i][vlen] = '\0';
+                if (_fields[i].flags & CFG_SECRET) {
+                    // Секреты живут в NVS поштучно (как в set/addFields)
+                    Preferences prefs;
+                    if (prefs.begin(CFG_NVS_NS, false)) {
+                        prefs.putString(key, _values[i]);
+                        prefs.end();
+                    }
+                }
+                applied++;
+            }
+        }
+        p = valEnd + 1;
+    }
+
+    if (applied == 0) {
+        free(buf);
+        log(LogLevel::Warning, "config restore: blob not recognized (0 fields)");
+        return 0;
+    }
+    // Буфер разбора больше не нужен — освобождаем ДО saveToJson: пик
+    // транзиентной кучи остаётся одним снимком, а не двумя.
+    free(buf);
+    // НЕ scheduleSave: ребут запланирован через 1.5 с, дебаунс 1 с — гонка.
+    // Пишем немедленно и атомарно.
+    saveToJson();
+    _dirty = false;
+    log(LogLevel::Info, "config restored from NVS: %u fields", applied);
+    return (int)applied;
+}
+
+size_t ConfigService::backupInfoJson(char* buf, size_t bufSize) const {
+    char inf[96];
+    size_t n = StorageService::getInstance().nvsRestore(
+        CFG_NVS_NS, CFG_BAK_INFO, inf, sizeof(inf) - 1);
+    if (n == 0) {
+        return (size_t)snprintf(buf, bufSize, "{\"exists\":0}");
+    }
+    inf[n] = '\0';
+    // inf — свой компактный JSON {"unix":...}: подмешиваем exists:1,
+    // не парясь пересборкой (inf[0] == '{' по построению backupToNvs).
+    if (inf[0] != '{') return (size_t)snprintf(buf, bufSize, "{\"exists\":0}");
+    return (size_t)snprintf(buf, bufSize, "{\"exists\":1,%s", inf + 1);
 }
 
 void ConfigService::loadFromJson() {
-    uint8_t buf[CFG_MAX_FIELDS * (CFG_KEY_LEN + CFG_VALUE_LEN + 6)];
+    // Буфер ~5,5 КБ — ТОЛЬКО в куче, не на стеке: loopTask имеет 8 КБ,
+    // а цепочка VFS→LittleFS→flash на S3 заметно глубже, чем на классике
+    // (паника «stack canary watchpoint (loopTask)» на стенде M0, 06.08.2026).
+    constexpr size_t BUF_SZ = CFG_MAX_FIELDS * (CFG_KEY_LEN + CFG_VALUE_LEN + 6);
+    uint8_t* buf = (uint8_t*)malloc(BUF_SZ);
+    if (!buf) {
+        log(LogLevel::Error, "config load: no heap, defaults in use");
+        return;
+    }
     size_t n = StorageService::getInstance().readFile(CFG_FILE_PATH, buf,
-                                                      sizeof(buf) - 1);
+                                                      BUF_SZ - 1);
     if (n == 0) {
         log(LogLevel::Info, "no config file, defaults in use");
+        free(buf);
         return;
     }
     buf[n] = '\0';
@@ -313,6 +506,7 @@ void ConfigService::loadFromJson() {
         p = valEnd + 1;
     }
     log(LogLevel::Info, "config loaded from %s", CFG_FILE_PATH);
+    free(buf);
 }
 
 // ============================================================================
@@ -428,6 +622,12 @@ size_t ConfigService::toJson(char* buf, size_t bufSize) const {
         const bool sec = (_fields[i].flags & CFG_SECRET) != 0;
         // t: тип (0=INT,1=UINT,2=FLOAT,3=BOOL,4=STRING,5=IP) — авто-UI
         // строит виджет по типу; min/max — клиентская валидация чисел.
+        // 5.8.0: hg:1 — группа помечена профилем служебной (аккордеон
+        // «Служебные» в панели; значение/запись поля не меняются).
+        char extra[40]; extra[0] = '\0';
+        if (groupHidden(_fields[i].group)) strcat(extra, ",\"hg\":1");
+        if (sec) strcat(extra, _values[i][0] ? ",\"secret\":1,\"set\":1"
+                                             : ",\"secret\":1,\"set\":0");
         int n = snprintf(buf + pos, bufSize - pos,
                          "%s\"%s\":{\"value\":\"%s\",\"group\":\"%s\","
                          "\"label\":\"%s\",\"ro\":%d,\"t\":%d,"
@@ -438,15 +638,21 @@ size_t ConfigService::toJson(char* buf, size_t bufSize) const {
                          (_fields[i].flags & CFG_READONLY) ? 1 : 0,
                          (int)_fields[i].type,
                          (long)_fields[i].min, (long)_fields[i].max,
-                         sec ? (_values[i][0] ? ",\"secret\":1,\"set\":1"
-                                              : ",\"secret\":1,\"set\":0")
-                             : "");
+                         extra);
         // Дисциплина буфера: при усечении snprintf возвращает ЖЕЛАЕМУЮ
         // длину (> остатка) — pos ушёл бы за границу. Прерываем цикл,
         // откатив незавершённое поле: JSON останется валидным.
+        // 5.1.1: усечение — ГРОМКОЕ. Молчаливый обрыв 5.1.0 съел хвост
+        // схемы (61 поле > буфер 8 КБ), панель потеряла 6 полей профиля,
+        // и никто ничего не заподозрил: JSON-то валидный. Error в лог —
+        // обязателен, чтобы следующий рост схемы увидели сразу.
         if (n < 0 || (size_t)n >= bufSize - pos) {
             if (!first) buf[pos] = '\0';   // отрезать ",начало_поля"
             else pos = 1;                  // вообще ничего не влезло
+            log(LogLevel::Error,
+                "toJson: SCHEMA TRUNCATED at field %u/%u (%s): buf %u B small",
+                (unsigned)i, (unsigned)_fieldCount, _fields[i].key,
+                (unsigned)bufSize);
             break;
         }
         pos += (size_t)n;

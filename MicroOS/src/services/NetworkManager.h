@@ -57,7 +57,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "NetworkService"; }
-    const char* getVersion() const override { return "5.0.0"; }
+    const char* getVersion() const override { return "5.5.6"; }   // 5.5.6: fallback на hardcoded 192.168.1.50 (конфиг игнорится); 5.5.5: Safe Mode fallback; 5.5.2: probe по факту
     ModuleId getModuleId() const override { return 0x0100; }   // транспорт
 
     void registerExtensions() override;   // инжекция схемы net.* / sys.hostname
@@ -100,6 +100,7 @@ private:
     // --- ВНУТРЕННЯЯ КУХНЯ ---------------------------------------------------
     void buildIdentity();             // hostname + deviceId (E1)
     void applyNetConfig();            // DHCP или статика из ConfigService
+    void applySafeStaticFallback();   // Safe Mode: статика при мёртвом DHCP (5.5.5)
     void evaluateDegradation();       // пересчёт уровня A3 + событие
     void startGatewayPing();          // сессия esp_ping (одна за раз)
     void finishGatewayPing();         // вердикт по завершённой сессии
@@ -114,6 +115,15 @@ private:
     uint8_t  _gwFailStreak = 0;       // подряд неудачных сессий ping
     uint32_t _gwRttMs      = 0;       // RTT последнего успешного пакета
     uint32_t _lastPingMs   = 0;       // когда стартовала последняя сессия
+
+    // Safe Mode статический fallback (5.5.5, закрытие бэклога сетевой
+    // политики владельца): ТОЛЬКО в Safe Mode при net.dhcp=true — если за
+    // ~15 с после link-up нет DHCP-лиза, адрес назначается статикой из
+    // net.ip/mask/gateway (заводское 192.168.1.50/24), чтобы recovery-веб
+    // был достижен в сети вообще без DHCP-сервера. В нормальном режиме
+    // поведение не меняется: ожидание DHCP + деградация.
+    uint32_t _safeDhcpSinceMs  = 0;     // link поднят без IP: момент взвода (0 = не взведён)
+    bool     _safeFallbackDone = false; // статика применена (one-shot за сессию)
 
     // Результат текущей сессии ping (заполняется колбэками ping-задачи)
     volatile bool     _pingEnded   = false; // сессия завершена -> разбор в tick

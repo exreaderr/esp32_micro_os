@@ -49,6 +49,13 @@ public:
         return atomicWrite(path, (const uint8_t*)text, strlen(text));
     }
 
+    /// Потоковая атомарная запись (5.2.0 — база 250 карт не влезает в один
+    /// RAM-буфер): openTemp -> f.write/f.print кусками -> f.close ->
+    /// commitTemp (remove+rename, атомарно, как у atomicWrite). Прервали
+    /// на середине — просто удалите tmp через remove() пути+".tmp".
+    File openTemp(const char* path);
+    bool commitTemp(const char* path);
+
     /// Чтение файла в буфер. Возвращает число байт или 0 (нет файла/ошибка).
     size_t readFile(const char* path, uint8_t* buf, size_t bufSize);
 
@@ -88,6 +95,20 @@ public:
     size_t nvsRestore(const char* ns, const char* key, void* buf, size_t bufSize);
     /// Ключ существует и непуст? (для «есть ли бэкап» — без чтения blob'а)
     bool nvsExists(const char* ns, const char* key);
+    /// Удалить ключ (false — не было/ошибка). Для одноразовых записей
+    /// вроде OTA-исхода: прочитали при загрузке -> удалили.
+    bool nvsRemove(const char* ns, const char* key);
+
+    /// ДЕМОНТИРОВАТЬ LittleFS перед перезаписью раздела (OTA ФС). Урок
+    /// 5.0.14: прошивка образа ФС поверх СМОНТИРОВАННОЙ LittleFS — русская
+    /// рулетка: записи сервисов в мёртвую ФС (история, журналы) попадают
+    /// поверх свежего образа и устраивают войну корневых метапар на
+    /// блоках 0/1 -> после ребута маунтится франкенштейн из старого
+    /// корня и новых данных. После unmount все write-пути сервисов
+    /// становятся безопасными no-op (guard _fsReady), чтение тоже
+    /// отваливается — до ребута остаются RAM и NVS. ОБРАТНОГО ПУТИ НЕТ:
+    /// перемонтирование без ребута не предусмотрено.
+    void unmountFs();
 
     // --- МЕСТО -------------------------------------------------------------------------
     size_t freeSpace() const;

@@ -31,6 +31,9 @@ struct TelemetrySnapshot {
     uint32_t busDropped;       // потеряно событий шины за сессию
     uint16_t busHighWater;     // пиковая глубина очереди шины
     int16_t  cpuTenths;        // температура кристалла x10 (45.1 -> 451)
+    int16_t  cpuSeq;           // пульс чтений драйвера (getReadSeq) — для
+                               // дежурного HealthMonitor: значение может
+                               // стоять часами (равновесие), пульс — нет
     uint8_t  degradation;      // DegradationLevel (A3)
     uint32_t gatewayRttMs;     // RTT шлюза (0 — не измерен)
     uint8_t  bootloopCount;    // нестабильных стартов подряд (A1)

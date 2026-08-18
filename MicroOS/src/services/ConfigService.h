@@ -43,12 +43,20 @@ struct ConfigField {
 };
 
 // Бюджеты
-constexpr uint8_t  CFG_MAX_FIELDS     = 64;   // полей в системе
+// 5.6.1: 64 -> 96. Бенч 5.6.0 (13.08.2026): мастер уперся в 64 — группа
+// «Журнал M3» влезла наполовину (flush_s/max_mb/max_days отвергнуты,
+// журнал жил на вшитых умолчаниях). Запас 96 с прицелом на M3.3/M3.4
+// (бэкапы, дискавери). Цена: ~76 Б статики на поле (+2,4 КБ) — приемлемо.
+// Внимание: рост схемы ест и HTTP_JSON_BUF (см. HttpService.h) — держать
+// пропорцию ~250 Б на поле, усечение toJson громкое, смотреть лог.
+constexpr uint8_t  CFG_MAX_FIELDS     = 96;   // полей в системе
 constexpr uint8_t  CFG_KEY_LEN        = 32;   // длина ключа
 constexpr uint8_t  CFG_VALUE_LEN      = 48;   // длина значения (строкой)
 constexpr uint32_t CFG_SAVE_DEBOUNCE_MS = 1000; // отложенная запись JSON
 constexpr const char* CFG_FILE_PATH   = "/config.json";
 constexpr const char* CFG_NVS_NS      = "config";   // секреты и флаги
+constexpr const char* CFG_BAK_KEY     = "bak_cfg";  // NVS blob: полный снимок
+constexpr const char* CFG_BAK_INFO    = "bak_inf";  // NVS blob: метаданные
 
 class ConfigService : public ModuleBase {
 public:
@@ -56,7 +64,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "ConfigService"; }
-    const char* getVersion() const override { return "5.0.0"; }
+    const char* getVersion() const override { return "5.1.1"; }
     ModuleId getModuleId() const override { return 0x0002; }
 
     void init() override;
@@ -74,6 +82,18 @@ public:
     bool addFields(const char* group, std::initializer_list<ConfigField> fields) {
         return addFields(group, fields.begin(), (uint8_t)fields.size());
     }
+
+    /// 5.8.0, аккордеон «Служебные» (дизайн утверждён 13.08.2026): профиль
+    /// помечает группы, которые в панели уходят в свёрнутый блок внизу
+    /// страницы настроек. Поля регистрируются и работают ПОЛНОЙ программой
+    /// (решение владельца: ядро едино, opt-in НЕ делаем) — меняется ТОЛЬКО
+    /// отображение; API и запись не затрагиваются. Это ПРОФИЛЬНАЯ настройка
+    /// (на smart_light «Планировщик» пользовательский и остаётся видимым),
+    /// поэтому вызывать из registerExtensions() профиля.
+    /// csv — имена групп через запятую: "Планировщик,Счётчики".
+    void setHiddenGroups(const char* csv);
+    /// Группа в служебном списке? (toJson помечает её поля флагом hg:1)
+    bool groupHidden(const char* group) const;
 
     // --- ДОСТУП К ЗНАЧЕНИЯМ (типизированный) --------------------------------------
     bool        getBool (const char* key, bool def = false) const;
@@ -106,6 +126,20 @@ public:
     /// Сериализация всех значений в JSON (без SECRET-полей) для API/UI.
     size_t toJson(char* buf, size_t bufSize) const;
 
+    // --- NVS-БЭКАП ПОЛНОГО СНИМКА (паттерн БД пользователей) ------------------
+    /// Снять ВСЕ поля (включая секреты) одним blob в NVS. Секреты при этом
+    /// устройство НЕ покидают: снимок живёт только NVS->NVS, по HTTP ходят
+    /// лишь метаданные (backupInfoJson). Переживает перепрошивку FS — для
+    /// этого и существует ("Вжжух, вжжух — и готово").
+    bool   backupToNvs(uint32_t unixNow, const char* fwVer,
+                       size_t* outSize = nullptr);
+    /// Восстановить из NVS-снимка. >=0 — применено полей (и сразу сохранено),
+    /// -1 — бэкапа нет, 0 — blob чужой/битый (НИЧЕГО не изменено).
+    int    restoreFromNvs();
+    /// Метаданные бэкапа для панели: {"exists":0} или
+    /// {"exists":1,"unix":U,"size":N,"fw":"x.y.z"}.
+    size_t backupInfoJson(char* buf, size_t bufSize) const;
+
 private:
     ConfigService() = default;
 
@@ -114,6 +148,8 @@ private:
     void scheduleSave();          // запрос отложенной записи
     void saveToJson();            // атомарная запись через StorageService
     void migrateFromLegacyNvs();  // миграция NVS v2.5.0 -> поля 5.0
+    /// Общий сериализатор снимка (saveToJson — без секретов, бэкап — полный).
+    size_t snapshotJson(char* buf, size_t bufSize, bool withSecrets) const;
 
     // --- ПОИСК/ВАЛИДАЦИЯ ---------------------------------------------------------
     const ConfigField* findField(const char* key) const;
@@ -130,6 +166,7 @@ private:
 
     bool     _dirty = false;          // есть несохранённые изменения
     uint32_t _dirtySinceMs = 0;       // дебаунс записи
+    char     _hiddenGroups[64] = "";  // 5.8.0: csv служебных групп (аккордеон)
 };
 
 // ============================================================================
