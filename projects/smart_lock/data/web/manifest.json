@@ -1,0 +1,26 @@
+{
+  "short_name": "Замок",
+  "name": "Умный замок — МикроОС 5.0",
+  "description": "Панель управления умным замком СКУД на МикроОС 5.0",
+  "icons": [
+    {
+      "src": "/web/icon-256.png",
+      "type": "image/png",
+      "sizes": "256x256",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/web/icon.png",
+      "type": "image/png",
+      "sizes": "128x128",
+      "purpose": "any"
+    }
+  ],
+  "start_url": "/web/lock.html",
+  "scope": "/web/",
+  "display": "standalone",
+  "background_color": "#eef2f5",
+  "theme_color": "#2196f3",
+  "orientation": "portrait",
+  "lang": "ru"
+}
