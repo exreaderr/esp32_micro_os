@@ -17,16 +17,23 @@
 //     FineOffsetCore и дедуплицирует второй пакет пары (31 мс).
 //
 // SPI: хост HSPI задаётся ЯВНО (правило нумерации classic ESP32:
-// FSPI=1, HSPI=2, VSPI=3 — не полагаемся на умолчание). Пины — из
-// WeatherGateProfile::pins() (SCK=14, MOSI=4, MISO=35, CS=17,
-// GDO0=36, GDO2=39).
+// FSPI=1, HSPI=2, VSPI=3 — не полагаемся на умолчание). Пины —
+// параметром через configurePins() до init() (профиль weather_gate:
+// SCK=14, MOSI=4, MISO=35, CS=17, GDO0=36, GDO2=39).
 // ============================================================================
 #pragma once
 
-#include "../core/IDeviceDriver.h"
+#include <core/IDeviceDriver.h>
 #include "FineOffsetCore.h"
 #include "Cc1101Core.h"
 #include <SPI.h>
+
+// Пины — параметр от профиля (configurePins до init). Драйвер — общий
+// код библиотеки и НЕ знает о профилях (урок Issue #1, раздел 4:
+// обратный инклуд WeatherGateProfile.h нарушал слои и ломал сборку
+// других профилей в каноничной раскладке «библиотека и projects/ —
+// соседи»).
+struct Cc1101Pins { uint8_t sck, mosi, miso, cs, gdo0, gdo2; };
 
 // Частота опроса: дрейн кольца фронтов. Кольца на 512 фронтов хватает
 // на два полных кадра (~176 фронтов каждый) с запасом под шум шторки.
@@ -39,6 +46,8 @@ public:
 
     // --- IDeviceDriver ---------------------------------------------------
     const char* driverName() const override { return "cc1101"; }
+    /// Пины задаёт профиль ДО init() (см. Cc1101Pins выше).
+    void configurePins(const Cc1101Pins& p) { _pins = p; _pinsSet = true; }
     bool init() override;
     void poll() override;
     uint32_t getPollIntervalMs() const override { return CC1101_POLL_MS; }
@@ -77,6 +86,8 @@ private:
     static Edge              _ring[CC1101_EDGE_RING];
 
     // --- ДАННЫЕ -------------------------------------------------------------------
+    Cc1101Pins        _pins{};
+    bool              _pinsSet = false;
     fo::Decoder       _dec;
     fo::WeatherPacket _lastPkt{};
     uint8_t           _lastRaw[10]{};              // для дедупликации пары

@@ -16,7 +16,7 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.8.1"
+#define MICROOS_VERSION_STR "5.8.2"
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 

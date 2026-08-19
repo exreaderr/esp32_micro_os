@@ -72,7 +72,8 @@ CONFIG_RE = re.compile(
 def parse_config_fields():
     fields = []
     sources = []
-    for sub in ("src/services", "projects/smart_lock/src"):
+    for sub in ("src/services", "projects/smart_lock/src",
+                "projects/home_master/src"):
         d = os.path.join(ROOT, sub)
         for fn in sorted(os.listdir(d)):
             if fn.endswith((".cpp", ".h")):

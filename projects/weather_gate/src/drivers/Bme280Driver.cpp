@@ -12,8 +12,8 @@
 //   0xF7..0xFE burst: press[3] temp[3] hum[2] (20/20/16 бит)
 // ============================================================================
 #include "Bme280Driver.h"
-#include "../core/ResourceManager.h"
-#include "../services/ConfigService.h"
+#include <core/ResourceManager.h>
+#include <services/ConfigService.h>
 #include <Arduino.h>
 #include <cstring>
 

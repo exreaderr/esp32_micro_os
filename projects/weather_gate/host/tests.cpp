@@ -1,9 +1,10 @@
 // ============================================================================
-// tests.cpp — HOST-ТЕСТЫ ЧИСТОЙ ЛОГИКИ ЯДРА (D2)
+// tests.cpp — HOST-ТЕСТЫ ЧИСТОЙ ЛОГИКИ (ядро + профиль weather_gate) (D2)
 // ============================================================================
-// Запуск на хосте (без железа):
-//   g++ -std=c++17 -I shim tests.cpp ../core/ResourceManager.cpp -o tests
-//   ./tests
+// Запуск на хосте (без железа), из projects/weather_gate/host:
+//   ./run_tests.sh
+// (каноничная раскладка: ядро — ../../MicroOS, драйверы профиля —
+// ../src/drivers; шим Arduino — ../../MicroOS/host/shim)
 //
 // Покрытие (только то, что НЕ требует FreeRTOS/GPIO/шины — честная граница):
 //   · WiegandFormats.h  — декодер W26–W56 (каталог профилей, логика чистая);
@@ -17,23 +18,23 @@
 #include <ctime>          // timegm — эталон для secondsFromCivil
 
 // Шим Arduino ПЕРЕД инклудами ядра (подменяет <Arduino.h> по -I shim)
-#include "../src/catalog/wiegand/WiegandFormats.h"
-#include "../projects/smart_lock/src/CardDbFormat.h"
-#include "../src/drivers/BcdUtils.h"
+#include "../../../MicroOS/src/catalog/wiegand/WiegandFormats.h"
+#include "../../smart_lock/src/CardDbFormat.h"
+#include "../../../MicroOS/src/drivers/BcdUtils.h"
 #include "../src/drivers/Bme280Core.h"
 #include "../src/drivers/FineOffsetCore.h"
 #include "../src/drivers/Cc1101Core.h"
 #include "../src/drivers/WeatherCore.h"
-#include "../src/services/TimeInterval.h"
-#include "../src/services/AudioQueue.h"
-#include "../src/services/DataLogCore.h"
-#include "../src/services/ScheduleCore.h"
-#include "../src/services/CounterCore.h"
-#include "../src/services/MqttOutbox.h"
-#include "../src/services/SpeechCore.h"
-#include "../src/services/JournalCore.h"
-#include "../src/core/ResourceManager.h"
-#include "../src/core/SntpCore.h"
+#include "../../../MicroOS/src/services/TimeInterval.h"
+#include "../../../MicroOS/src/services/AudioQueue.h"
+#include "../../../MicroOS/src/services/DataLogCore.h"
+#include "../../../MicroOS/src/services/ScheduleCore.h"
+#include "../../../MicroOS/src/services/CounterCore.h"
+#include "../../../MicroOS/src/services/MqttOutbox.h"
+#include "../../../MicroOS/src/services/SpeechCore.h"
+#include "../../../MicroOS/src/services/JournalCore.h"
+#include "../../../MicroOS/src/core/ResourceManager.h"
+#include "../../../MicroOS/src/core/SntpCore.h"
 
 // ============================================================================
 // МИКРО-ФРЕЙМВОРК

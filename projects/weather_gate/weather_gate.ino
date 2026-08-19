@@ -1,10 +1,12 @@
 // ============================================================================
 // weather_gate.ino — ШЛЮЗ ПОГОДНОЙ СТАНЦИИ (МикроОС 5.0, WT32-ETH01)
 // ============================================================================
-// Профиль WeatherGateProfile. Стадия W1: скелет + Bme280Driver
-// (host-тесты компенсации по эталону — host/tests.cpp, testBme280).
-// CC1101 RX-only + декодер Fine Offset — W2; телеметрия/UI — W3;
-// даталог wx_* на home_master — W4; Замбретти — W5.
+// Профиль WeatherGateProfile. W1: скелет + Bme280Driver.
+// W2: CC1101 RX-only + декодер Fine Offset. W3: weather-JSON
+// (HTTP + MQTT retained) для smart_lock, DataLog + графики uPlot,
+// ПАЗ-проверки, авто-высота. W4: зеркало даталога на home_master
+// (сторона ядерной ветки, Issue #1 п.3.3). W5: Замбретти.
+// Host-тесты чистой логики — host/tests.cpp (./run_tests.sh).
 // ============================================================================
 #include <MicroOS.h>
 #include "src/WeatherGateProfile.h"

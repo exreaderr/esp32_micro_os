@@ -2,8 +2,7 @@
 // Cc1101Driver.cpp — реализация приёмника CC1101 (receive-only)
 // ============================================================================
 #include "Cc1101Driver.h"
-#include "../services/ConfigService.h"
-#include "../../projects/weather_gate/src/WeatherGateProfile.h"
+#include <services/ConfigService.h>
 #include <cstring>
 
 // --- СТАТИКА ISR (файловая область — правило ISR платформы) -------------------
@@ -22,6 +21,11 @@ static uint8_t  s_lastLvl = 0;
 // переносится в метрику драйвера из poll() — getInstance() в ISR запрещён.
 static volatile uint32_t s_edgesDropped = 0;
 
+// Пины GDO для ISR — файловые статики (init копирует из _pins; обращение
+// к членам через getInstance() в ISR запрещено правилами платформы).
+static uint8_t s_pinGdo0 = 0xFF;
+static uint8_t s_pinGdo2 = 0xFF;
+
 Cc1101Driver& Cc1101Driver::getInstance() {
     static Cc1101Driver instance;
     return instance;
@@ -31,12 +35,12 @@ Cc1101Driver& Cc1101Driver::getInstance() {
 // ISR: GDO2 (Carrier Sense) — шторка; GDO0 — фронты данных
 // ============================================================================
 void IRAM_ATTR Cc1101Driver::isrGdo2() {
-    _csActive = (digitalRead(WeatherGateProfile::pins().cc1101Gdo2) == HIGH);
+    _csActive = (digitalRead(s_pinGdo2) == HIGH);
     if (_csActive) {
         // Шторка открылась: перевзводим отсечку — первый фронт пакета
         // не должен унаследовать длительность тишины до него.
         s_lastUs  = micros();
-        s_lastLvl = (digitalRead(WeatherGateProfile::pins().cc1101Gdo0) == HIGH) ? 1 : 0;
+        s_lastLvl = (digitalRead(s_pinGdo0) == HIGH) ? 1 : 0;
     } else {
         // Шторка закрылась: метка зазора — декодер сбросится на feed()
         uint16_t next = (uint16_t)(_wHead + 1) % CC1101_EDGE_RING;
@@ -52,7 +56,7 @@ void IRAM_ATTR Cc1101Driver::isrGdo0() {
     // Длительность завершившегося уровня. micros() в ISR допустим
     // (чтение таймера, без heap/объектов); millis() в ISR — запрещён.
     uint32_t now = micros();
-    uint8_t lvl = (digitalRead(WeatherGateProfile::pins().cc1101Gdo0) == HIGH) ? 1 : 0;
+    uint8_t lvl = (digitalRead(s_pinGdo0) == HIGH) ? 1 : 0;
     uint32_t dur = now - s_lastUs;
     if (dur >= EDGE_GAP) dur = EDGE_GAP - 1;   // кламп: 0xFFFF = метка зазора
     uint16_t next = (uint16_t)(_wHead + 1) % CC1101_EDGE_RING;
@@ -71,20 +75,23 @@ void IRAM_ATTR Cc1101Driver::isrGdo0() {
 // INIT
 // ============================================================================
 bool Cc1101Driver::init() {
-    const WeatherGatePins& p = WeatherGateProfile::pins();
+    // Пины — только из configurePins() (профиль вызывает до регистрации).
+    // Без них драйвер не инициализируется: молчаливый дефолт на чужих
+    // ногах хуже честного отказа.
+    if (!_pinsSet) { _healthy = false; return false; }
     _freqMHz = cfgGetFloat("wx.rf_freq_mhz", 915.0f);
 
-    pinMode(p.cc1101Cs,   OUTPUT);
-    digitalWrite(p.cc1101Cs, HIGH);          // CS idle HIGH — отпущен
-    pinMode(p.cc1101Gdo0, INPUT);            // input-only; подтяжки нет — CC1101 push-pull
-    pinMode(p.cc1101Gdo2, INPUT);
+    pinMode(_pins.cs,   OUTPUT);
+    digitalWrite(_pins.cs, HIGH);          // CS idle HIGH — отпущен
+    pinMode(_pins.gdo0, INPUT);            // input-only; подтяжки нет — CC1101 push-pull
+    pinMode(_pins.gdo2, INPUT);
 
     // SPI: хост HSPI задаём ЯВНО (правило нумерации classic ESP32).
     // new(std::nothrow) — heap-блок один раз из init (урок outbox/BSS).
     _spi = new (std::nothrow) SPIClass(HSPI);
     if (_spi == nullptr) { _healthy = false; return false; }
-    _spi->begin((int8_t)p.cc1101Sck, (int8_t)p.cc1101Miso,
-                (int8_t)p.cc1101Mosi, (int8_t)p.cc1101Cs);
+    _spi->begin((int8_t)_pins.sck, (int8_t)_pins.miso,
+                (int8_t)_pins.mosi, (int8_t)_pins.cs);
 
     _healthy = detectChip();
     if (!_healthy) return false;
@@ -96,8 +103,11 @@ bool Cc1101Driver::init() {
     xferReg(cc1101::STROBE_SFRX, 0);
     xferReg(cc1101::STROBE_SRX, 0);
 
-    attachInterrupt(digitalPinToInterrupt(p.cc1101Gdo2), isrGdo2, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(p.cc1101Gdo0), isrGdo0, CHANGE);
+    // Пины для ISR — в файловые статики (до attachInterrupt).
+    s_pinGdo0 = _pins.gdo0;
+    s_pinGdo2 = _pins.gdo2;
+    attachInterrupt(digitalPinToInterrupt(_pins.gdo2), isrGdo2, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(_pins.gdo0), isrGdo0, CHANGE);
     return true;
 }
 
@@ -137,23 +147,21 @@ void Cc1101Driver::poll() {
 // НИЗКИЙ УРОВЕНЬ SPI
 // ============================================================================
 uint8_t Cc1101Driver::xferReg(uint8_t addr, uint8_t val) {
-    const WeatherGatePins& p = WeatherGateProfile::pins();
     _spi->beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(p.cc1101Cs, LOW);
+    digitalWrite(_pins.cs, LOW);
     uint8_t status = _spi->transfer(addr);
     _spi->transfer(val);
-    digitalWrite(p.cc1101Cs, HIGH);
+    digitalWrite(_pins.cs, HIGH);
     _spi->endTransaction();
     return status;
 }
 
 uint8_t Cc1101Driver::readStatus(uint8_t addr) {
-    const WeatherGatePins& p = WeatherGateProfile::pins();
     _spi->beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
-    digitalWrite(p.cc1101Cs, LOW);
+    digitalWrite(_pins.cs, LOW);
     _spi->transfer((uint8_t)(addr | 0xC0));
     uint8_t v = _spi->transfer(0x00);
-    digitalWrite(p.cc1101Cs, HIGH);
+    digitalWrite(_pins.cs, HIGH);
     _spi->endTransaction();
     return v;
 }

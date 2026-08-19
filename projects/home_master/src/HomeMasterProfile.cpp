@@ -7,6 +7,7 @@
 #include "BrokerService.h"
 #include "BridgeService.h"
 #include "JournalService.h"
+#include "WeatherMirror.h"
 #include "HomeMasterApp.h"
 #include <core/ResourceManager.h>
 #include <core/Kernel.h>

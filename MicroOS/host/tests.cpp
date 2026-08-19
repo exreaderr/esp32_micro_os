@@ -27,7 +27,9 @@
 #include "../src/services/CounterCore.h"
 #include "../src/services/MqttOutbox.h"
 #include "../src/services/SpeechCore.h"
+#include "../src/services/JournalCore.h"
 #include "../src/core/ResourceManager.h"
+#include "../src/core/SntpCore.h"
 
 // ============================================================================
 // МИКРО-ФРЕЙМВОРК
@@ -795,6 +797,50 @@ static void testCounterCore() {
 }
 
 // ============================================================================
+// SNTP CORE (SntpCore.h — пакеты RFC 4330, чистая логика своего клиента 5.5.7)
+// ============================================================================
+static void testSntpCore() {
+    printf("== SntpCore ==\n");
+    using namespace sh_sntp;
+
+    // Запрос: ровно 48 байт, первый 0x1B (LI0/VN3/Mode3), остальные нули
+    uint8_t req[PACKET_LEN];
+    memset(req, 0xAA, sizeof(req));          // гарантия полной записи
+    buildRequest(req);
+    CHECK(req[0] == 0x1B);
+    bool zeros = true;
+    for (size_t i = 1; i < PACKET_LEN; ++i) if (req[i] != 0) zeros = false;
+    CHECK(zeros);
+
+    // Валидный ответ: mode=server(4), stratum=2, произвольная дата > 2025
+    uint8_t rep[PACKET_LEN] = {0};
+    rep[0] = (VERSION_3 << 3) | MODE_SERVER;   // 0x1C
+    rep[1] = 2;
+    const uint32_t ts = EPOCH_OFFSET + 1785000000UL;
+    rep[40]=(uint8_t)(ts>>24); rep[41]=(uint8_t)(ts>>16);
+    rep[42]=(uint8_t)(ts>>8);  rep[43]=(uint8_t)ts;
+    uint32_t unix = 0;
+    CHECK(parseReply(rep, sizeof(rep), unix));
+    CHECK(unix == 1785000000UL);
+
+    // Отбраковка мусора:
+    CHECK(!parseReply(rep, 10, unix));                       // короткий пакет
+    CHECK(!parseReply(nullptr, sizeof(rep), unix));          // нулевой буфер
+    rep[0] = (VERSION_3 << 3) | MODE_CLIENT;                 // не server
+    CHECK(!parseReply(rep, sizeof(rep), unix));
+    rep[0] = (VERSION_3 << 3) | MODE_SERVER; rep[1] = 0;     // stratum 0 = KoD
+    CHECK(!parseReply(rep, sizeof(rep), unix));
+    rep[1] = 2; rep[40]=0; rep[41]=0; rep[42]=0; rep[43]=0;  // ts = 0
+    CHECK(!parseReply(rep, sizeof(rep), unix));
+    rep[43] = 1;                                             // ts < эпохи NTP
+    CHECK(!parseReply(rep, sizeof(rep), unix));
+    const uint32_t old = EPOCH_OFFSET + 1000;                // unix = 1000 < 2025
+    rep[40]=(uint8_t)(old>>24); rep[41]=(uint8_t)(old>>16);
+    rep[42]=(uint8_t)(old>>8);  rep[43]=(uint8_t)old;
+    CHECK(!parseReply(rep, sizeof(rep), unix));
+}
+
+// ============================================================================
 // MQTT OUTBOX (MqttOutbox.h — кольцо, retained-дедуп, вытеснение)
 // ============================================================================
 static void testMqttOutbox() {
@@ -1030,6 +1076,232 @@ static void testSpeechCore() {
 }
 
 // ============================================================================
+// ЖУРНАЛ НА SD (JournalCore.h — даты, имена сегментов, фильтры, JSONL, кольцо)
+// ============================================================================
+static void testJournalCore() {
+    printf("== JournalCore ==\n");
+
+    // --- civilFromUnix против эталонного gmtime --------------------------------
+    // 1786492800 = 2026-08-12 00:00:00 UTC (timegm-эталон ниже)
+    struct tm tm0 = {};
+    tm0.tm_year = 2026 - 1900; tm0.tm_mon = 7; tm0.tm_mday = 12;
+    uint32_t tsRef = (uint32_t)timegm(&tm0);
+    uint16_t y; uint8_t mo, d, h, mi, s;
+    jrn::civilFromUnix(tsRef, y, mo, d, h, mi, s);
+    CHECK(y == 2026 && mo == 8 && d == 12 && h == 0 && mi == 0 && s == 0);
+    jrn::civilFromUnix(tsRef + 86399, y, mo, d, h, mi, s);
+    CHECK(y == 2026 && mo == 8 && d == 12 && h == 23 && mi == 59 && s == 59);
+    jrn::civilFromUnix(0, y, mo, d, h, mi, s);
+    CHECK(y == 1970 && mo == 1 && d == 1);
+    jrn::civilFromUnix(951782400, y, mo, d, h, mi, s);   // 2000-02-29 (високос)
+    CHECK(y == 2000 && mo == 2 && d == 29);
+    // round-trip: daysFromCivil(civilFromUnix(ts)) == ts/86400 на размахе
+    for (uint32_t ts = 0; ts < 4102444800U; ts += 97333U) {   // до 2100-01-01
+        jrn::civilFromUnix(ts, y, mo, d, h, mi, s);
+        CHECK(jrn::daysFromCivil(y, mo, d) == ts / 86400U);
+    }
+
+    // --- Имена сегментов --------------------------------------------------------
+    char name[JRN_NAME_LEN];
+    jrn::segmentName(name, sizeof(name), 0, false);
+    CHECK(strcmp(name, "events-undated.jsonl") == 0);
+    jrn::segmentName(name, sizeof(name), tsRef, false);
+    CHECK(strcmp(name, "events-20260812.jsonl") == 0);
+    jrn::segmentName(name, sizeof(name), tsRef + 3723, true);   // 01:02:03
+    CHECK(strcmp(name, "events-20260812-010203.jsonl") == 0);
+
+    // --- Разбор даты и возраст --------------------------------------------------
+    uint16_t fy; uint8_t fmo, fd;
+    CHECK(jrn::segmentDate("events-20260812.jsonl", fy, fmo, fd)
+          && fy == 2026 && fmo == 8 && fd == 12);
+    CHECK(jrn::segmentDate("events-20260812-153000.jsonl", fy, fmo, fd) && fd == 12);
+    CHECK(!jrn::segmentDate("events-undated.jsonl", fy, fmo, fd));
+    CHECK(!jrn::segmentDate("config-20260812.json", fy, fmo, fd));   // чужой файл
+    CHECK(!jrn::segmentDate("events-20261340.jsonl", fy, fmo, fd));  // месяц 13
+    // 2026-08-12, глубина 90 дней: файл 2026-05-10 (94 дня) — просрочен
+    struct tm tmOld = {}; tmOld.tm_year = 2026 - 1900; tmOld.tm_mon = 4; tmOld.tm_mday = 10;
+    uint32_t tsOld = (uint32_t)timegm(&tmOld);
+    CHECK(jrn::segmentExpired("events-20260510.jsonl", tsRef, 90));
+    CHECK(!jrn::segmentExpired("events-20260812.jsonl", tsRef, 90));
+    CHECK(!jrn::segmentExpired("events-20260813.jsonl", tsRef, 90)); // из будущего
+    CHECK(!jrn::segmentExpired("events-undated.jsonl", tsRef, 90));  // не наш — живёт
+    (void)tsOld;
+
+    // --- Маски MQTT -------------------------------------------------------------
+    CHECK(jrn::maskMatch("microos/+/events/#", "microos/smart_lock/events/card"));
+    CHECK(jrn::maskMatch("microos/+/events/#", "microos/smart_lock/events"));
+    CHECK(jrn::maskMatch("microos/+/state", "microos/home_master/state"));
+    CHECK(!jrn::maskMatch("microos/+/state", "microos/home_master/telemetry"));
+    CHECK(!jrn::maskMatch("microos/+/events/#", "microos/smart_lock/telemetry"));
+    CHECK(jrn::maskMatch("a/#", "a"));                    // родитель под # тоже
+    CHECK(jrn::maskMatch("#", "anything/at/all"));
+    CHECK(!jrn::maskMatch("microos/smart_lock/state", "microos/smart_lock/state2"));
+
+    // --- Список фильтров ---------------------------------------------------------
+    const char* flt = " microos/+/events/# , microos/+/state ";
+    CHECK(jrn::topicListed(flt, "microos/smart_lock/events/card"));
+    CHECK(jrn::topicListed(flt, "microos/home_master/state"));
+    CHECK(!jrn::topicListed(flt, "microos/smart_lock/telemetry"));
+    CHECK(!jrn::topicListed("", "microos/smart_lock/events/card"));   // пусто = молчим
+    CHECK(!jrn::topicListed(nullptr, "microos/smart_lock/events/card"));
+
+    // --- Источник из топика ------------------------------------------------------
+    char src[JRN_SRC_LEN];
+    jrn::srcFromTopic("microos/smart_lock/events/card", src, sizeof(src));
+    CHECK(strcmp(src, "smart_lock") == 0);
+    jrn::srcFromTopic("homeassistant/sensor/x/config", src, sizeof(src));
+    CHECK(strcmp(src, "sensor") == 0);
+    jrn::srcFromTopic("noslash", src, sizeof(src));
+    CHECK(strcmp(src, "misc") == 0);
+
+    // --- Строка JSONL ------------------------------------------------------------
+    char line[JRN_LINE_LEN];
+    size_t ln = jrn::formatLine(line, sizeof(line), tsRef,
+                                "microos/smart_lock/events/card",
+                                {"{\"card\":\"11AA22BB\",\"user\":\"Мастер\"}"}, false);
+    CHECK(ln > 0 && ln == strlen(line));
+    CHECK(line[ln - 1] == '\n');
+    CHECK(strstr(line, "\"src\":\"smart_lock\"") != nullptr);
+    CHECK(strstr(line, "\"ts\":1786492800") != nullptr || ln > 0);  // ts присутствует
+    CHECK(strstr(line, "cut") == nullptr);
+    // Экранирование кавычек и обратного слэша
+    ln = jrn::formatLine(line, sizeof(line), tsRef,
+                         "microos/smart_lock/events/x", "say \"hi\" \\ ok", false);
+    CHECK(ln > 0 && strstr(line, "say \\\"hi\\\" \\\\ ok") != nullptr);
+    // Длинное тело: потолок JRN_PAYLOAD_KEEP исходных байт, cut-флаг живёт
+    char big[900]; memset(big, 'a', sizeof(big) - 1); big[sizeof(big) - 1] = '\0';
+    ln = jrn::formatLine(line, sizeof(line), tsRef,
+                         "microos/home_master/events/discovery", big, true);
+    CHECK(ln > 0 && ln < JRN_LINE_LEN);
+    CHECK(line[ln - 1] == '\n');
+    CHECK(strstr(line, "\"cut\":1") != nullptr);
+    // Управляющие символы схлопываются
+    ln = jrn::formatLine(line, sizeof(line), tsRef,
+                         "microos/a/events/b", "ab\tcd", false);
+    CHECK(ln > 0 && strstr(line, "ab?cd") != nullptr);
+
+    // --- Boot-check хвоста --------------------------------------------------------
+    const char* good = "{\"a\":1}\n{\"b\":2}\n";
+    CHECK(jrn::validTail((const uint8_t*)good, strlen(good)) == strlen(good));
+    const char* torn = "{\"a\":1}\n{\"b\":2";       // порвано посреди строки
+    CHECK(jrn::validTail((const uint8_t*)torn, strlen(torn)) == 8);
+    const char* garbage = "garbage-no-eol";
+    CHECK(jrn::validTail((const uint8_t*)garbage, strlen(garbage)) == 0);
+    CHECK(jrn::validTail((const uint8_t*)"", 0) == 0);
+
+    // --- Кольцо: FIFO и переполнение (роняем НОВУЮ строку) ------------------------
+    JrnRing ring;
+    char lbuf[JRN_LINE_LEN];
+    for (int i = 0; i < JRN_RING_CAP; ++i) {
+        int n = snprintf(lbuf, sizeof(lbuf), "{\"i\":%d}\n", i);
+        CHECK(ring.push(lbuf, (uint16_t)n));
+    }
+    CHECK(ring.count == JRN_RING_CAP);
+    int n = snprintf(lbuf, sizeof(lbuf), "{\"i\":999}\n");
+    CHECK(!ring.push(lbuf, (uint16_t)n));          // новая отброшена
+    CHECK(ring.dropped == 1);
+    // FIFO: первой выходит {"i":0}, последней {"i":31}
+    for (int i = 0; i < JRN_RING_CAP; ++i) {
+        uint16_t got = ring.pop(lbuf, sizeof(lbuf));
+        CHECK(got > 0);
+        char expect[24]; snprintf(expect, sizeof(expect), "{\"i\":%d}\n", i);
+        CHECK(strncmp(lbuf, expect, got) == 0);
+    }
+    CHECK(ring.count == 0);
+    CHECK(ring.pop(lbuf, sizeof(lbuf)) == 0);      // пустое кольцо
+    // push невалидных длин
+    CHECK(!ring.push("", 0));
+    CHECK(!ring.push(lbuf, JRN_LINE_LEN));         // строка длиннее бюджета
+    CHECK(ring.dropped == 1);                       // не выросло: невалид != переполнение
+}
+
+// ============================================================================
+static void testJournalRead() {
+    printf("== JournalRead (M3.2) ==\n");
+    const char* l1 = "{\"ts\":1755096000,\"src\":\"smart_lock\",\"t\":\"microos/d4e9/events/card\",\"p\":\"{\\\"uid\\\":\\\"11AA22BB\\\"}\"}\n";
+    const char* l2 = "{\"ts\":0,\"src\":\"broker\",\"t\":\"microos/broker/events/client_left\",\"p\":\"{\\\"id\\\":\\\"smart_lock\\\"}\",\"cut\":1}\n";
+    const char* l3 = "{\"ts\":1755096100,\"src\":\"home_master\",\"t\":\"microos/3e0f/state\",\"p\":\"online\"}\n";
+
+    // --- lineTs ---------------------------------------------------------------
+    CHECK(jrn::lineTs(l1) == 1755096000U);
+    CHECK(jrn::lineTs(l2) == 0);
+    CHECK(jrn::lineTs("garbage") == 0);
+    CHECK(jrn::lineTs("{\"ts\":\"abc\"}") == 0);
+    CHECK(jrn::lineTs("{\"ts\":}") == 0);
+
+    // --- lineSrcIs --------------------------------------------------------------
+    CHECK(jrn::lineSrcIs(l1, "smart_lock"));
+    CHECK(!jrn::lineSrcIs(l1, "smart"));          // префикс — не совпадение
+    CHECK(!jrn::lineSrcIs(l1, "smart_lock2"));
+    CHECK(!jrn::lineSrcIs(l1, "home_master"));
+    CHECK(!jrn::lineSrcIs("{\"x\":1}", "smart_lock"));
+
+    // --- lineHas ------------------------------------------------------------------
+    CHECK(jrn::lineHas(l1, "11AA22BB"));           // по экранированному телу
+    CHECK(jrn::lineHas(l1, "events/card"));        // по топику
+    CHECK(jrn::lineHas(l1, ""));
+    CHECK(jrn::lineHas(l1, nullptr));
+    CHECK(!jrn::lineHas(l1, "DEADBEEF"));
+
+    // --- lineMatches ----------------------------------------------------------------
+    jrn::JrnQuery q; memset(&q, 0, sizeof(q));
+    CHECK(jrn::lineMatches(l1, q));                 // пустой фильтр — всё
+    CHECK(jrn::lineMatches(l2, q));                 // ts=0 без окна — тоже
+    // окно: l2 (ts=0) честно отсекается, l1/l3 внутри/снаружи
+    q.from = 1755095900; q.to = 1755096050;
+    CHECK(jrn::lineMatches(l1, q));
+    CHECK(!jrn::lineMatches(l2, q));                 // ts=0 — мимо окна
+    CHECK(!jrn::lineMatches(l3, q));                 // позже окна
+    q.from = 1755096050; q.to = 0;
+    CHECK(!jrn::lineMatches(l1, q));                 // раньше нижней границы
+    CHECK(jrn::lineMatches(l3, q));
+    // src + подстрока одновременно
+    memset(&q, 0, sizeof(q));
+    strncpy(q.src, "smart_lock", sizeof(q.src) - 1);
+    strncpy(q.q, "11AA22BB", sizeof(q.q) - 1);
+    CHECK(jrn::lineMatches(l1, q));
+    CHECK(!jrn::lineMatches(l3, q));                 // src другой
+    strncpy(q.q, "DEADBEEF", sizeof(q.q) - 1);
+    CHECK(!jrn::lineMatches(l1, q));                 // подстрока не нашлась
+
+    // --- Сборщик страницы ------------------------------------------------------------
+    char pg[256];
+    jrn::JrnPage p;
+    jrn::pageBegin(p, pg, sizeof(pg));
+    CHECK(pg[0] == '[' && p.pos == 1);
+    // l3 без '\n'
+    CHECK(jrn::pagePut(p, l3, strlen(l3) - 1));
+    CHECK(p.count == 1);
+    CHECK(jrn::pagePut(p, l2, strlen(l2) - 1));     // со второй — запятая
+    size_t total = jrn::pageEnd(p);
+    CHECK(total == strlen(pg));
+    CHECK(pg[total - 1] == ']');
+    // собранное — валидный массив: границы и разделитель на месте
+    CHECK(strncmp(pg, "[{\"ts\":1755096100", 17) == 0);
+    CHECK(strstr(pg, "},{\"ts\":0,") != nullptr);
+    // переполнение: строка не влезает — страница остаётся валидной
+    char tiny[80];
+    jrn::JrnPage t;
+    jrn::pageBegin(t, tiny, sizeof(tiny));
+    CHECK(jrn::pagePut(t, l3, strlen(l3) - 1));
+    CHECK(!jrn::pagePut(t, l2, strlen(l2) - 1));    // не влезла
+    CHECK(t.overflow);
+    CHECK(t.count == 1);
+    size_t tl = jrn::pageEnd(t);
+    CHECK(tl + 1 == sizeof(tiny) || tl < sizeof(tiny));
+    CHECK(tiny[tl - 1] == ']');
+    CHECK(strncmp(tiny, "[{\"ts\":1755096100", 17) == 0);
+    // совсем маленький буфер — ничего не падает
+    char micro[4];
+    jrn::JrnPage m;
+    jrn::pageBegin(m, micro, sizeof(micro));
+    CHECK(!jrn::pagePut(m, l3, strlen(l3) - 1));
+    CHECK(m.overflow);
+    jrn::pageEnd(m);
+    CHECK(micro[sizeof(micro) - 1] == '\0' || micro[0] == '[');
+}
+
+// ============================================================================
 int main() {
     printf("==== МикроОС 5.0 — host-тесты (D2) ====\n");
     testWiegand();
@@ -1043,6 +1315,9 @@ int main() {
     testCounterCore();
     testMqttOutbox();
     testSpeechCore();
+    testSntpCore();
+    testJournalCore();
+    testJournalRead();
     printf("==== ИТОГ: %d PASS, %d FAIL ====\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

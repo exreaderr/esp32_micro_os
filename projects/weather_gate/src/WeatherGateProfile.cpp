@@ -4,8 +4,8 @@
 #include "WeatherGateProfile.h"
 #include "WeatherGateEvents.h"
 #include "WeatherGateApp.h"
-#include <drivers/Bme280Driver.h>
-#include <drivers/Cc1101Driver.h>
+#include "drivers/Bme280Driver.h"
+#include "drivers/Cc1101Driver.h"
 #include <core/DriverRegistry.h>
 #include <core/ResourceManager.h>
 #include <core/Kernel.h>
@@ -41,7 +41,11 @@ void WeatherGateProfile::registerDrivers(const HardwareManifest& m) {
     DriverRegistry::getInstance().add(&Bme280Driver::getInstance());
 
     // W2: приёмник CC1101, строго receive-only (TX-путей в драйвере нет
-    // физически). Пины SPI/GDO — из WeatherGatePins (манифест выше).
+    // физически). Пины — параметром: драйвер общий и о профиле не знает
+    // (Issue #1, раздел 4). Порядок: configurePins ДО регистрации.
+    Cc1101Driver::getInstance().configurePins({
+        _pins.cc1101Sck, _pins.cc1101Mosi, _pins.cc1101Miso,
+        _pins.cc1101Cs,  _pins.cc1101Gdo0, _pins.cc1101Gdo2 });
     DriverRegistry::getInstance().add(&Cc1101Driver::getInstance());
 }
 

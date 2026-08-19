@@ -19,8 +19,8 @@
 // ============================================================================
 #pragma once
 
-#include "../core/IDeviceDriver.h"
-#include "../core/BusManager.h"
+#include <core/IDeviceDriver.h>
+#include <core/BusManager.h>
 #include "Bme280Core.h"
 #include <cmath>
 
