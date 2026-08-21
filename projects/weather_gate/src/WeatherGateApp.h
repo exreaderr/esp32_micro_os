@@ -15,7 +15,7 @@
 
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
-#include "drivers/WeatherCore.h"
+#include <drivers/WeatherCore.h>
 
 // ============================================================================
 // UI-ПРОВАЙДЕР ПРОФИЛЯ

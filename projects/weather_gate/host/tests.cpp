@@ -3,8 +3,8 @@
 // ============================================================================
 // Запуск на хосте (без железа), из projects/weather_gate/host:
 //   ./run_tests.sh
-// (каноничная раскладка: ядро — ../../MicroOS, драйверы профиля —
-// ../src/drivers; шим Arduino — ../../MicroOS/host/shim)
+// (каноничная раскладка: ядро — ../../../MicroOS; после мерджа D3
+//  Core-логика драйверов — библиотечная: ../../../MicroOS/src/drivers)
 //
 // Покрытие (только то, что НЕ требует FreeRTOS/GPIO/шины — честная граница):
 //   · WiegandFormats.h  — декодер W26–W56 (каталог профилей, логика чистая);
@@ -21,10 +21,10 @@
 #include "../../../MicroOS/src/catalog/wiegand/WiegandFormats.h"
 #include "../../smart_lock/src/CardDbFormat.h"
 #include "../../../MicroOS/src/drivers/BcdUtils.h"
-#include "../src/drivers/Bme280Core.h"
-#include "../src/drivers/FineOffsetCore.h"
-#include "../src/drivers/Cc1101Core.h"
-#include "../src/drivers/WeatherCore.h"
+#include "../../../MicroOS/src/drivers/Bme280Core.h"
+#include "../../../MicroOS/src/drivers/FineOffsetCore.h"
+#include "../../../MicroOS/src/drivers/Cc1101Core.h"
+#include "../../../MicroOS/src/drivers/WeatherCore.h"
 #include "../../../MicroOS/src/services/TimeInterval.h"
 #include "../../../MicroOS/src/services/AudioQueue.h"
 #include "../../../MicroOS/src/services/DataLogCore.h"
