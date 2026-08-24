@@ -15,7 +15,7 @@
 
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
-#include <drivers/WeatherCore.h>
+#include "drivers/WeatherCore.h"
 
 // ============================================================================
 // UI-ПРОВАЙДЕР ПРОФИЛЯ
@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.0"; }   // стадия W3
+    const char* getVersion() const override { return "0.3.1"; }   // W3 + OTA-панель
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки

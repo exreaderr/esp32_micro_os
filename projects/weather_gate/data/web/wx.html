@@ -65,6 +65,11 @@ input[type=password] {
   background: var(--field); color: #fff; font-size: 15px; cursor: pointer;
 }
 .err { color: var(--error); font-size: 13px; min-height: 16px; }
+.srow { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; padding: 3px 0; }
+.srow > span:first-child { color: var(--text2); flex-shrink: 0; }
+.srow > span:last-child { text-align: right; word-break: break-word; }
+.ok { color: var(--success); font-weight: 600; }
+.bad { color: var(--error); font-weight: 600; }
 #toast {
   position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
   background: var(--svc); color: #fff; padding: 10px 18px; border-radius: 12px;
@@ -125,6 +130,43 @@ input[type=password] {
       <div id="chartBox"></div>
       <div class="hint" id="chartHint"></div>
     </div>
+  </div>
+
+  <!-- СИСТЕМА: OTA / NVS-бэкап / перезагрузка (после входа администратора;
+       вся механика — ядерная, панель только вызывает /api/ota/* и /api/config/*) -->
+  <div class="card hidden" id="sysCard">
+    <b>Система</b>
+    <div id="otaRows" style="margin-top:8px"><div class="hint">Загрузка сведений…</div></div>
+    <div id="otaBar" class="hidden" style="margin:10px 0">
+      <div style="border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
+        <div id="otaBarFill" style="height:100%;width:0%;background:var(--info);transition:width .2s"></div>
+      </div>
+      <div class="hint" id="otaBarTxt" style="margin-top:4px"></div>
+    </div>
+    <div class="chips">
+      <button class="chip" onclick="otaCheck()">Проверить обновление</button>
+      <button class="chip" onclick="otaRemote()">Обновить с сервера (прошивка + ФС)</button>
+    </div>
+    <div class="chips">
+      <button class="chip" onclick="$('otaFwFile').click()">Прошивка из файла (.bin)</button>
+      <button class="chip" onclick="$('otaFsFile').click()">Файловая система (.bin)</button>
+      <input type="file" id="otaFwFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fw')">
+      <input type="file" id="otaFsFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fs')">
+    </div>
+    <div class="chips">
+      <button class="chip" onclick="cfgBackup()">Бэкап конфигурации в NVS</button>
+      <button class="chip" onclick="cfgRestore()">Восстановить из NVS</button>
+    </div>
+    <div class="hint" id="cfgBakInfo"></div>
+    <div id="otaHistory"></div>
+    <div class="chips" style="margin-top:8px">
+      <button class="chip" onclick="rebootDevice()">Перезагрузить контроллер</button>
+      <a class="chip" href="/admin" style="text-decoration:none;display:inline-block">Ядерная админка</a>
+    </div>
+    <div class="hint" style="margin-top:6px">A/B-разделы: новая прошивка стартует в режиме
+      проверки (60 с), при сбое загрузчик сам откатывается на предыдущую. Обновление ФС
+      стирает накопленный даталог (LittleFS перезаписывается) — конфигурация переживает
+      через NVS-бэкап.</div>
   </div>
 
   <div class="card hint">
@@ -238,7 +280,15 @@ async function doLogin(){
 function enterCharts(){
   $('loginBox').classList.add('hidden');
   $('chartArea').classList.remove('hidden');
+  $('sysCard').classList.remove('hidden');
   loadCharts();
+  renderOta();
+}
+function leaveAdmin(){
+  S.token=''; sessionStorage.removeItem('mos_token');
+  $('chartArea').classList.add('hidden');
+  $('sysCard').classList.add('hidden');
+  $('loginBox').classList.remove('hidden');
 }
 
 // ============================================================================
@@ -249,9 +299,7 @@ async function loadCharts(){
   var r=await api('/api/dev/dlog/channels');
   if(!r.ok){
     if(r.status===401||r.status===404){ // токен протух — покажем вход
-      S.token=''; sessionStorage.removeItem('mos_token');
-      $('chartArea').classList.add('hidden');
-      $('loginBox').classList.remove('hidden');
+      leaveAdmin();
       return;
     }
     $('chartHint').textContent='Даталоггер недоступен'; return;
@@ -322,6 +370,213 @@ function drawChart(d, ch){
     legend:{show:true},
     cursor:{show:true}
   }, data, $('chartBox'));
+}
+
+// ============================================================================
+// СИСТЕМА: OTA (A/B + манифест HA), NVS-бэкап, перезагрузка.
+// Бэкенд целиком ядерный (UpdateService/HttpService) — панель только вызывает
+// /api/ota/* и /api/config/*; все эндпоинты админские (requireAdmin в ядре).
+// ============================================================================
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+
+async function renderOta(){
+  var r=await api('/api/ota/info');
+  if(!r.ok){
+    if(r.status===401){ leaveAdmin(); return; }
+    $('otaRows').innerHTML='<div class="hint">Сведения OTA недоступны ('+r.status+')</div>';
+    return;
+  }
+  var o=r.data, rows='';
+  function orow(n,v,cls){
+    rows+='<div class="srow"><span>'+n+'</span><span class="'+(cls||'')+'">'+v+'</span></div>';
+  }
+  orow('Текущая прошивка', esc(o.fw)+(o.build?' · сборка '+esc(o.build):'')+
+       (o.pending_verify===1?' · ⏳ идёт валидация':''),
+       o.pending_verify===1?'warn':'ok');
+  if(o.remote && o.remote.checked===1){
+    orow('Прошивка на сервере HA', o.remote.version?esc(o.remote.version):'манифест недоступен',
+         o.update_available===1?'warn':'ok');
+    if(o.update_available===1) orow('Статус','⬆️ Доступно обновление','warn');
+    if(o.remote.notes) orow('Changelog', esc(o.remote.notes));
+  } else {
+    orow('Прошивка на сервере HA','ещё не проверялась','');
+  }
+  if(o.remote && o.remote.url) orow('Манифест', esc(o.remote.url));
+  $('otaRows').innerHTML=rows;
+
+  var hs='';
+  if(o.history && o.history.length){
+    hs='<div class="hint" style="margin:10px 0 2px"><b>История OTA</b></div>';
+    for(var i=0;i<o.history.length;i++){
+      var e=o.history[i];
+      var when=e.unix>0?new Date(e.unix*1000).toLocaleString('ru-RU'):'—';
+      var what=e.src==='boot'?'Валидация после ребута':
+               e.src==='rollback'?'Откат на предыдущую':
+               ('Загрузка '+(e.type==='fs'?'файловой системы':'прошивки'));
+      hs+='<div class="srow"><span class="'+(e.ok===1?'ok':'bad')+'">●</span>'+
+          '<span style="flex:1;text-align:left">'+what+
+          (e.bytes?' · '+Math.round(e.bytes/1024)+' КБ':'')+
+          (e.dur_s?' · '+e.dur_s+' с':'')+
+          (e.ver?' · <b>'+esc(e.ver)+'</b>':'')+
+          (e.err&&e.ok!==1?' · <span class="bad">'+esc(e.err)+'</span>':'')+
+          '<br><span class="hint">'+when+'</span></span></div>';
+    }
+  }
+  $('otaHistory').innerHTML=hs;
+  cfgBakInfo();
+  // Страницу открыли посреди фоновой загрузки — подхватываем следилку
+  // (качает само устройство, прогресс не потерян).
+  if(o.dl && (o.dl.state==='fw'||o.dl.state==='fs')) otaDlPoll();
+}
+
+async function otaCheck(){
+  toast('Запрашиваю манифест у HA (до 4 с)…','ok');
+  var r=await apiPost('/api/ota/check');
+  if(r.ok && r.data){
+    if(r.data.update_available===1) toast('Доступна прошивка '+((r.data.remote||{}).version||'?'),'ok');
+    else if(r.data.remote && r.data.remote.version) toast('Обновлений нет (сервер: '+r.data.remote.version+')','ok');
+    else toast('Манифест не получен (нет сети или HA)','err');
+    renderOta();
+  } else toast('Ошибка запроса','err');
+}
+
+// Фоновое обновление с сервера: устройство само скачивает образы
+// кооперативными кусками в tick, панель только следит за dl в /api/ota/info.
+var _otaDlTimer=null;
+async function otaRemote(){
+  if(!confirm('Скачать прошивку (+ ФС) с сервера HA и обновиться? Контроллер перезагрузится.')) return;
+  var r=await apiPost('/api/ota/update');
+  if(r.ok && r.data && r.data.started){ toast('Загрузка образов запущена','ok'); otaDlPoll(); return; }
+  var e=(r.data&&r.data.error)||r.status;
+  if(e==='already_running'){ toast('Загрузка уже идёт','ok'); otaDlPoll(); }
+  else if(e==='upload_active') toast('Идёт ручная загрузка — дождитесь финиша','err');
+  else toast('Не запустилось ('+e+')','err');
+}
+function otaDlPoll(){
+  if(_otaDlTimer) return;
+  $('otaBar').classList.remove('hidden');
+  _otaDlTimer=setInterval(async function(){
+    var r=await api('/api/ota/info');
+    if(!r.ok||!r.data) return;
+    var d=r.data.dl;
+    if(!d||d.state==='idle'){ otaDlStop(); renderOta(); return; }
+    if(d.state==='done'){
+      otaDlStop();
+      $('otaBarFill').style.width='100%';
+      $('otaBarTxt').textContent='Образы записаны! Перезагрузка контроллера…';
+      setTimeout(function(){ location.reload(); },12000);
+      return;
+    }
+    if(d.state==='failed'){
+      otaDlStop();
+      $('otaBar').classList.add('hidden');
+      toast('Обновление с сервера не удалось: '+(d.err||'?'),'err');
+      renderOta();
+      return;
+    }
+    var pct=d.total>0?Math.round(d.bytes*100/d.total):0;
+    $('otaBarFill').style.width=pct+'%';
+    $('otaBarTxt').textContent='Скачивание '+(d.state==='fs'?'файловой системы':'прошивки')+
+      ' с сервера '+(d.total>0?pct+'% ('+Math.round(d.bytes/1024)+' из '+Math.round(d.total/1024)+' КБ)':
+      Math.round(d.bytes/1024)+' КБ')+'…';
+  },1000);
+}
+function otaDlStop(){ clearInterval(_otaDlTimer); _otaDlTimer=null; }
+
+// Ручная загрузка образа (.bin) с прогресс-баром. Ядро проверяет магию
+// головы образа и читает версию из app descriptor до Update.begin.
+function otaUpload(input, type){
+  var f=input.files && input.files[0];
+  input.value='';   // повторный выбор того же файла тоже срабатывает
+  if(!f) return;
+  var warnFs=(type==='fs')?' ВНИМАНИЕ: обновление ФС стирает накопленный даталог!':'';
+  if(!confirm('Обновление '+(type==='fs'?'файловой системы':'прошивки')+': '+f.name+
+    ' ('+Math.round(f.size/1024)+' КБ).'+warnFs+
+    ' После загрузки контроллер сам перезагрузится. Продолжить?')) return;
+  var xhr=new XMLHttpRequest();
+  var fd=new FormData();
+  fd.append('file', f, f.name);
+  $('otaBar').classList.remove('hidden');
+  $('otaBarFill').style.width='0%';
+  $('otaBarTxt').textContent='Подключение…';
+  xhr.upload.onprogress=function(ev){
+    if(ev.lengthComputable){
+      var p=Math.round(ev.loaded*100/ev.total);
+      $('otaBarFill').style.width=p+'%';
+      $('otaBarTxt').textContent='Загрузка '+p+'% ('+Math.round(ev.loaded/1024)+' из '+Math.round(ev.total/1024)+' КБ)…';
+    }
+  };
+  xhr.onload=function(){
+    if(xhr.status===200){
+      var ver='';
+      try{ ver=(JSON.parse(xhr.responseText).ver)||''; }catch(e){}
+      $('otaBarFill').style.width='100%';
+      $('otaBarTxt').textContent='Образ записан'+(ver?' ('+ver+')':'')+'! Перезагрузка контроллера…';
+      toast('Образ загружен'+(ver?' ('+ver+')':'')+', перезагрузка…','ok');
+      setTimeout(function(){ location.reload(); },12000);
+    } else {
+      $('otaBar').classList.add('hidden');
+      var reason='';
+      try{ var j=JSON.parse(xhr.responseText); reason=(j.rx&&j.rx.err)||j.error||''; }catch(e){}
+      toast('Ошибка загрузки: '+(reason||('HTTP '+xhr.status)),'err');
+      renderOta();
+    }
+  };
+  xhr.onerror=function(){
+    $('otaBar').classList.add('hidden');
+    toast('Сбой связи при загрузке','err');
+  };
+  xhr.open('POST','/api/ota/upload?type='+type);
+  if(S.token) xhr.setRequestHeader('X-Auth-Token', S.token);
+  xhr.send(fd);
+}
+
+// NVS-бэкап конфигурации: переживает перепрошивку ФС. Восстановление —
+// без предупреждений со стороны ядра, поэтому спрашиваем здесь сами.
+async function cfgBackup(){
+  var r=await apiPost('/api/config/backup');
+  if(r.ok && r.data && r.data.ok){
+    toast('Бэкап сохранён в NVS ('+r.data.size+' Б)','ok');
+    cfgBakInfo();
+  } else toast('Бэкап не удался ('+((r.data&&r.data.error)||r.status)+')','err');
+}
+async function cfgRestore(){
+  if(!confirm('Восстановить конфигурацию из NVS-бэкапа? Текущие настройки будут заменены, контроллер перезагрузится.')) return;
+  var r=await apiPost('/api/config/restore');
+  if(r.ok && r.data && r.data.ok){
+    toast('Восстановлено полей: '+r.data.applied+'. Перезагрузка…','ok');
+    $('cfgBakInfo').textContent='Конфигурация восстановлена из NVS — контроллер перезагружается…';
+    setTimeout(function(){ location.reload(); },9000);
+  } else {
+    var e=(r.data&&r.data.error)||'';
+    if(e==='backup_not_found') toast('Бэкап в NVS не найден — сначала сохраните','err');
+    else if(e==='backup_corrupt') toast('Бэкап повреждён или от другой системы','err');
+    else toast('Восстановление не удалось ('+(e||r.status)+')','err');
+  }
+}
+async function cfgBakInfo(){
+  var el=$('cfgBakInfo');
+  if(!el) return;
+  var r=await api('/api/config/backup');
+  if(!r.ok || !r.data){ el.textContent=''; return; }
+  var b=r.data;
+  el.innerHTML=b.exists
+    ? '💾 Бэкап конфигурации: <b>'+(b.size/1024).toFixed(1)+' КБ</b> · '+
+      (b.unix>0?new Date(b.unix*1000).toLocaleString('ru-RU'):'без даты')+
+      ' · fw '+esc(b.fw||'?')
+    : '💾 Бэкап конфигурации: <b>отсутствует</b> — сохраните после настройки полей';
+}
+async function rebootDevice(){
+  if(!confirm('Перезагрузить контроллер? Связь прервётся на ~30 секунд.')) return;
+  var r=await apiPost('/api/reboot');
+  if(r.ok){
+    toast('Контроллер перезагружается…','ok');
+    setTimeout(function(){ location.reload(); },12000);
+  } else toast('Ошибка перезагрузки','err');
 }
 
 // ============================================================================
