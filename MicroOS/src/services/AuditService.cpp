@@ -68,7 +68,61 @@ void AuditService::registerExtensions() {
 
 void AuditService::init() {
     _initialized = true;
+    repairFileTail();
     log(LogLevel::Info, "init: audit queue ready");
+}
+
+// ============================================================================
+// РЕМОНТ ХВОСТА ПОСЛЕ РЕБУТА ПОСРЕДИ APPEND (5.8.4)
+// Битый хвост — не переполнение буфера (строка ~70-90 Б при лимите 160),
+// а обрыв appendFile ребутом/питанием: LittleFS сохраняет ФС, но не
+// атомарность строки. Парсеры JSON-lines спотыкаются о такой хвост.
+// ============================================================================
+void AuditService::repairFileTail() {
+    StorageService& st = StorageService::getInstance();
+    size_t sz = st.fileSize(AUDIT_FILE_PATH);
+    if (sz == 0) return;
+
+    // Хвост: строка длиннее AUDIT_LINE_LEN быть не может — окна хватит
+    size_t win = (sz < AUDIT_LINE_LEN) ? sz : (size_t)AUDIT_LINE_LEN;
+    size_t off = sz - win;
+    char buf[AUDIT_LINE_LEN];
+    File f = st.openRead(AUDIT_FILE_PATH);
+    if (!f) return;
+    f.seek(off);
+    size_t got = f.read((uint8_t*)buf, win);
+    f.close();
+    if (got == 0 || buf[got - 1] == '\n') return;   // хвост цел
+
+    int lastNl = -1;
+    for (int i = (int)got - 1; i >= 0; --i) {
+        if (buf[i] == '\n') { lastNl = i; break; }
+    }
+    // Нет '\n' во всём окне — строка битая целиком, отрезаем всё окно
+    size_t keepBytes = (lastNl >= 0) ? off + (size_t)lastNl + 1 : off;
+
+    File in  = st.openRead(AUDIT_FILE_PATH);
+    File out = st.openTemp(AUDIT_FILE_PATH);
+    if (!in || !out) {
+        if (in) in.close();
+        if (out) out.close();
+        log(LogLevel::Error, "audit tail repair: не открыть файлы");
+        return;
+    }
+    size_t left = keepBytes;
+    char chunk[128];
+    while (left > 0) {
+        size_t want = (left < sizeof(chunk)) ? left : sizeof(chunk);
+        size_t n = in.read((uint8_t*)chunk, want);
+        if (n == 0) break;
+        out.write((const uint8_t*)chunk, n);
+        left -= n;
+    }
+    in.close();
+    out.close();
+    st.commitTemp(AUDIT_FILE_PATH);
+    log(LogLevel::Info, "audit tail repaired: срезано %u байт битого хвоста",
+        (unsigned)(sz - keepBytes));
 }
 
 void AuditService::start() {

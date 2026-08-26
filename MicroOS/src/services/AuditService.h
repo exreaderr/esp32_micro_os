@@ -62,6 +62,12 @@ private:
     /// Постановка строки в очередь (горячий контур, из диспетчера шины).
     void enqueue(const char* line);
 
+    /// Ремонт хвоста /audit.log после ребута посреди append (5.8.4):
+    /// LittleFS защищает от порчи ФС, но не гарантирует атомарность
+    /// строки — оборванная запись остаётся битым хвостом без '\n'.
+    /// Обрезаем файл до последнего перевода строки (temp + commit).
+    void repairFileTail();
+
     char     _queue[AUDIT_QUEUE_SIZE][AUDIT_LINE_LEN];
     uint8_t  _qHead = 0, _qTail = 0;
     uint32_t _total = 0;          // записано в файл

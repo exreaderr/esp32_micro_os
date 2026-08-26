@@ -8,9 +8,10 @@
 // Архитектура приёма:
 //   · CC1101 в async-режиме выдаёт демодулированные биты на GDO0;
 //   · GDO2 настроен на Carrier Sense (RSSI выше порога) — «шторка»:
-//     ISR GDO0 записывает фронты в кольцо ТОЛЬКО пока шторка открыта.
-//     Это защищает от шумового флуда async-выхода между пакетами
-//     (пакет летит ~5 мс раз в ~48 с — остальное время эфир мусорит);
+//     ISR GDO0 записывает фронты в кольцо ТОЛЬКО пока шторка открыта,
+//     а с 5.8.4 прерывание GDO0 при закрытой шторке ещё и маскируется
+//     на уровне GPIO (урок стенда: сырой демодулятор шумит 115-230 тыс.
+//     фронтов/с между пакетами — нечего будить CPU вхолостую);
 //   · ISR только меряет длительности (micros) и кладёт в SPSC-кольцо —
 //     никаких getInstance()/millis()/heap в прерывании (правила платформы);
 //   · poll() (из DriverRegistry) дрейнит кольцо в чистый декодер
@@ -58,11 +59,21 @@ public:
     const fo::WeatherPacket& lastPacket() const { return _lastPkt; }
     uint32_t packetSeq()    const { return _pktSeq; }
     uint32_t dupSeq()       const { return _dupSeq; }   // вторые пакеты пар
+    /// Переполнение кольца ПРИ ОТКРЫТОЙ шторке = риск настоящей потери.
+    /// Шум при закрытой шторке сюда НЕ попадает (ISR выходит до счётчика,
+    /// а с 5.8.4 прерывание GDO0 при закрытой шторке вообще замаскировано).
     uint32_t edgesDropped() const { return _edgesDropped; }
     uint32_t lastPacketMs() const { return _lastPktMs; }
     float    freqMHz()      const { return _freqMHz; }
     /// RSSI последнего принятого пакета, дБм.
     int16_t  rssiDbm()      const { return _rssiDbm; }
+
+    // --- W3.3: ДЕЛЬТА ДЛЯ СКАНЕРА АЧХ (только task-контекст, НЕ из ISR!) -----
+    /// Смена частоты приёма на лету: SIDLE -> FREQ2/1/0 -> SRX.
+    bool     setFreqMHz(float mhz);
+    /// RSSI «прямо сейчас» (статус-регистр чипа, а не латч пакета).
+    /// Нужен сканеру АЧХ: замер по каждой точке частотной сетки.
+    int16_t  readRssiNow();
 
     // --- ТОЧКИ ВХОДА ISR (static-обёртки; НЕ для прикладного кода) -----------
     static void IRAM_ATTR isrGdo0();
@@ -75,7 +86,8 @@ private:
     uint8_t xferReg(uint8_t addr, uint8_t val);   // запись/строб
     uint8_t readStatus(uint8_t addr);             // статус-регистр (addr|0xC0)
     bool    detectChip();                          // PARTNUM + VERSION
-    void    writeRxTable();                        // базовая таблица + FREQ
+    void    writeRxTable();                        // базовая таблица + FREQ + AGC
+    void    writeFreqRegs(float mhz);              // FREQ2/1/0 (init и setFreqMHz)
     int16_t readRssiDbm();                         // RSSI -> дБм
 
     // --- ISR-КОЛЬЦО (SPSC: писатель — ISR GDO0, читатель — poll) ---------------

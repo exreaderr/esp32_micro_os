@@ -699,7 +699,14 @@ void HttpService::handleApiDev() {
     req.argCtx = this;
 
     int status = 200;
-    const char* tail = _server.uri().c_str() + strlen("/api/dev/");
+    // 5.8.3: uri() возвращает String ПО ЗНАЧЕНИЮ — временный объект
+    // разрушается на точке с запятой, и tail из временного c_str()
+    // становился висячим указателем. Чтение внутри handleApi ловило
+    // уже затёртый heap (16-байтная корзина /api/dev/dlog сносилась
+    // первой → 404 unknown_dev_api при живых dlog/channels).
+    // Держим именованную копию, пока работает handleApi.
+    String uri = _server.uri();
+    const char* tail = uri.c_str() + strlen("/api/dev/");
     bool handled = _ui->handleApi(tail, req, jsonBuf(), jsonBufSize(),
                                   status);
     if (!handled) {

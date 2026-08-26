@@ -3,6 +3,7 @@
 // ============================================================================
 #include "Cc1101Driver.h"
 #include <services/ConfigService.h>
+#include <soc/gpio_struct.h>
 #include <cstring>
 
 // --- СТАТИКА ISR (файловая область — правило ISR платформы) -------------------
@@ -17,14 +18,32 @@ static constexpr uint16_t EDGE_GAP = 0xFFFF;
 // Отсечка ISR GDO0 (файловая статика — перевзводится при открытии шторки)
 static uint32_t s_lastUs  = 0;
 static uint8_t  s_lastLvl = 0;
-// Счётчик потерянных фронтов (переполнение кольца). Пишется из ISR,
-// переносится в метрику драйвера из poll() — getInstance() в ISR запрещён.
+// Счётчик потерянных фронтов (переполнение кольца при ОТКРЫТОЙ шторке).
+// Пишется из ISR, переносится в метрику драйвера из poll() — getInstance()
+// в ISR запрещён. Шум закрытой шторки сюда не попадает никогда.
 static volatile uint32_t s_edgesDropped = 0;
 
 // Пины GDO для ISR — файловые статики (init копирует из _pins; обращение
 // к членам через getInstance() в ISR запрещено правилами платформы).
 static uint8_t s_pinGdo0 = 0xFF;
 static uint8_t s_pinGdo2 = 0xFF;
+
+// Маскирование прерывания GDO0 (5.8.4, стенд weather_gate): сырой
+// демодулятор в async-режиме выдаёт 115-230 тыс. шумовых фронтов/с между
+// пакетами. ISR с ранним выходом — это всё равно сотни тысяч пробуждений
+// CPU в секунду впустую. Гасим само прерывание, пока шторка Carrier Sense
+// закрыта; взводим при её открытии. Только прямая запись в регистр
+// GPIO.pin[].int_ena — gpio_intr_enable/disable из IDF НЕ в IRAM, а шторм
+// легко поймает окно записи flash (урок: отладка-по-регистрам).
+// attachInterrupt/detachInterrupt в ISR запрещены (локи, heap).
+static volatile uint32_t s_gdo0IntEna = 0;   // снимок после attachInterrupt
+
+static inline void IRAM_ATTR gdo0IntMask() {
+    GPIO.pin[s_pinGdo0].int_ena = 0;
+}
+static inline void IRAM_ATTR gdo0IntUnmask() {
+    GPIO.pin[s_pinGdo0].int_ena = s_gdo0IntEna;
+}
 
 Cc1101Driver& Cc1101Driver::getInstance() {
     static Cc1101Driver instance;
@@ -37,12 +56,17 @@ Cc1101Driver& Cc1101Driver::getInstance() {
 void IRAM_ATTR Cc1101Driver::isrGdo2() {
     _csActive = (digitalRead(s_pinGdo2) == HIGH);
     if (_csActive) {
-        // Шторка открылась: перевзводим отсечку — первый фронт пакета
-        // не должен унаследовать длительность тишины до него.
+        // Шторка открылась: взводим фронты данных (маскированы между
+        // пакетами) и перевзводим отсечку — первый фронт пакета не
+        // должен унаследовать длительность тишины до него.
+        gdo0IntUnmask();
         s_lastUs  = micros();
         s_lastLvl = (digitalRead(s_pinGdo0) == HIGH) ? 1 : 0;
     } else {
-        // Шторка закрылась: метка зазора — декодер сбросится на feed()
+        // Шторка закрылась: глушим прерывание GDO0 (сырой демодулятор
+        // шумит 115-230 тыс. фронтов/с — нечего будить CPU), затем
+        // метка зазора — декодер сбросится на feed().
+        gdo0IntMask();
         uint16_t next = (uint16_t)(_wHead + 1) % CC1101_EDGE_RING;
         if (next != _rTail) {
             _ring[_wHead] = { EDGE_GAP, 0 };
@@ -108,6 +132,14 @@ bool Cc1101Driver::init() {
     s_pinGdo2 = _pins.gdo2;
     attachInterrupt(digitalPinToInterrupt(_pins.gdo2), isrGdo2, CHANGE);
     attachInterrupt(digitalPinToInterrupt(_pins.gdo0), isrGdo0, CHANGE);
+    // Маскирование GDO0 (5.8.4): снимок int_ena ПОСЛЕ attachInterrupt,
+    // стартовое состояние — по фактическому уровню шторки.
+    s_gdo0IntEna = GPIO.pin[s_pinGdo0].int_ena;
+    if (digitalRead(_pins.gdo2) == HIGH) {
+        _csActive = true;              // несущая/шум уже есть — шторка открыта
+    } else {
+        gdo0IntMask();                 // тишина — спим до первого фронта GDO2
+    }
     return true;
 }
 
@@ -183,10 +215,41 @@ void Cc1101Driver::writeRxTable() {
     const cc1101::RegVal* t = cc1101::rxTableBase(n);
     for (size_t i = 0; i < n; ++i) xferReg(t[i].reg, t[i].val);
     // FREQ2/1/0 из конфигурируемой частоты (по умолчанию 915.00 -> 0x23313B)
-    uint32_t f = cc1101::freqWord(_freqMHz);
+    writeFreqRegs(_freqMHz);
+    // AGCCTRL1 (пороги Carrier Sense) — полевой настроечный байт (5.8.4).
+    // Шторм на стенде показал: с reset-дефолтом (относительный порог 0 дБ)
+    // шторка открывается на собственный шум. Сырой байт, а не перечень
+    // полей: кодировку порогов подбирают на стенде по даташиту/SmartRF.
+    // 0 (дефолт) = регистр не трогаем. Бит 6 (AGC_LNA_PRIORITY) держать
+    // выставленным, как в reset-значении 0x40.
+    int32_t agc = cfgGetInt("wx.rf_agcctrl1", 0);
+    if (agc > 0 && agc <= 0xFF) xferReg(0x1C, (uint8_t)agc);
+}
+
+void Cc1101Driver::writeFreqRegs(float mhz) {
+    uint32_t f = cc1101::freqWord(mhz);
     xferReg(0x0D, (uint8_t)(f >> 16));
     xferReg(0x0E, (uint8_t)(f >> 8));
     xferReg(0x0F, (uint8_t)f);
+}
+
+// ============================================================================
+// W3.3: ДЕЛЬТА ДЛЯ СКАНЕРА АЧХ (task-контекст; SPI, нельзя из ISR)
+// ============================================================================
+bool Cc1101Driver::setFreqMHz(float mhz) {
+    if (!_healthy) return false;
+    if (mhz < 300.0f || mhz > 928.0f) return false;   // пределы CC1101 (900-диап.)
+    _freqMHz = mhz;
+    xferReg(cc1101::STROBE_SIDLE, 0);
+    writeFreqRegs(mhz);
+    xferReg(cc1101::STROBE_SFRX, 0);
+    xferReg(cc1101::STROBE_SRX, 0);
+    return true;
+}
+
+int16_t Cc1101Driver::readRssiNow() {
+    if (!_healthy) return 0;
+    return readRssiDbm();
 }
 
 int16_t Cc1101Driver::readRssiDbm() {
