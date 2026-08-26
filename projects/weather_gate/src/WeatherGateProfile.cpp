@@ -4,8 +4,8 @@
 #include "WeatherGateProfile.h"
 #include "WeatherGateEvents.h"
 #include "WeatherGateApp.h"
-#include "drivers/Bme280Driver.h"
-#include "drivers/Cc1101Driver.h"
+#include <drivers/Bme280Driver.h>
+#include <drivers/Cc1101Driver.h>
 #include <core/DriverRegistry.h>
 #include <core/ResourceManager.h>
 #include <core/Kernel.h>

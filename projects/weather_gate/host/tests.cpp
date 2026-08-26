@@ -3,8 +3,8 @@
 // ============================================================================
 // Запуск на хосте (без железа), из projects/weather_gate/host:
 //   ./run_tests.sh
-// (каноничная раскладка: ядро — ../../MicroOS, драйверы профиля —
-// ../src/drivers; шим Arduino — ../../MicroOS/host/shim)
+// (каноничная раскладка: ядро — ../../../MicroOS, драйверы — ядерные
+// (MicroOS/src/drivers, приёмка мерджа 24.08); шим — ../../../MicroOS/host/shim)
 //
 // Покрытие (только то, что НЕ требует FreeRTOS/GPIO/шины — честная граница):
 //   · WiegandFormats.h  — декодер W26–W56 (каталог профилей, логика чистая);
@@ -21,10 +21,11 @@
 #include "../../../MicroOS/src/catalog/wiegand/WiegandFormats.h"
 #include "../../smart_lock/src/CardDbFormat.h"
 #include "../../../MicroOS/src/drivers/BcdUtils.h"
-#include "../src/drivers/Bme280Core.h"
-#include "../src/drivers/FineOffsetCore.h"
-#include "../src/drivers/Cc1101Core.h"
-#include "../src/drivers/WeatherCore.h"
+#include "../../../MicroOS/src/drivers/Bme280Core.h"
+#include "../../../MicroOS/src/drivers/FineOffsetCore.h"
+#include "../../../MicroOS/src/drivers/Cc1101Core.h"
+#include "../../../MicroOS/src/drivers/WeatherCore.h"
+#include "../src/WxTrend.h"
 #include "../../../MicroOS/src/services/TimeInterval.h"
 #include "../../../MicroOS/src/services/AudioQueue.h"
 #include "../../../MicroOS/src/services/DataLogCore.h"
@@ -1749,6 +1750,14 @@ static void testWeatherCore() {
     CHECK(strcmp(wxc::weatherState(0.0f, 5.0f, 16.0f), "windy") == 0);
     // Дождь важнее ветра
     CHECK(strcmp(wxc::weatherState(1.0f, 12.0f, 20.0f), "rainy") == 0);
+
+    // --- baroTrend3h (W3.2) ---------------------------------------------------
+    CHECK(wxc::baroTrend3h( 2.5f) ==  1);   // заметный рост
+    CHECK(wxc::baroTrend3h(-2.5f) == -1);   // заметное падение
+    CHECK(wxc::baroTrend3h( 0.9f) ==  0);   // ниже порога — шум
+    CHECK(wxc::baroTrend3h( 1.0f) ==  0);   // граница — ещё стабильно
+    CHECK(wxc::baroTrend3h(-1.0f) ==  0);   // граница — ещё стабильно
+    CHECK(wxc::baroTrend3h( 1.01f) == 1);   // чуть выше порога — рост
 }
 
 // ============================================================================

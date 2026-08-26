@@ -15,10 +15,12 @@
 #include <services/DataLogService.h>
 #include <services/TimeService.h>
 #include <services/NetworkManager.h>
-#include "drivers/Bme280Driver.h"
-#include "drivers/Cc1101Driver.h"
+#include <drivers/Bme280Driver.h>
+#include <drivers/Cc1101Driver.h>
+#include "WxTrend.h"
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <WiFiClient.h>
+#include <cstdarg>                   // s_diagLog (W3.2-diag1)
 
 // ============================================================================
 // ПАЗ-ПРОВЕРКИ ДОМЕНА (IHealthCheck; HealthMonitor владеет механизмом,
@@ -150,6 +152,20 @@ union WgDlogQueryBuf {
 };
 static WgDlogQueryBuf s_dlogQ;
 
+// W3.2-diag1: условный диагностический лог (конфиг wx.diag). Форматирует
+// в локальный буфер (обрезка под LOG_BODY_LEN=96 — намеренно, сообщения
+// короткие) и пишет через публичный мост модуля: ModuleBase::log —
+// protected, а свободные функции UI-провайдера членства не имеют.
+static void s_diagLog(const char* fmt, ...) {
+    if (!cfgGetBool("wx.diag", true)) return;
+    char body[92];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(body, sizeof(body), fmt, ap);
+    va_end(ap);
+    WeatherGateApp::getInstance().logDiag(body);
+}
+
 static bool wgApiDlogChannels(char* buf, size_t size) {
     DataLogService& dl = DataLogService::getInstance();
     size_t pos = 0;
@@ -175,6 +191,11 @@ static bool wgApiDlog(const ShUiRequest& req, char* buf, size_t size,
     DataLogService& dl = DataLogService::getInstance();
     const char* chArg = req.getArg("ch");
     uint8_t ch = chArg ? (uint8_t)atoi(chArg) : 0;
+    // W3.2-diag1: фиксируем запрос ДО проверок (поймать no_channel)
+    s_diagLog("dlog: ch='%s'->%u count=%u range='%s'",
+              chArg != nullptr ? chArg : "null", (unsigned)ch,
+              (unsigned)dl.channelCount(),
+              req.getArg("range") != nullptr ? req.getArg("range") : "null");
     if (ch >= dl.channelCount()) {
         status = 404;
         snprintf(buf, size, "{\"err\":\"no_channel\"}");
@@ -207,6 +228,8 @@ static bool wgApiDlog(const ShUiRequest& req, char* buf, size_t size,
         uint16_t cnt = dl.getRaw(ch, s_dlogQ.raw, DLOG_RAW_CAP, fromTs);
         cnt = dlog::decimateRaw(s_dlogQ.raw, cnt, s_dlogQ.raw,
                                 DLOG_JSON_POINTS);
+        s_diagLog("dlog: raw ch=%u n=%u dropped=%lu", (unsigned)ch,
+                  (unsigned)cnt, (unsigned long)dl.droppedPoints(ch));
         n = snprintf(buf, size, "{\"fmt\":\"raw\",\"n\":%u,\"ts\":[", cnt);
         if (n < 0) return true;
         pos = (size_t)n;
@@ -231,6 +254,9 @@ static bool wgApiDlog(const ShUiRequest& req, char* buf, size_t size,
     uint16_t cnt = dl.getTier(ch, daily, s_dlogQ.aggr, 320, fromTs);
     cnt = dlog::decimateAggr(s_dlogQ.aggr, cnt, s_dlogQ.aggr,
                              DLOG_JSON_POINTS);
+    s_diagLog("dlog: tier ch=%u daily=%d n=%u dropped=%lu", (unsigned)ch,
+              daily ? 1 : 0, (unsigned)cnt,
+              (unsigned long)dl.droppedPoints(ch));
     n = snprintf(buf, size, "{\"fmt\":\"aggr\",\"n\":%u,\"ts\":[", cnt);
     if (n < 0) return true;
     pos = (size_t)n;
@@ -260,6 +286,13 @@ static bool wgApiDlog(const ShUiRequest& req, char* buf, size_t size,
 bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
                               char* responseBuf, size_t bufSize,
                               int& statusCode) {
+    // W3.2-diag5: безусловный лог ВХОДА (ловим висячий tail из ядра:
+    // если pathTail мусорный — увидим его здесь дословно).
+    if (strncmp(pathTail, "dlog", 4) == 0 || strncmp(pathTail, "weather", 7) != 0)
+        s_diagLog("api hit: tail='%.*s' len=%u tok=%s", 40, pathTail,
+                  (unsigned)strlen(pathTail),
+                  (req.token != nullptr && req.token[0] != '\0') ? "есть"
+                                                                 : "НЕТ");
     if (strcmp(pathTail, "ping") == 0) {
         snprintf(responseBuf, bufSize, "{\"pong\":1,\"ms\":%lu}",
                  (unsigned long)millis());
@@ -302,15 +335,23 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         return true;
     }
     if (strcmp(pathTail, "weather") == 0) {
-        // Контракт smart_lock + расширения (публичный: погода — не секрет)
-        WeatherGateApp::getInstance().weatherJson(responseBuf, bufSize);
+        // Контракт smart_lock + расширения (публичный: погода — не секрет).
+        // HTTP отдаёт ПОЛНУЮ версию (статистика 24ч, тренд, t° котельной);
+        // MQTT-публикация остаётся компактной (бюджет MQTT_BODY_LEN=256).
+        WeatherGateApp::getInstance().weatherJsonFull(responseBuf, bufSize);
         statusCode = 200;
         return true;
     }
     // Дальше — только админ (графики = история, паттерн smart_lock)
     if (!HttpService::getInstance().isAdminToken(req.token)) {
+        if (strncmp(pathTail, "dlog", 4) == 0)   // W3.2-diag1
+            s_diagLog("api '%s': tok=%s admin=NO -> false",
+                      pathTail, (req.token != nullptr && req.token[0] != '\0')
+                                ? "есть" : "НЕТ");
         return false;   // 404 ядра: не раскрываем существование путей
     }
+    if (strncmp(pathTail, "dlog", 4) == 0)       // W3.2-diag1
+        s_diagLog("api '%s': admin=ok", pathTail);
     if (strcmp(pathTail, "dlog/channels") == 0) {
         statusCode = 200;
         return wgApiDlogChannels(responseBuf, bufSize);
@@ -319,6 +360,8 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         statusCode = 200;
         return wgApiDlog(req, responseBuf, bufSize, statusCode);
     }
+    // W3.2-diag5: сюда попадает и МУСОРНЫЙ tail (висячий указатель ядра)
+    s_diagLog("api miss: tail='%.*s' -> false (404 ядра)", 40, pathTail);
     return false;   // неизвестный профильный путь -> 404 ядра
 }
 
@@ -330,6 +373,10 @@ volatile bool WeatherGateApp::s_altTaskRunning = false;
 WeatherGateApp& WeatherGateApp::getInstance() {
     static WeatherGateApp instance;
     return instance;
+}
+
+void WeatherGateApp::logDiag(const char* body) {
+    log(LogLevel::Info, "DIAG %s", body != nullptr ? body : "?");
 }
 
 void WeatherGateApp::registerExtensions() {
@@ -371,6 +418,11 @@ void WeatherGateApp::registerExtensions() {
         {"wx.autoalt_en",      ConfigType::BOOL, "1", 0, 0,
          CFG_NONE, "Телеметрия и сторожа",
          "Авто-высота по координатам (при FULL-сети)"},
+        // W3.2-diag1: расширенный лог пути даталога (поймать 404 графиков
+        // и заморозку RSSI). Выключается из /admin без перепрошивки.
+        {"wx.diag",            ConfigType::BOOL, "1", 0, 0,
+         CFG_NONE, "Телеметрия и сторожа",
+         "Расширенный лог диагностики (даталог, радио)"},
     });
     if (!ok) log(LogLevel::Error, "addFields 'Телеметрия и сторожа' failed");
 
@@ -394,11 +446,18 @@ void WeatherGateApp::start() {
 
     // Каналы даталоггера (сервис пассивен — каналы объявляет профиль)
     DataLogService& dlog = DataLogService::getInstance();
-    _chOutT  = dlog.registerChannel("wx_ot", "Улица, температура", "°C");
-    _chOutH  = dlog.registerChannel("wx_oh", "Улица, влажность", "%");
+    // Подписи — короче 28-байтного бюджета канала (кириллица 2 Б/символ;
+    // «Улица, температура» резалась посередине символа — урок стенда 23.08)
+    _chOutT  = dlog.registerChannel("wx_ot", "Улица, темп.", "°C");
+    _chOutH  = dlog.registerChannel("wx_oh", "Улица, влажн.", "%");
     _chPress = dlog.registerChannel("wx_p",  "Давление у.м.", "гПа");
     _chWind  = dlog.registerChannel("wx_w",  "Ветер", "м/с");
     _chRain  = dlog.registerChannel("wx_r",  "Дождь", "мм/ч");
+    // W3.2-diag1: результат регистрации (при -1 канала графики дадут 404)
+    s_diagLog("dlog init: ids=%d,%d,%d,%d,%d count=%u heap=%lu",
+              _chOutT, _chOutH, _chPress, _chWind, _chRain,
+              (unsigned)dlog.channelCount(),
+              (unsigned long)ESP.getFreeHeap());
 
     // Авто-высота: если сеть уже FULL (старт после стабильной линии)
     maybeRequestAltitude();
@@ -449,7 +508,11 @@ void WeatherGateApp::tick() {
     if (_chPress >= 0 && d.isHealthy() && d.lastReadMs() != 0 &&
         now - _lastPressLogMs >= 60000UL) {
         _lastPressLogMs = now;
-        DataLogService::getInstance().logPoint(_chPress, d.pressureSeaHpa());
+        bool rcP = DataLogService::getInstance().logPoint(
+            _chPress, d.pressureSeaHpa());
+        if (!rcP)   // W3.2-diag1: молчаливый отказ — в лог
+            s_diagLog("wr press: rc=0 ch=%d unix=%lu", _chPress,
+                      (unsigned long)TimeService::getInstance().getUnixTime());
     }
 
     // Периодическая retained-публикация (давление дрейфует и без пакетов;
@@ -458,6 +521,13 @@ void WeatherGateApp::tick() {
     if (cfgGetBool("wx.mqtt_en", true) && _out.valid &&
         now - _lastPubMs >= pubMs) {
         publishWeatherMqtt();
+    }
+
+    // Кэш статистики 24 ч для публичной панели (раз в 5 мин, из tick —
+    // единственный писатель; getTier часового яруса за сутки — ≤27 записей)
+    if (now - _lastStatsMs >= 300000UL) {
+        _lastStatsMs = now;
+        refreshStats24();
     }
 
     // Авто-высота: запуск одноразовой задачи (loop не блокируем)
@@ -494,10 +564,17 @@ void WeatherGateApp::onNewRadioPacket() {
 
     // Даталог уличных каналов (logPoint сам отбросит точку без времени)
     DataLogService& dl = DataLogService::getInstance();
-    if (_chOutT >= 0) dl.logPoint(_chOutT, p.tempC);
-    if (_chOutH >= 0) dl.logPoint(_chOutH, p.humidity);
-    if (_chWind >= 0) dl.logPoint(_chWind, p.windMs);
-    if (_chRain >= 0) dl.logPoint(_chRain, _out.rainMmPh);
+    bool rcT = false, rcH = false, rcW = false, rcR = false;
+    if (_chOutT >= 0) rcT = dl.logPoint(_chOutT, p.tempC);
+    if (_chOutH >= 0) rcH = dl.logPoint(_chOutH, p.humidity);
+    if (_chWind >= 0) rcW = dl.logPoint(_chWind, p.windMs);
+    if (_chRain >= 0) rcR = dl.logPoint(_chRain, _out.rainMmPh);
+    // W3.2-diag1: успех записи + радио-счётчики (RSSI-заморозка, шторм фронтов)
+    s_diagLog("wr: rc=%d%d%d%d unix=%lu pkt=%lu dup=%lu edges=%lu rssi=%d",
+              rcT ? 1 : 0, rcH ? 1 : 0, rcW ? 1 : 0, rcR ? 1 : 0,
+              (unsigned long)unix, (unsigned long)r.packetSeq(),
+              (unsigned long)r.dupSeq(), (unsigned long)r.edgesDropped(),
+              (int)r.rssiDbm());
 
     // MQTT + событие шины
     if (cfgGetBool("wx.mqtt_en", true)) publishWeatherMqtt();
@@ -507,6 +584,57 @@ void WeatherGateApp::onNewRadioPacket() {
     snprintf(ev.payload, sizeof(ev.payload), "T=%.1f W=%.1f R=%.1f",
              (double)p.tempC, (double)p.windMs, (double)_out.rainMmPh);
     EventBus::getInstance().post(wg_ev::radioPacket(), &ev);
+}
+
+// ============================================================================
+// СТАТИСТИКА 24 Ч + БАРОТРЕНД (W3.2; кэш для панели, писатель — только tick)
+// ============================================================================
+void WeatherGateApp::refreshStats24() {
+    TimeService& ts = TimeService::getInstance();
+    if (!ts.isTimeValid()) return;   // без времени ярусы недостоверны
+    uint32_t unix   = (uint32_t)ts.getUnixTime();
+    uint32_t fromTs = unix - 86400UL;
+    DataLogService& dl = DataLogService::getInstance();
+    DlogAggr a[32];   // часовой ярус за сутки: 24 закрытых + открытое ведро
+    bool any = false;
+
+    if (_chOutT >= 0) {
+        uint16_t n = dl.getTier((uint8_t)_chOutT, false, a, 32, fromTs);
+        if (n > 0) {
+            float mn = a[0].mn, mx = a[0].mx;
+            for (uint16_t i = 1; i < n; ++i) {
+                if (a[i].mn < mn) mn = a[i].mn;
+                if (a[i].mx > mx) mx = a[i].mx;
+            }
+            _mnT24 = mn; _mxT24 = mx; any = true;
+        }
+    }
+    if (_chWind >= 0) {
+        uint16_t n = dl.getTier((uint8_t)_chWind, false, a, 32, fromTs);
+        if (n > 0) {
+            float mx = a[0].mx;
+            for (uint16_t i = 1; i < n; ++i) if (a[i].mx > mx) mx = a[i].mx;
+            _mxW24 = mx; any = true;
+        }
+    }
+    if (_chPress >= 0) {
+        uint16_t n = dl.getTier((uint8_t)_chPress, false, a, 32, fromTs);
+        if (n > 0) {
+            float mn = a[0].mn, mx = a[0].mx;
+            for (uint16_t i = 1; i < n; ++i) {
+                if (a[i].mn < mn) mn = a[i].mn;
+                if (a[i].mx > mx) mx = a[i].mx;
+            }
+            _mnP24 = mn; _mxP24 = mx; any = true;
+            // Тренд: свежее (открытое) ведро против ведра ~3 ч назад.
+            float nowP = a[n - 1].avg, refP = a[0].avg;
+            for (uint16_t i = n; i-- > 0;) {
+                if (a[i].ts <= unix - 10800UL) { refP = a[i].avg; break; }
+            }
+            _trend = wxc::baroTrend3h(nowP - refP);
+        }
+    }
+    _statsValid = any;
 }
 
 // ============================================================================
@@ -543,6 +671,42 @@ size_t WeatherGateApp::weatherJson(char* buf, size_t bufSize) const {
         (unsigned)_out.dirDeg, (double)_out.rainMmPh, p, ps,
         (int)r.rssiDbm(), _out.batteryLow ? 0 : 1,
         (unsigned long)((millis() - _out.rxMs) / 1000));
+    return n > 0 ? (size_t)n : 0;
+}
+
+size_t WeatherGateApp::weatherJsonFull(char* buf, size_t bufSize) const {
+    if (!_out.valid) {
+        int n = snprintf(buf, bufSize, "{\"valid\":0}");
+        return n > 0 ? (size_t)n : 0;
+    }
+    const Bme280Driver& d = Bme280Driver::getInstance();
+    const Cc1101Driver& r = Cc1101Driver::getInstance();
+    char p[12] = "null", ps[12] = "null", it[12] = "null";
+    if (d.isHealthy() && d.lastReadMs() != 0) {
+        snprintf(p,  sizeof(p),  "%.2f", (double)d.pressureHpa());
+        snprintf(ps, sizeof(ps), "%.2f", (double)d.pressureSeaHpa());
+        snprintf(it, sizeof(it), "%.1f", (double)d.temperatureC());
+    }
+    int n = snprintf(buf, bufSize,
+        "{\"valid\":1,\"temp\":%.2f,\"feels_like\":%.2f,\"state\":\"%s\","
+        "\"humidity\":%.1f,\"wind\":%.2f,\"gust\":%.2f,\"dir\":%u,"
+        "\"rain\":%.2f,\"press\":%s,\"press_sea\":%s,"
+        "\"rssi\":%d,\"batt\":%d,\"age_s\":%lu,\"in_temp\":%s",
+        (double)_out.tempC, (double)feelsLikeC(), weatherState(),
+        (double)_out.humidityPct, (double)_out.windMs, (double)_out.gustMs,
+        (unsigned)_out.dirDeg, (double)_out.rainMmPh, p, ps,
+        (int)r.rssiDbm(), _out.batteryLow ? 0 : 1,
+        (unsigned long)((millis() - _out.rxMs) / 1000), it);
+    // Статистика 24 ч — только если кэш валиден (поле просто отсутствует)
+    if (n > 0 && (size_t)n < bufSize && _statsValid) {
+        n += snprintf(buf + n, bufSize - (size_t)n,
+            ",\"tmin24\":%.1f,\"tmax24\":%.1f,\"pmin24\":%.1f,"
+            "\"pmax24\":%.1f,\"wmax24\":%.1f,\"trend\":%d",
+            (double)_mnT24, (double)_mxT24, (double)_mnP24,
+            (double)_mxP24, (double)_mxW24, (int)_trend);
+    }
+    if (n > 0 && (size_t)n < bufSize)
+        n += snprintf(buf + n, bufSize - (size_t)n, "}");
     return n > 0 ? (size_t)n : 0;
 }
 

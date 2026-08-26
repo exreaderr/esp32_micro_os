@@ -14,11 +14,16 @@
   --bg: #f3eee2; --card: #fffdf6; --text: #3b3226; --text2: #8a7c63;
   --border: #ddd0b8; --field: #bfa982; --info: #9a6716; --success: #5d8a3c;
   --warning: #cf8a1c; --error: #b23c2e; --svc: #71634f;
+  /* Акценты метрик — «погодная» палитра поверх тёплой гаммы экосистемы */
+  --c-temp: #c05c2a; --c-hum: #4a7d9a; --c-press: #5d8a3c;
+  --c-wind: #7a6a9a; --c-rain: #3d8a99;
   --radius: 16px; --shadow: 0 2px 10px rgba(93,72,41,.10);
 }
 body.dark {
   --bg: #1f1810; --card: #2a2114; --text: #ede3cf; --text2: #ab997a;
   --border: #4a3d27; --field: #6b5834; --svc: #584b37;
+  --c-temp: #e08a5a; --c-hum: #7fb0cc; --c-press: #8fbc6a;
+  --c-wind: #ab9bcc; --c-rain: #6fb5c4;
   --shadow: 0 2px 10px rgba(0,0,0,.5);
 }
 body {
@@ -39,18 +44,16 @@ body {
   border-radius: 10px; padding: 6px 10px; font-size: 14px; cursor: pointer;
   text-decoration: none;
 }
-.now-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
-.now-temp { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; }
-.now-temp .big { font-size: 46px; font-weight: 700; }
+.now-temp { display: flex; align-items: baseline; gap: 12px; }
+.now-temp .big { font-size: 46px; font-weight: 700; color: var(--c-temp); }
 .now-temp .state { font-size: 16px; color: var(--info); }
-.metric { font-size: 14px; color: var(--text2); }
-.metric b { color: var(--text); font-size: 16px; font-weight: 600; }
 .warn { color: var(--warning); font-weight: 600; }
 .age { font-size: 12px; color: var(--text2); margin-top: 6px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .chip {
   border: 1px solid var(--border); background: none; color: var(--text2);
   border-radius: 999px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+  text-decoration: none; display: inline-block;
 }
 .chip.active { background: var(--field); border-color: var(--field); color: #fff; }
 #chartBox { width: 100%; min-height: 120px; }
@@ -78,6 +81,74 @@ input[type=password] {
 #toast.show { opacity: 1; }
 #toast.err { background: var(--error); }
 #toast.ok { background: var(--success); }
+
+/* ---- W3.2: сетка метрикарточек (мин/макс 24ч + шкалы) ---- */
+.mgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.mcard {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px 14px;
+}
+.mcard .lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+.mcard .val { font-size: 24px; font-weight: 700; margin-top: 2px; }
+.mcard .sub { font-size: 12px; color: var(--text2); margin-top: 2px; min-height: 15px; }
+.scale { margin-top: 8px; }
+.scale .slbl { display: flex; justify-content: space-between; font-size: 10px; color: var(--text2); margin-bottom: 3px; }
+.scale .bar { height: 6px; border-radius: 3px; background: rgba(0,0,0,.07); overflow: hidden; }
+body.dark .scale .bar { background: rgba(255,255,255,.08); }
+.scale .fill { height: 100%; width: 0; border-radius: 3px; transition: width .4s; }
+
+/* ---- Роза ветров ---- */
+.compass { position: relative; width: 126px; height: 126px; margin: 6px auto 0; }
+.compass-bg { position: absolute; inset: 0; border-radius: 50%; background: var(--bg); border: 1px solid var(--border); }
+.compass-arrow {
+  position: absolute; top: 50%; left: 50%; width: 4px; height: 50px; margin-left: -2px;
+  border-radius: 2px; background: var(--c-wind);
+  transform-origin: 50% 0; transition: transform .5s ease;
+}
+.compass-arrow::after {
+  content: ""; position: absolute; bottom: -9px; left: -5px;
+  border: 7px solid transparent; border-top-color: var(--c-wind);
+}
+.compass-c {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: var(--c-wind);
+}
+.cmark { position: absolute; font-size: 10px; font-weight: 600; color: var(--text2); transform: translate(-50%,-50%); }
+
+/* ---- Навигация по настройкам: концепция карточки smart_lock, наша палитра ---- */
+.nav-chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 6px; margin: 8px 0 0; }
+.nav-chips .chip { position: relative; white-space: nowrap; flex-shrink: 0; }
+.nav-chips .chip.active {
+  background: var(--tile, var(--field)); border-color: var(--tile, var(--field)); color: #fff;
+}
+#navChips .chip[data-tab="charts"] { --tile: #a06b1e; }
+#navChips .chip[data-tab="radio"]  { --tile: #3d7a99; }
+#navChips .chip[data-tab="net"]    { --tile: #4a7d9a; }
+#navChips .chip[data-tab="paz"]    { --tile: #b2512f; }
+#navChips .chip[data-tab="sys"]    { --tile: #5d8a3c; }
+#navChips .chip[data-tab="adm"]    { --tile: #76608a; }
+.tab-pane { margin-top: 8px; }
+
+/* ---- ПАЗ ---- */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.b-ok   { background: rgba(93,138,60,.15);  color: var(--success); }
+.b-warn { background: rgba(207,138,28,.15); color: var(--warning); }
+.b-crit { background: rgba(178,60,46,.15);  color: var(--error); }
+
+/* ---- Модальное окно входа (пасхалка: 5 тапов по нижней плашке, как на замке) ---- */
+.modal {
+  position: fixed; inset: 0; background: rgba(40,30,15,.45);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 60; padding: 16px;
+}
+.modal-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 18px; width: 100%; max-width: 340px;
+}
+.modal-title { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 16px; }
+.modal-x { cursor: pointer; color: var(--text2); padding: 2px 8px; font-weight: 400; }
+#footTap { user-select: none; -webkit-user-select: none; }
 </style>
 </head>
 <body>
@@ -89,36 +160,112 @@ input[type=password] {
     <button onclick="toggleTheme()" title="Тема">◑</button>
   </div>
 
-  <!-- ТЕКУЩЕЕ СОСТОЯНИЕ -->
+  <!-- ГЕРОЙ: температура, состояние, мин/макс 24 ч -->
   <div class="card">
-    <div class="now-grid">
-      <div class="now-temp">
-        <span class="big" id="nowTemp">—</span>
-        <span class="state" id="nowState"></span>
-      </div>
-      <div class="metric">Ощущается как<br><b id="nowFeels">—</b></div>
-      <div class="metric">Влажность<br><b id="nowHum">—</b></div>
-      <div class="metric">Ветер<br><b id="nowWind">—</b></div>
-      <div class="metric">Порывы<br><b id="nowGust">—</b></div>
-      <div class="metric">Направление<br><b id="nowDir">—</b></div>
-      <div class="metric">Дождь, мм/ч<br><b id="nowRain">—</b></div>
-      <div class="metric">Давление<br><b id="nowPress">—</b></div>
-      <div class="metric">Сигнал (RSSI)<br><b id="nowRssi">—</b></div>
+    <div class="now-temp">
+      <span class="big" id="nowTemp">—</span>
+      <span class="state" id="nowState"></span>
     </div>
+    <div class="srow" style="margin-top:2px"><span>Ощущается как</span><span id="nowFeels">—</span></div>
+    <div class="srow"><span>Мин / макс за 24 ч</span><span id="nowTmm">накапливается…</span></div>
     <div class="age" id="nowAge"></div>
     <div class="age warn hidden" id="nowBatt">&#9888; Батарея уличного блока разряжена</div>
   </div>
 
-  <!-- ГРАФИКИ -->
+  <!-- МЕТРИКИ -->
+  <div class="mgrid">
+    <div class="mcard">
+      <div class="lbl" style="color:var(--c-hum)">Влажность</div>
+      <div class="val" id="mHum">—</div>
+      <div class="sub" id="mHumSub">&nbsp;</div>
+      <div class="scale">
+        <div class="slbl"><span>0%</span><span>50%</span><span>100%</span></div>
+        <div class="bar"><div class="fill" id="sHum" style="background:var(--c-hum)"></div></div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="lbl" style="color:var(--c-press)">Давление, ур. моря</div>
+      <div class="val" id="mPress">—</div>
+      <div class="sub" id="mPressSub">&nbsp;</div>
+      <div class="scale">
+        <div class="slbl"><span>728</span><span>760</span><span>788</span></div>
+        <div class="bar"><div class="fill" id="sPress" style="background:var(--c-press)"></div></div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="lbl" style="color:var(--c-wind)">Ветер</div>
+      <div class="val" id="mWind">—</div>
+      <div class="sub" id="mWindSub">&nbsp;</div>
+      <div class="scale">
+        <div class="slbl"><span>0</span><span>10</span><span>20 м/с</span></div>
+        <div class="bar"><div class="fill" id="sWind" style="background:var(--c-wind)"></div></div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="lbl" style="color:var(--c-rain)">Дождь</div>
+      <div class="val" id="mRain">—</div>
+      <div class="sub">интенсивность, мм/ч</div>
+      <div class="scale">
+        <div class="slbl"><span>0</span><span>5</span><span>10+</span></div>
+        <div class="bar"><div class="fill" id="sRain" style="background:var(--c-rain)"></div></div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="lbl" style="color:var(--c-wind)">Направление ветра</div>
+      <div class="compass">
+        <div class="compass-bg" id="compassBg"></div>
+        <div class="compass-arrow" id="windArrow"></div>
+        <div class="compass-c" id="windDirC">—</div>
+      </div>
+    </div>
+    <div class="mcard">
+      <div class="lbl" style="color:var(--info)">Тенденция давления</div>
+      <div class="val" id="mTrend" style="font-size:20px">—</div>
+      <div class="sub" id="mTrendSub">за 3 часа · прогноз Замбретти — в W5</div>
+    </div>
+  </div>
+
+  <!-- СТАТУС ДАТЧИКА И ШЛЮЗА -->
   <div class="card">
-    <b>История</b>
-    <div id="loginBox" class="hidden">
-      <div class="hint" style="margin-top:6px">Графики доступны после входа администратора.</div>
+    <b>Уличный блок и шлюз</b>
+    <div style="margin-top:6px">
+      <div class="srow"><span>Сигнал (RSSI)</span><span id="stRssi">—</span></div>
+      <div class="srow"><span>Последний пакет</span><span id="stAge">—</span></div>
+      <div class="srow"><span>Батарея блока</span><span id="stBatt">—</span></div>
+      <div class="srow"><span>t° в котельной (BME280)</span><span id="stInT">—</span></div>
+    </div>
+  </div>
+
+  <!-- ВХОД АДМИНИСТРАТОРА: модалка, открывается 5 тапами по нижней плашке
+       (паттерн smart_lock — публичная страница чистая, без поля пароля) -->
+  <div class="modal hidden" id="loginModal">
+    <div class="modal-card">
+      <div class="modal-title">🔐 Администратор
+        <span class="modal-x" onclick="closeLogin()">✕</span></div>
+      <div class="hint" style="margin-top:6px">Графики, радио, сеть, ПАЗ и система.</div>
       <input type="password" id="passInput" placeholder="Пароль администратора" autocomplete="current-password">
       <div class="err" id="authErr"></div>
-      <button class="btn" onclick="doLogin()">Войти</button>
+      <button class="btn" style="width:100%" onclick="doLogin()">Войти</button>
+      <div class="hint" style="margin-top:10px"><b>Трассировка запросов</b>
+        (diag4, последние 16; пин не пишется):</div>
+      <div id="traceRowsLogin" style="font-size:12px"></div>
     </div>
-    <div id="chartArea" class="hidden">
+  </div>
+
+  <!-- НАВИГАЦИЯ ПО НАСТРОЙКАМ (после входа) -->
+  <div class="card hidden" id="navCard">
+    <b>Навигация по настройкам</b>
+    <div class="nav-chips" id="navChips">
+      <button class="chip active" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
+      <button class="chip" data-tab="radio" onclick="showTab('radio')">📻 Радио</button>
+      <button class="chip" data-tab="net" onclick="showTab('net')">📡 Сеть</button>
+      <button class="chip" data-tab="paz" onclick="showTab('paz')">🛡️ ПАЗ</button>
+      <button class="chip" data-tab="sys" onclick="showTab('sys')">🩺 Система</button>
+      <button class="chip" data-tab="adm" onclick="showTab('adm')">👑 Админ</button>
+    </div>
+
+    <!-- ГРАФИКИ (даталоггер) -->
+    <div id="tab-charts" class="tab-pane">
       <div class="chips" id="chartChannels"></div>
       <div class="chips">
         <button class="chip chart-range active" data-range="6h" onclick="setChartRange('6h')">6 ч</button>
@@ -130,56 +277,88 @@ input[type=password] {
       <div id="chartBox"></div>
       <div class="hint" id="chartHint"></div>
     </div>
-  </div>
 
-  <!-- СИСТЕМА: OTA / NVS-бэкап / перезагрузка (после входа администратора;
-       вся механика — ядерная, панель только вызывает /api/ota/* и /api/config/*) -->
-  <div class="card hidden" id="sysCard">
-    <b>Система</b>
-    <div id="otaRows" style="margin-top:8px"><div class="hint">Загрузка сведений…</div></div>
-    <div id="otaBar" class="hidden" style="margin:10px 0">
-      <div style="border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
-        <div id="otaBarFill" style="height:100%;width:0%;background:var(--info);transition:width .2s"></div>
+    <!-- РАДИО (приёмник CC1101) -->
+    <div id="tab-radio" class="tab-pane hidden">
+      <div id="radioRows"><div class="hint">Загрузка…</div></div>
+      <div class="chips"><button class="chip" onclick="renderRadio()">Обновить</button></div>
+      <div class="hint">Сканер АЧХ для выбора лучшей частоты появится здесь в W3.3 —
+        после приёмки мерджа драйверов (нужны setFreqMHz/readRssiNow в ядерном драйвере).</div>
+    </div>
+
+    <!-- СЕТЬ -->
+    <div id="tab-net" class="tab-pane hidden">
+      <div id="netRows"><div class="hint">Загрузка…</div></div>
+      <div class="chips"><button class="chip" onclick="renderNet()">Обновить</button></div>
+      <div class="hint">Полная настройка сети и MQTT — в ядерной админке (вкладка «Админ»).</div>
+    </div>
+
+    <!-- ПАЗ -->
+    <div id="tab-paz" class="tab-pane hidden">
+      <div id="pazRows"><div class="hint">Загрузка…</div></div>
+      <div id="pazJournal"></div>
+      <div class="chips"><button class="chip" onclick="renderPaz()">Обновить</button></div>
+    </div>
+
+    <!-- СИСТЕМА: OTA / NVS-бэкап / перезагрузка
+         (вся механика — ядерная, панель только вызывает /api/ota/* и /api/config/*) -->
+    <div id="tab-sys" class="tab-pane hidden">
+      <div id="otaRows"><div class="hint">Загрузка сведений…</div></div>
+      <div id="otaBar" class="hidden" style="margin:10px 0">
+        <div style="border:1px solid var(--border);border-radius:6px;height:10px;overflow:hidden">
+          <div id="otaBarFill" style="height:100%;width:0%;background:var(--info);transition:width .2s"></div>
+        </div>
+        <div class="hint" id="otaBarTxt" style="margin-top:4px"></div>
       </div>
-      <div class="hint" id="otaBarTxt" style="margin-top:4px"></div>
+      <div class="chips">
+        <button class="chip" onclick="otaCheck()">Проверить обновление</button>
+        <button class="chip" onclick="otaRemote()">Обновить с сервера (прошивка + ФС)</button>
+      </div>
+      <div class="chips">
+        <button class="chip" onclick="$('otaFwFile').click()">Прошивка из файла (.bin)</button>
+        <button class="chip" onclick="$('otaFsFile').click()">Файловая система (.bin)</button>
+        <input type="file" id="otaFwFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fw')">
+        <input type="file" id="otaFsFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fs')">
+      </div>
+      <div class="chips">
+        <button class="chip" onclick="cfgBackup()">Бэкап конфигурации в NVS</button>
+        <button class="chip" onclick="cfgRestore()">Восстановить из NVS</button>
+      </div>
+      <div class="hint" id="cfgBakInfo"></div>
+      <div id="otaHistory"></div>
+      <div class="chips" style="margin-top:8px">
+        <button class="chip" onclick="rebootDevice()">Перезагрузить контроллер</button>
+      </div>
+      <div class="hint" style="margin-top:6px">A/B-разделы: новая прошивка стартует в режиме
+        проверки (60 с), при сбое загрузчик сам откатывается на предыдущую. Обновление ФС
+        стирает накопленный даталог (LittleFS перезаписывается) — конфигурация переживает
+        через NVS-бэкап.</div>
     </div>
-    <div class="chips">
-      <button class="chip" onclick="otaCheck()">Проверить обновление</button>
-      <button class="chip" onclick="otaRemote()">Обновить с сервера (прошивка + ФС)</button>
+
+    <!-- АДМИН -->
+    <div id="tab-adm" class="tab-pane hidden">
+      <div class="hint">Ядерная админка: все поля конфигурации, журналы, аудит,
+        время и часовой пояс, сеть, MQTT, безопасность.</div>
+      <div class="chips">
+        <a class="chip" href="/admin">Открыть /admin</a>
+        <a class="chip" href="/api/dev/weather" target="_blank">weather-JSON</a>
+        <button class="chip" onclick="doLogout()">Выйти из админки</button>
+      </div>
+      <div class="hint" style="margin-top:12px"><b>Трассировка запросов</b>
+        (diag3, последние 16; пин в /api/auth не пишется):</div>
+      <div id="traceRows"><div class="hint">запросов ещё не было</div></div>
     </div>
-    <div class="chips">
-      <button class="chip" onclick="$('otaFwFile').click()">Прошивка из файла (.bin)</button>
-      <button class="chip" onclick="$('otaFsFile').click()">Файловая система (.bin)</button>
-      <input type="file" id="otaFwFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fw')">
-      <input type="file" id="otaFsFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fs')">
-    </div>
-    <div class="chips">
-      <button class="chip" onclick="cfgBackup()">Бэкап конфигурации в NVS</button>
-      <button class="chip" onclick="cfgRestore()">Восстановить из NVS</button>
-    </div>
-    <div class="hint" id="cfgBakInfo"></div>
-    <div id="otaHistory"></div>
-    <div class="chips" style="margin-top:8px">
-      <button class="chip" onclick="rebootDevice()">Перезагрузить контроллер</button>
-      <a class="chip" href="/admin" style="text-decoration:none;display:inline-block">Ядерная админка</a>
-    </div>
-    <div class="hint" style="margin-top:6px">A/B-разделы: новая прошивка стартует в режиме
-      проверки (60 с), при сбое загрузчик сам откатывается на предыдущую. Обновление ФС
-      стирает накопленный даталог (LittleFS перезаписывается) — конфигурация переживает
-      через NVS-бэкап.</div>
   </div>
 
-  <div class="card hint">
-    weather_gate · МикроОС 5.0 ·
-    <a href="/api/dev/weather" style="color:var(--info)">weather-JSON</a>
-  </div>
+  <!-- Плашка-пасхалка: 5 тапов → вход администратора (как на smart_lock) -->
+  <div class="card hint" id="footTap" onclick="footTap()">weather_gate · МикроОС 5.0</div>
 
 </div>
 <div id="toast"></div>
 
 <script>
 // ============================================================================
-// ПАНЕЛЬ ПОГОДНОГО ШЛЮЗА (W3)
+// ПАНЕЛЬ ПОГОДНОГО ШЛЮЗА (W3.2)
 // ============================================================================
 function $(id){ return document.getElementById(id); }
 
@@ -196,6 +375,7 @@ var WX_MAP = {
 };
 var DIR16 = ['С','ССВ','СВ','ВСВ','В','ВЮВ','ЮВ','ЮЮВ',
              'Ю','ЮЮЗ','ЮЗ','ЗЮЗ','З','ЗСЗ','СЗ','ССЗ'];
+var MMHG = 0.750062;   // гПа → мм рт.ст.
 
 function toast(msg, kind){
   var t=$('toast'); t.textContent=msg; t.className='show '+(kind||'');
@@ -215,27 +395,117 @@ function fmtAge(sec){
   if(sec<5400) return Math.round(sec/60)+' мин назад';
   return Math.round(sec/3600)+' ч назад';
 }
+function fmtUp(sec){
+  sec=+sec||0;
+  var d=Math.floor(sec/86400), h=Math.floor(sec%86400/3600), m=Math.floor(sec%3600/60);
+  if(d>0) return d+' д '+h+' ч';
+  if(h>0) return h+' ч '+m+' мин';
+  return m+' мин';
+}
+function setFill(id, f){
+  f=Math.max(0, Math.min(1, +f||0));
+  $(id).style.width=Math.round(f*100)+'%';
+}
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
+  });
+}
+function initCompass(){
+  var bg=$('compassBg'); if(!bg) return;
+  var M=[['С',0],['В',90],['Ю',180],['З',270]];
+  for(var i=0;i<M.length;i++){
+    var a=M[i][1]*Math.PI/180, e=document.createElement('div');
+    e.className='cmark'; e.textContent=M[i][0];
+    e.style.left=(50+42*Math.sin(a))+'%';
+    e.style.top =(50-42*Math.cos(a))+'%';
+    bg.appendChild(e);
+  }
+}
 
 // ============================================================================
 // API-КЛИЕНТ
 // ============================================================================
+// --- Сетевая трассировка (diag3): последние 16 запросов, видна во вкладке
+// «Админ». Секреты не пишем: /api/auth с пином в лог не попадает.
+var TRACE=[];
+function tracePush(m,url,status,ms,err){
+  var u=url.indexOf('/api/auth')===0?'/api/auth':url;   // пин — табу
+  TRACE.push({t:new Date().toLocaleTimeString('ru-RU'),m:m,u:u,
+              s:status,ms:ms,e:err||''});
+  if(TRACE.length>16) TRACE.shift();
+  renderTrace();
+}
+function renderTrace(){
+  var h='';
+  if(TRACE.length===0){
+    h='<div class="hint">запросов ещё не было</div>';
+  } else {
+    for(var i=TRACE.length-1;i>=0;i--){
+      var r=TRACE[i];
+      h+='<div class="srow"><span>'+esc(r.t)+' '+esc(r.m)+' '+esc(r.u)+'</span>'+
+         '<span class="'+(r.s>=200&&r.s<300?'ok':'warn')+'">'+
+         (r.s>0?r.s:('ОБРЫВ'+(r.e?': '+esc(r.e):'')))+' · '+r.ms+' мс</span></div>';
+    }
+  }
+  var host=$('traceRows');       if(host) host.innerHTML=h;
+  var hostL=$('traceRowsLogin'); if(hostL) hostL.innerHTML=h;
+}
 async function api(url, opts){
   opts=opts||{};
   opts.headers=opts.headers||{};
+  opts.cache='no-store';   // W3.2_fix3: API-кэшированию не бывать
   if(S.token) opts.headers['X-Auth-Token']=S.token;
+  // Таймаут 10 с: зависший запрос превращаем в видимую ошибку с URL
+  // (затык 404 графиков прятался именно в «молчаливом» зависании).
+  var ac=new AbortController();
+  opts.signal=ac.signal;
+  var t0=Date.now();
+  var timer=setTimeout(function(){ ac.abort(); },10000);
   var res;
   try { res=await fetch(url,opts); }
-  catch(e){ toast('Нет связи с контроллером','err'); throw e; }
+  catch(e){
+    clearTimeout(timer);
+    var aborted=(e&&e.name==='AbortError');
+    tracePush((opts.method||'GET'),url,0,Date.now()-t0,
+              aborted?'таймаут 10 с — контроллер не ответил':(e&&e.message||String(e)));
+    toast('Нет связи с контроллером','err');
+    throw e;
+  }
+  clearTimeout(timer);
+  tracePush((opts.method||'GET'),url,res.status,Date.now()-t0,'');
   var ct=res.headers.get('content-type')||'';
   var isJson=ct.indexOf('json')>=0 && ct.indexOf('json-lines')<0;
   var data=isJson?await res.json().catch(function(){return{};}):await res.text();
   return { ok: res.ok, status: res.status, data: data };
+}
+// 404 unknown_dev_api на профильном админском пути = токен не принят
+// (сессия умерла с ребутом контроллера — они в RAM). Лечится перелогином,
+// а не надписью «недоступен» (урок диаг-стенда 25.08).
+function isAuthFail(r){
+  return r.status===401 ||
+         (r.status===404 && r.data && r.data.error==='unknown_dev_api');
+}
+// Мягкая проверка (diag4): одиночный 401/404 МОГ быть гонкой/шальным
+// ответом, а не смертью сессии. Перепроверяем probe'ом в админский
+// /api/telemetry: он тоже не прошёл — сессия действительно мертва
+// (возврат true), прошёл — просто сбойный запрос, сессию НЕ трогаем.
+async function isRealAuthFail(r){
+  if(!isAuthFail(r)) return false;
+  var p=await api('/api/telemetry');
+  return !p.ok;
 }
 async function apiPost(url){ return api(url,{method:'POST'}); }
 
 // ============================================================================
 // ТЕКУЩЕЕ СОСТОЯНИЕ (публичный /api/dev/weather, обновление 30 с)
 // ============================================================================
+function humState(h){
+  if(h<30) return 'сухо';
+  if(h<=60) return 'комфортно';
+  if(h<=75) return 'влажно';
+  return 'сыро';
+}
 async function refreshNow(){
   var r=await api('/api/dev/weather');
   if(!r.ok){ $('nowAge').textContent='Нет связи'; return; }
@@ -246,49 +516,140 @@ async function refreshNow(){
     $('nowAge').textContent='Пакетов от уличного блока ещё не было';
     return;
   }
+  // Герой
   $('nowTemp').textContent=(+w.temp).toFixed(1)+'°C';
   $('nowState').textContent=WX_MAP[w.state]||w.state||'';
   $('nowFeels').textContent=(+w.feels_like).toFixed(1)+'°C';
-  $('nowHum').textContent=(+w.humidity).toFixed(0)+' %';
-  $('nowWind').textContent=(+w.wind).toFixed(1)+' м/с';
-  $('nowGust').textContent=(+w.gust).toFixed(1)+' м/с';
+  if(w.tmin24!==undefined)
+    $('nowTmm').textContent=(+w.tmin24).toFixed(1)+' / '+(+w.tmax24).toFixed(1)+' °C';
+  // Влажность
+  $('mHum').textContent=(+w.humidity).toFixed(0)+' %';
+  $('mHumSub').textContent=humState(+w.humidity);
+  setFill('sHum', (+w.humidity)/100);
+  // Давление (шкала 728..788 мм рт.ст. ≈ 970..1050 гПа)
+  if(w.press_sea!=null){
+    var mm=(+w.press_sea)*MMHG;
+    $('mPress').textContent=Math.round(mm)+' мм';
+    $('mPressSub').textContent=(w.pmin24!==undefined)?
+      '24 ч: '+Math.round((+w.pmin24)*MMHG)+'…'+Math.round((+w.pmax24)*MMHG)+' мм' :
+      (+w.press_sea).toFixed(1)+' гПа';
+    setFill('sPress', (mm-728)/60);
+  }
+  // Ветер
+  $('mWind').textContent=(+w.wind).toFixed(1)+' м/с';
+  $('mWindSub').textContent='порывы '+(+w.gust).toFixed(1)+
+    (w.wmax24!==undefined?' · макс 24 ч '+(+w.wmax24).toFixed(1):'');
+  setFill('sWind', (+w.wind)/20);
+  // Дождь
+  $('mRain').textContent=(+w.rain).toFixed(1)+' мм/ч';
+  setFill('sRain', (+w.rain)/10);
+  // Роза ветров: стрелка показывает, КУДА дует (dir+180)
   var d=Math.round((+w.dir)/22.5)%16;
-  $('nowDir').textContent=DIR16[d]+' ('+(+w.dir)+'°)';
-  $('nowRain').textContent=(+w.rain).toFixed(1);
-  $('nowPress').textContent=w.press_sea!=null?
-    Math.round(+w.press_sea*0.750062)+' мм рт.ст.':'—';
-  $('nowRssi').textContent=w.rssi+' дБм';
-  $('nowAge').textContent='Обновлено '+fmtAge(w.age_s)+' · станция '+fmtAge(w.age_s);
+  $('windArrow').style.transform='rotate('+((+w.dir)+180)+'deg)';
+  $('windDirC').textContent=DIR16[d]+' '+(+w.dir)+'°';
+  // Тенденция давления (баротренд 3 ч из даталога; поле есть, когда кэш валиден)
+  if(w.trend!==undefined){
+    var T={'-1':['↓ падает','к ненастью'],'0':['→ стабильно','без резких перемен'],
+           '1':['↑ растёт','к прояснению']};
+    var t=T[String(w.trend)]||['—',''];
+    $('mTrend').textContent=t[0];
+    $('mTrendSub').textContent='за 3 часа · '+t[1];
+  }
+  // Статус датчика и шлюза
+  $('stRssi').textContent=w.rssi+' дБм';
+  $('stAge').textContent=fmtAge(w.age_s);
+  $('stBatt').textContent=(w.batt===1)?'норма':'разряжена';
+  $('stBatt').className=(w.batt===1)?'ok':'bad';
+  $('stInT').textContent=(w.in_temp!=null)?(+w.in_temp).toFixed(1)+' °C':'датчик не отвечает';
+  $('nowAge').textContent='Обновлено '+fmtAge(w.age_s);
   $('nowBatt').classList.toggle('hidden', w.batt!==0);
 }
 
 // ============================================================================
-// ВХОД АДМИНИСТРАТОРА (для графиков)
+// ВХОД АДМИНИСТРАТОРА (модалка; пасхалка — 5 тапов по нижней плашке)
 // ============================================================================
+var _footTaps=0, _footTapTm=null;
+function footTap(){
+  _footTaps++;
+  clearTimeout(_footTapTm);
+  _footTapTm=setTimeout(function(){ _footTaps=0; }, 3000);
+  if(_footTaps>=5){ _footTaps=0; openLogin(); }
+}
+function openLogin(){
+  $('loginModal').classList.remove('hidden');
+  setTimeout(function(){ $('passInput').focus(); }, 60);
+}
+function closeLogin(){
+  $('loginModal').classList.add('hidden');
+  $('authErr').textContent='';
+  $('passInput').value='';
+}
 async function doLogin(){
   $('authErr').textContent='';
   var p=$('passInput').value;
   if(p.length<4){ $('authErr').textContent='Минимум 4 символа'; return; }
   var r=await apiPost('/api/auth?pin='+encodeURIComponent(p));
-  if(r.ok && r.data.token){
-    S.token=r.data.token; sessionStorage.setItem('mos_token',S.token);
-    enterCharts();
-  } else if(r.data && r.data.error==='locked'){
-    $('authErr').textContent='Вход заблокирован на '+(r.data.sec||60)+' с';
-  } else $('authErr').textContent='Неверный пароль';
+  if(!(r.ok && r.data.token)){
+    if(r.data && r.data.error==='locked')
+      $('authErr').textContent='Вход заблокирован на '+(r.data.sec||60)+' с';
+    else $('authErr').textContent='Неверный пароль';
+    return;
+  }
+  S.token=r.data.token;
+  // Проверка токена ДО открытия админки: probe — строго АДМИНСКИЙ
+  // эндпоинт (/api/telemetry под requireAdmin, 401 без валидного токена).
+  // /api/system для этого НЕ годится — он публичный (урок diag1 25.08:
+  // стухший после ребута токен проходил probe, админка открывалась,
+  // а все профильные админские API отвечали 404 unknown_dev_api).
+  var probe=await api('/api/telemetry');
+  if(!probe.ok){
+    S.token=''; sessionStorage.removeItem('mos_token');
+    $('authErr').textContent='Токен не принят контроллером (HTTP '+probe.status+')';
+    return;
+  }
+  sessionStorage.setItem('mos_token',S.token);
+  enterAdmin();
 }
-function enterCharts(){
-  $('loginBox').classList.add('hidden');
-  $('chartArea').classList.remove('hidden');
-  $('sysCard').classList.remove('hidden');
-  loadCharts();
+async function verifySavedToken(){
+  // Probe — только админский эндпоинт: сессии живут в RAM контроллера
+  // и умирают с ребутом/OTA, а sessionStorage браузера — нет.
+  var probe=await api('/api/telemetry');
+  if(probe.ok) enterAdmin();
+  else { S.token=''; sessionStorage.removeItem('mos_token'); }
+}
+function enterAdmin(){
+  closeLogin();
+  $('navCard').classList.remove('hidden');
+  showTab('charts');
   renderOta();
 }
 function leaveAdmin(){
   S.token=''; sessionStorage.removeItem('mos_token');
-  $('chartArea').classList.add('hidden');
-  $('sysCard').classList.add('hidden');
-  $('loginBox').classList.remove('hidden');
+  $('navCard').classList.add('hidden');
+}
+function doLogout(){
+  leaveAdmin();
+  toast('Вы вышли из админки','ok');
+}
+function sessionExpired(){
+  leaveAdmin();
+  toast('Сессия истекла — войдите снова','err');
+}
+
+// ============================================================================
+// НАВИГАЦИЯ ПО НАСТРОЙКАМ (табы)
+// ============================================================================
+function showTab(t){
+  var cs=document.querySelectorAll('#navChips .chip');
+  for(var i=0;i<cs.length;i++) cs[i].classList.toggle('active', cs[i].dataset.tab===t);
+  var ps=document.querySelectorAll('.tab-pane');
+  for(var j=0;j<ps.length;j++) ps[j].classList.toggle('hidden', ps[j].id!=='tab-'+t);
+  if(t==='charts') loadCharts();
+  else if(t==='radio') renderRadio();
+  else if(t==='net') renderNet();
+  else if(t==='paz') renderPaz();
+  else if(t==='sys') renderOta();
+  else if(t==='adm') renderTrace();
 }
 
 // ============================================================================
@@ -298,11 +659,9 @@ var chartInst=null, chartCh=0, chartRange='6h', chartChannels=[];
 async function loadCharts(){
   var r=await api('/api/dev/dlog/channels');
   if(!r.ok){
-    if(r.status===401||r.status===404){ // токен протух — покажем вход
-      leaveAdmin();
-      return;
-    }
-    $('chartHint').textContent='Даталоггер недоступен'; return;
+    if(await isRealAuthFail(r)){ sessionExpired(); return; }
+    var em=(r.data&&(r.data.err||r.data.error))||'';
+    $('chartHint').textContent='Даталоггер недоступен (HTTP '+r.status+(em?': '+em:'')+')'; return;
   }
   chartChannels=r.data.channels||[];
   var host=$('chartChannels');
@@ -318,6 +677,9 @@ async function loadCharts(){
       host.appendChild(b);
     })(chartChannels[i]);
   }
+  // Подсказку с прошлого захода стираем ЗДЕСЬ: если refreshChart ниже
+  // умрёт молча (сеть), старая ошибка не будет вводить в заблуждение.
+  $('chartHint').textContent='Загрузка графика…';
   refreshChart();
 }
 function setChartRange(r){
@@ -329,8 +691,21 @@ function setChartRange(r){
 async function refreshChart(){
   var chs=document.querySelectorAll('.chart-chan');
   for(var i=0;i<chs.length;i++) chs[i].classList.toggle('active', i===chartCh);
-  var r=await api('/api/dev/dlog?ch='+chartCh+'&range='+chartRange);
-  if(!r.ok){ $('chartHint').textContent='Нет данных'; return; }
+  var r;
+  try { r=await api('/api/dev/dlog?ch='+chartCh+'&range='+chartRange); }
+  catch(e){
+    // Сетевое исключение — тоже в подсказку (раньше было видно только
+    // тост; если тост пропустил глаз — казалось, что «нет данных»).
+    $('chartHint').textContent='Запрос графика оборвался: '+(e&&e.message||e);
+    return;
+  }
+  if(!r.ok){
+    if(await isRealAuthFail(r)){ sessionExpired(); return; }
+    // Диагностика: показываем ТЕЛО ошибки ({"err":"no_channel"} /
+    // {"error":"unknown_dev_api"} / ...) — по коду видно слой отказа.
+    var em=(r.data&&(r.data.err||r.data.error))||'';
+    $('chartHint').textContent='Нет данных (HTTP '+r.status+(em?': '+em:'')+')'; return;
+  }
   var d=r.data, ch=chartChannels[chartCh]||{name:'',unit:''};
   if(!d.ts||d.ts.length<2){
     $('chartHint').textContent='История накапливается — точки появятся после первых пакетов';
@@ -373,20 +748,94 @@ function drawChart(d, ch){
 }
 
 // ============================================================================
+// РАДИО: статус приёмника CC1101 (публичный /api/dev/radio)
+// ============================================================================
+async function renderRadio(){
+  var r=await api('/api/dev/radio');
+  if(!r.ok){ $('radioRows').innerHTML='<div class="hint">Недоступно ('+r.status+')</div>'; return; }
+  var d=r.data, rows='';
+  function rr(n,v,cls){ rows+='<div class="srow"><span>'+n+'</span><span class="'+(cls||'')+'">'+v+'</span></div>'; }
+  rr('Приёмник CC1101', d.healthy?'в норме':'неисправен', d.healthy?'ok':'bad');
+  rr('Частота', (+d.freq).toFixed(2)+' МГц');
+  rr('Пакетов принято', d.pkt);
+  rr('Дублей отброшено', d.dup);
+  rr('Потери фронтов (GDO0)', d.edges_dropped, d.edges_dropped>0?'warn':'');
+  rr('RSSI последнего пакета', d.rssi+' дБм');
+  rr('Возраст пакета', fmtAge(Math.round(d.age_ms/1000)));
+  $('radioRows').innerHTML=rows;
+}
+
+// ============================================================================
+// СЕТЬ: сводка ядра (/api/system, админский)
+// ============================================================================
+async function renderNet(){
+  var r=await api('/api/system');
+  if(!r.ok){
+    if(await isRealAuthFail(r)){ sessionExpired(); return; }
+    $('netRows').innerHTML='<div class="hint">Недоступно ('+r.status+')</div>'; return;
+  }
+  var d=r.data, rows='';
+  function rr(n,v,cls){ rows+='<div class="srow"><span>'+n+'</span><span class="'+(cls||'')+'">'+v+'</span></div>'; }
+  rr('Устройство', esc(d.id));
+  rr('Имя хоста', esc(d.host));
+  rr('IP (Ethernet)', esc(d.ip));
+  rr('Аптайм', fmtUp(d.uptime));
+  rr('Уровень деградации', d.level===0?'нет (0)':d.level, d.level===0?'ok':'warn');
+  rr('Защищённый режим', d.safe?'ДА':'нет', d.safe?'bad':'ok');
+  $('netRows').innerHTML=rows;
+}
+
+// ============================================================================
+// ПАЗ: здоровье системы (/api/health, админский)
+// ============================================================================
+async function renderPaz(){
+  var r=await api('/api/health');
+  if(!r.ok){
+    if(await isRealAuthFail(r)){ sessionExpired(); return; }
+    $('pazRows').innerHTML='<div class="hint">Недоступно ('+r.status+')</div>'; return;
+  }
+  var h=r.data, rows='';
+  var stB=['<span class="badge b-ok">OK</span>',
+           '<span class="badge b-warn">WARN</span>',
+           '<span class="badge b-crit">CRIT</span>'];
+  rows+='<div class="srow"><span>Состояние системы</span><span>'+
+        (h.healthy?'<span class="badge b-ok">ЗДОРОВА</span>':'<span class="badge b-crit">ПРОБЛЕМА</span>')+
+        '</span></div>';
+  rows+='<div class="srow"><span>Предупреждения / критические</span><span>'+h.warnings+' / '+h.criticals+'</span></div>';
+  rows+='<div class="srow"><span>Свободная куча</span><span>'+Math.round(h.heap_free/1024)+' КБ</span></div>';
+  rows+='<div class="srow"><span>Сторожевой таймер</span><span class="'+(h.wdt?'ok':'warn')+'">'+(h.wdt?'взведён':'выключен')+'</span></div>';
+  rows+='<div class="srow"><span>Аптайм</span><span>'+fmtUp(h.uptime_s)+'</span></div>';
+  if(h.checks && h.checks.length){
+    rows+='<div class="hint" style="margin:8px 0 2px"><b>Проверки</b></div>';
+    for(var i=0;i<h.checks.length;i++){
+      var c=h.checks[i];
+      rows+='<div class="srow"><span>'+esc(c.name)+'</span>'+
+            '<span>'+(stB[c.st]||c.st)+(c.msg?' '+esc(c.msg):'')+'</span></div>';
+    }
+  }
+  $('pazRows').innerHTML=rows;
+  var js='';
+  if(h.journal && h.journal.length){
+    js='<div class="hint" style="margin:10px 0 2px"><b>Журнал ПАЗ (4 свежие записи)</b></div>';
+    for(var k=0;k<h.journal.length;k++){
+      var e=h.journal[k];
+      var when=e.unix>0?new Date(e.unix*1000).toLocaleString('ru-RU'):('аптайм '+fmtUp(e.up));
+      js+='<div class="srow"><span>'+when+'</span>'+
+          '<span>'+esc(e.src)+': '+esc(e.msg)+'</span></div>';
+    }
+  }
+  $('pazJournal').innerHTML=js;
+}
+
+// ============================================================================
 // СИСТЕМА: OTA (A/B + манифест HA), NVS-бэкап, перезагрузка.
 // Бэкенд целиком ядерный (UpdateService/HttpService) — панель только вызывает
 // /api/ota/* и /api/config/*; все эндпоинты админские (requireAdmin в ядре).
 // ============================================================================
-function esc(s){
-  return String(s==null?'':s).replace(/[&<>"]/g,function(c){
-    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-  });
-}
-
 async function renderOta(){
   var r=await api('/api/ota/info');
   if(!r.ok){
-    if(r.status===401){ leaveAdmin(); return; }
+    if(await isRealAuthFail(r)){ sessionExpired(); return; }
     $('otaRows').innerHTML='<div class="hint">Сведения OTA недоступны ('+r.status+')</div>';
     return;
   }
@@ -583,9 +1032,13 @@ async function rebootDevice(){
 // СТАРТ
 // ============================================================================
 applyTheme();
+initCompass();
 refreshNow();
 setInterval(refreshNow, 30000);
-if(S.token){ enterCharts(); } else { $('loginBox').classList.remove('hidden'); }
+$('passInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLogin(); });
+$('loginModal').addEventListener('click', function(e){ if(e.target===this) closeLogin(); });
+if(S.token){ verifySavedToken(); }
 </script>
 </body>
 </html>

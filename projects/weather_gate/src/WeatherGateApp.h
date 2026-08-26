@@ -15,7 +15,7 @@
 
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
-#include "drivers/WeatherCore.h"
+#include <drivers/WeatherCore.h>
 
 // ============================================================================
 // UI-ПРОВАЙДЕР ПРОФИЛЯ
@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.1"; }   // W3 + OTA-панель
+    const char* getVersion() const override { return "0.3.2-diag5"; } // W3.2 + diag: лог входа handleApi
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
@@ -86,11 +86,25 @@ public:
     /// в MQTT при этом НЕ делается — см. tick).
     size_t weatherJson(char* buf, size_t bufSize) const;
 
+    /// Полная версия для HTTP /api/dev/weather (буфер ядра большой):
+    /// компактный контракт + статистика 24 ч из DataLog (tmin24/tmax24/
+    /// pmin24/pmax24/wmax24), баротренд и температура BME280 (котельная).
+    /// В MQTT НЕ уходит — там бюджет MQTT_BODY_LEN=256 (только компакт).
+    size_t weatherJsonFull(char* buf, size_t bufSize) const;
+
+    // --- ДИАГНОСТИКА (W3.2-diag1, конфиг wx.diag) ---------------------------
+    /// Мост к protected ModuleBase::log для свободных функций UI-провайдера
+    /// (там членства в ModuleBase нет). body — готовая строка (≤90 симв.,
+    /// бюджет LOG_BODY_LEN=96); тег модуля подставит ядро. Вызывать ТОЛЬКО
+    /// под условием wx.diag — см. s_diagLog() в .cpp.
+    void logDiag(const char* body);
+
 private:
     WeatherGateApp() = default;
 
     void onNewRadioPacket();          // пакет -> снимок, лог, MQTT, событие
     void publishWeatherMqtt();        // retained <prefix>/<id>/weather
+    void refreshStats24();            // мин/макс 24ч + баротренд из DataLog
 
     // --- АВТО-ВЫСОТА (wx.lat/wx.lon -> wx.altitude_m, разово) ---------------
     void maybeRequestAltitude();      // условия + постановка флага
@@ -102,6 +116,12 @@ private:
     uint32_t _seenPktSeq     = 0;
     uint32_t _lastPubMs      = 0;
     uint32_t _lastPressLogMs = 0;
+
+    // Статистика 24 ч (кэш; пишется ТОЛЬКО из tick — читатели без гонок)
+    float    _mnT24 = 0, _mxT24 = 0, _mnP24 = 0, _mxP24 = 0, _mxW24 = 0;
+    int8_t   _trend = 0;            // wxc::baroTrend3h
+    bool     _statsValid = false;
+    uint32_t _lastStatsMs = 0;
 
     // Каналы DataLog (-1 — не зарегистрирован)
     int8_t _chOutT = -1, _chOutH = -1, _chPress = -1, _chWind = -1, _chRain = -1;
