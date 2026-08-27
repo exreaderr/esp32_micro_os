@@ -67,6 +67,8 @@ public:
     float    freqMHz()      const { return _freqMHz; }
     /// RSSI последнего принятого пакета, дБм.
     int16_t  rssiDbm()      const { return _rssiDbm; }
+    /// Счётчик перевходов в RX (5.8.4: разморозка RSSI-латча) — для бенча.
+    uint32_t rxReenters()   const { return _rxReenters; }
 
     // --- W3.3: ДЕЛЬТА ДЛЯ СКАНЕРА АЧХ (только task-контекст, НЕ из ISR!) -----
     /// Смена частоты приёма на лету: SIDLE -> FREQ2/1/0 -> SRX.
@@ -108,6 +110,8 @@ private:
     uint32_t _dupSeq       = 0;
     uint32_t _edgesDropped = 0;
     uint32_t _lastPktMs    = 0;
+    uint32_t _lastRxEnterMs = 0;             // последний вход в RX (RSSI-латч)
+    uint32_t _rxReenters  = 0;               // счётчик перевходов (бенч)
     int16_t  _rssiDbm      = 0;
     float    _freqMHz      = 915.0f;
     bool     _healthy      = false;

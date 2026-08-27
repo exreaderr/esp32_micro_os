@@ -126,6 +126,7 @@ bool Cc1101Driver::init() {
     xferReg(cc1101::STROBE_SIDLE, 0);
     xferReg(cc1101::STROBE_SFRX, 0);
     xferReg(cc1101::STROBE_SRX, 0);
+    _lastRxEnterMs = millis();
 
     // Пины для ISR — в файловые статики (до attachInterrupt).
     s_pinGdo0 = _pins.gdo0;
@@ -149,6 +150,27 @@ bool Cc1101Driver::init() {
 void Cc1101Driver::poll() {
     if (!_healthy) return;
     _edgesDropped = s_edgesDropped;
+
+    // Перевход в RX (5.8.4, даташит 17.3 + стенд): RSSI-латч заморожен
+    // ДО СЛЕДУЮЩЕГО ВХОДА В RX — без этого RSSI мёртв весь аптайм
+    // (стенд: антенну двигают, значение не меняется; меняется только
+    // после ребута). Два триггера: 2.5 с после последнего пакета (пара
+    // станции летит 31 мс — окно чистое, второй экземпляр не теряем)
+    // и сторожевые 10 мин (перекалибровка AGC на дрейф температуры —
+    // на морозе/жаре кварцы плывут, MCSM0=0x18 калибрует IDLE->RX).
+    // Слепота ~1 мс на периоде 48-60 с несущественна.
+    uint32_t nowMs = millis();
+    bool dueAfterPkt = (_pktSeq != 0 &&
+                        (uint32_t)(nowMs - _lastPktMs) > 2500 &&
+                        _lastRxEnterMs <= _lastPktMs);
+    bool duePeriodic = (uint32_t)(nowMs - _lastRxEnterMs) > 600000;
+    if (dueAfterPkt || duePeriodic) {
+        xferReg(cc1101::STROBE_SIDLE, 0);
+        xferReg(cc1101::STROBE_SFRX, 0);
+        xferReg(cc1101::STROBE_SRX, 0);
+        _lastRxEnterMs = nowMs;
+        ++_rxReenters;
+    }
 
     fo::WeatherPacket pkt;
     while (_rTail != _wHead) {
@@ -224,6 +246,13 @@ void Cc1101Driver::writeRxTable() {
     // выставленным, как в reset-значении 0x40.
     int32_t agc = cfgGetInt("wx.rf_agcctrl1", 0);
     if (agc > 0 && agc <= 0xFF) xferReg(0x1C, (uint8_t)agc);
+    // AGCCTRL2 (MAX_LNA_GAIN/MAX_DVGA_GAIN/MAGN_TARGET) — вторая ступень
+    // подъёма порога CS, если +7 дБ ABS_THR не хватит (даташит 17.4.1:
+    // сначала ABS_THR, затем MAX_LNA_GAIN, затем MAX_DVGA_GAIN — так ещё
+    // и ток приёмника падает). 0 (дефолт) = не пишем, reset 0x07:
+    // MAGN_TARGET=42 дБ, оба усиления максимальные.
+    int32_t agc2 = cfgGetInt("wx.rf_agcctrl2", 0);
+    if (agc2 > 0 && agc2 <= 0xFF) xferReg(0x1B, (uint8_t)agc2);
 }
 
 void Cc1101Driver::writeFreqRegs(float mhz) {
