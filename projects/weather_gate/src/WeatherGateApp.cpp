@@ -327,14 +327,14 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         //   ?probe=1 -> rssi_now = readRssiNow()
         //   ?probe=2 -> ручной перевход RX (setFreqMHz текущей) + rssi_now
         // 5.8.4-pre4: probe=3 -> readback конфиг-регистров во время RX
-        //   (agcctrl1=0x1C, agcctrl2=0x1B) + rssi_now. marcstate (0x35) —
-        //   статус-регистр, readStatus() в драйвере private, публичного
-        //   геттера в pre4 нет -> отдаём "na" (запрошено у ядра).
+        //   (agcctrl1=0x1C, agcctrl2=0x1B) + rssi_now.
+        // 5.8.4-pre5: marcstate (0x35) через публичный readMarcstate()
+        //   (ожидание в RX: 0x0D).
         // Публичный эндпоинт, RSSI — не секрет; SPI только из task-контекста.
         bool hasNow = false;
         bool hasRegs = false;
         int16_t rssiNow = 0;
-        uint8_t regAgc1 = 0, regAgc2 = 0;
+        uint8_t regAgc1 = 0, regAgc2 = 0, marc = 0;
         const char* probe = req.getArg("probe");
         if (probe != nullptr && probe[0] == '2') {
             r.setFreqMHz(r.freqMHz());      // SIDLE->SFRX->SRX: разморозка латча
@@ -346,6 +346,7 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         } else if (probe != nullptr && probe[0] == '3') {
             regAgc1 = r.readConfigReg(0x1C);
             regAgc2 = r.readConfigReg(0x1B);
+            marc = r.readMarcstate();
             rssiNow = r.readRssiNow();
             hasNow = true;
             hasRegs = true;
@@ -363,8 +364,8 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         if (n > 0 && hasRegs)
             n += snprintf(responseBuf + n, bufSize - (size_t)n,
                           ",\"agcctrl1\":\"0x%02X\",\"agcctrl2\":\"0x%02X\","
-                          "\"marcstate\":\"na\"",
-                          regAgc1, regAgc2);
+                          "\"marcstate\":\"0x%02X\"",
+                          regAgc1, regAgc2, marc);
         if (n > 0 && hasNow)
             snprintf(responseBuf + n, bufSize - (size_t)n,
                      ",\"rssi_now\":%d}", (int)rssiNow);
