@@ -322,15 +322,37 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
     }
     if (strcmp(pathTail, "radio") == 0) {
         // Статус приёмника CC1101 (диагностика эфира)
-        const Cc1101Driver& r = Cc1101Driver::getInstance();
-        snprintf(responseBuf, bufSize,
+        Cc1101Driver& r = Cc1101Driver::getInstance();
+        // 5.8.4-pre3: probe-контракт бенча (Issue #1, 27.08).
+        //   ?probe=1 -> rssi_now = readRssiNow()
+        //   ?probe=2 -> ручной перевход RX (setFreqMHz текущей) + rssi_now
+        // Публичный эндпоинт, RSSI — не секрет; SPI только из task-контекста.
+        bool hasNow = false;
+        int16_t rssiNow = 0;
+        const char* probe = req.getArg("probe");
+        if (probe != nullptr && probe[0] == '2') {
+            r.setFreqMHz(r.freqMHz());      // SIDLE->SFRX->SRX: разморозка латча
+            rssiNow = r.readRssiNow();
+            hasNow = true;
+        } else if (probe != nullptr && probe[0] == '1') {
+            rssiNow = r.readRssiNow();
+            hasNow = true;
+        }
+        int n = snprintf(responseBuf, bufSize,
                  "{\"healthy\":%d,\"freq\":%.2f,\"pkt\":%lu,\"dup\":%lu,"
-                 "\"edges_dropped\":%lu,\"rssi\":%d,\"age_ms\":%lu}",
+                 "\"edges_dropped\":%lu,\"rssi\":%d,\"age_ms\":%lu,"
+                 "\"rx_reenters\":%lu",
                  r.isHealthy() ? 1 : 0, (double)r.freqMHz(),
                  (unsigned long)r.packetSeq(), (unsigned long)r.dupSeq(),
                  (unsigned long)r.edgesDropped(), (int)r.rssiDbm(),
                  r.lastPacketMs() ? (unsigned long)(millis() - r.lastPacketMs())
-                                  : 0UL);
+                                  : 0UL,
+                 (unsigned long)r.rxReenters());
+        if (n > 0 && hasNow)
+            snprintf(responseBuf + n, bufSize - (size_t)n,
+                     ",\"rssi_now\":%d}", (int)rssiNow);
+        else if (n > 0)
+            snprintf(responseBuf + n, bufSize - (size_t)n, "}");
         statusCode = 200;
         return true;
     }
@@ -423,6 +445,20 @@ void WeatherGateApp::registerExtensions() {
         {"wx.diag",            ConfigType::BOOL, "1", 0, 0,
          CFG_NONE, "Телеметрия и сторожа",
          "Расширенный лог диагностики (даталог, радио)"},
+        // W3.2/5.8.4: сырой байт AGCCTRL1 (пороги Carrier Sense шторки GDO2).
+        // Поле профиля (конец схемы!); драйвер ядра пишет регистр 0x1C,
+        // если значение 1..255. 0 (дефолт) = регистр не трогаем.
+        // Бит 6 (AGC_LNA_PRIORITY) держать выставленным — база 0x40.
+        {"wx.rf_agcctrl1",     ConfigType::INT, "0", 0, 255,
+         CFG_CRITICAL, "Телеметрия и сторожа",
+         "AGCCTRL1 raw (0=дефолт; база 0x40, подбор на стенде)"},
+        // 5.8.4-pre3: вторая ступень порога CS (регистр 0x1B: MAX_LNA_GAIN/
+        // MAX_DVGA_GAIN/MAGN_TARGET). 0 = не писать (reset 0x07:
+        // MAGN_TARGET=42 дБ, усиления максимальные). Идти сюда — только
+        // после исчерпания лесенки ABS_THR (0x41..0x47 в agcctrl1).
+        {"wx.rf_agcctrl2",     ConfigType::INT, "0", 0, 255,
+         CFG_CRITICAL, "Телеметрия и сторожа",
+         "AGCCTRL2 raw (0=дефолт 0x07; вторая ступень порога CS)"},
     });
     if (!ok) log(LogLevel::Error, "addFields 'Телеметрия и сторожа' failed");
 
