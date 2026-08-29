@@ -249,14 +249,23 @@ void Cc1101Driver::writeRxTable() {
     // полей: кодировку порогов подбирают на стенде по даташиту/SmartRF.
     // 0 (дефолт) = регистр не трогаем. Бит 6 (AGC_LNA_PRIORITY) держать
     // выставленным, как в reset-значении 0x40.
+    // 5.8.4-pre5: cfgGet* здесь работает только потому, что ConfigService
+    // инициализируется РАНЬШЕ DriverRegistry (см. Kernel.cpp, шаг 6a) —
+    // иначе читались бы дефолты схемы (урок readback-стенда 29.08).
     int32_t agc = cfgGetInt("wx.rf_agcctrl1", 0);
+    int32_t agc2 = cfgGetInt("wx.rf_agcctrl2", 0);
+    // DIAG для бенча: что реально пишем (приёмка: probe=3 читает то же).
+    // Драйвер — не ModuleBase, log() недоступен; Serial, как в Kernel.cpp.
+    Serial.printf("[%08lu] [I] [cc1101] cfg: agcctrl1=%ld agcctrl2=%ld\n",
+                  (unsigned long)millis(), (long)agc, (long)agc2);
     if (agc > 0 && agc <= 0xFF) xferReg(0x1C, (uint8_t)agc);
     // AGCCTRL2 (MAX_LNA_GAIN/MAX_DVGA_GAIN/MAGN_TARGET) — вторая ступень
     // подъёма порога CS, если +7 дБ ABS_THR не хватит (даташит 17.4.1:
     // сначала ABS_THR, затем MAX_LNA_GAIN, затем MAX_DVGA_GAIN — так ещё
-    // и ток приёмника падает). 0 (дефолт) = не пишем, reset 0x07:
-    // MAGN_TARGET=42 дБ, оба усиления максимальные.
-    int32_t agc2 = cfgGetInt("wx.rf_agcctrl2", 0);
+    // и ток приёмника падает). 0 (дефолт) = не пишем. Reset-значение
+    // 0x03 (SWRS061, раздел 29.1; подтверждено readback на стенде 29.08):
+    // MAGN_TARGET=33 дБ, MAX_LNA_GAIN=default, MAX_DVGA_GAIN=all —
+    // т.е. базовый порог CS НИЖЕ, чем считалось по ошибочной базе 0x07.
     if (agc2 > 0 && agc2 <= 0xFF) xferReg(0x1B, (uint8_t)agc2);
 }
 
@@ -297,6 +306,14 @@ uint8_t Cc1101Driver::readConfigReg(uint8_t addr) {
     digitalWrite(_pins.cs, HIGH);
     _spi->endTransaction();
     return v;
+}
+
+uint8_t Cc1101Driver::readMarcstate() {
+    // Статус-регистр 0x35: читается как все статусные (addr|0xC0).
+    // Адрес совпадает со стробом STX — путаницы нет: запись (строб) под
+    // запретом доктрины, чтение легально и для бенча нужно (probe=3).
+    if (!_healthy) return 0xFF;
+    return readStatus(cc1101::REG_MARCSTATE);
 }
 
 int16_t Cc1101Driver::readRssiDbm() {

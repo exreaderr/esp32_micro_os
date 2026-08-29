@@ -214,8 +214,17 @@ void Kernel::boot(IDeviceProfile* profile) {
     // LogService: prio 0 — его describe() подключает приёмник логов самой
     // ранней фазой, до registerExtensions/init остальных модулей.
     registerModule(&LogService::getInstance(),     /*prio*/ 0, /*tickMs*/ 0);
-    registerModule(&DriverRegistry::getInstance(), /*prio*/ 1, /*tickMs*/ 0);
+    // ConfigService: prio 1 СТРОГО ПЕРЕД DriverRegistry (урок 5.8.4-pre5,
+    // стенд wg 29.08): сортировка по приоритету стабильна, внутри prio
+    // решает порядок регистрации, а драйверы читают cfgGet* в init()
+    // (Cc1101Driver::writeRxTable: wx.rf_freq_mhz / wx.rf_agcctrl1/2).
+    // Если реестр инициализируется раньше конфига — драйверы видят
+    // ДЕФОЛТЫ схемы вместо сохранённых значений: AGC-записи молча
+    // пропускались (readback 0x40 при 71 в /admin), а нестандартная
+    // частота игнорировалась бы так же. Обратной зависимости нет:
+    // ConfigService::init нужен только StorageService (prio 0) и NVS.
     registerModule(&ConfigService::getInstance(),  /*prio*/ 1, /*tickMs*/ 0);
+    registerModule(&DriverRegistry::getInstance(), /*prio*/ 1, /*tickMs*/ 0);
     // AuthService: prio 1 ПОСЛЕ ConfigService (читает auth.* при init).
     // Ядерный модуль — нужен и в Safe Mode (recovery-UI защищён ПИНом).
     registerModule(&AuthService::getInstance(),    /*prio*/ 1, /*tickMs*/ 0);

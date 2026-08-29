@@ -25,6 +25,7 @@ namespace cc1101 {
 constexpr uint8_t REG_PARTNUM = 0x30;   // ожидается 0x00
 constexpr uint8_t REG_VERSION = 0x31;   // ожидается 0x14 (0x04 — старые клоны)
 constexpr uint8_t REG_RSSI    = 0x34;   // текущий RSSI
+constexpr uint8_t REG_MARCSTATE = 0x35; // состояние автомата (RX=0x0D); чтение
 constexpr uint8_t PARTNUM_EXPECT  = 0x00;
 constexpr uint8_t VERSION_EXPECT  = 0x14;
 constexpr uint8_t VERSION_LEGACY  = 0x04;
