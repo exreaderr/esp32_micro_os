@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.4"; } // 5.8.4-pre3: +wx.rf_agcctrl2, probe RSSI
+    const char* getVersion() const override { return "0.3.5"; } // 5.8.4-pre4: probe=3 (readback AGCCTRL1/2)
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
