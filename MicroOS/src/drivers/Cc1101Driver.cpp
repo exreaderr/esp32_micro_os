@@ -149,7 +149,12 @@ bool Cc1101Driver::init() {
 // ============================================================================
 void Cc1101Driver::poll() {
     if (!_healthy) return;
-    _edgesDropped = s_edgesDropped;
+    // Оберточно-стойкое накопление: сырой uint32 ISR на шторме (~114 тыс/с)
+    // обнуляется за ~10.4 ч; дельта между poll (20 мс) не переполнится никогда.
+    uint32_t raw = s_edgesDropped;
+    _edgesTotal += (uint32_t)(raw - _lastEdgesRaw);
+    _lastEdgesRaw = raw;
+    _edgesDropped = raw;
 
     // Перевход в RX (5.8.4, даташит 17.3 + стенд): RSSI-латч заморожен
     // ДО СЛЕДУЮЩЕГО ВХОДА В RX — без этого RSSI мёртв весь аптайм
@@ -279,6 +284,19 @@ bool Cc1101Driver::setFreqMHz(float mhz) {
 int16_t Cc1101Driver::readRssiNow() {
     if (!_healthy) return 0;
     return readRssiDbm();
+}
+
+uint8_t Cc1101Driver::readConfigReg(uint8_t addr) {
+    // Конфиг-регистры (0x00-0x2E): чтение = R/W=1, burst=0 -> addr|0x80.
+    // (Статусные 0x30+ требуют burst-бит — для них readStatus.)
+    if (!_healthy || addr > 0x2E) return 0xFF;
+    _spi->beginTransaction(SPISettings(4000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(_pins.cs, LOW);
+    _spi->transfer((uint8_t)(addr | 0x80));
+    uint8_t v = _spi->transfer(0x00);
+    digitalWrite(_pins.cs, HIGH);
+    _spi->endTransaction();
+    return v;
 }
 
 int16_t Cc1101Driver::readRssiDbm() {

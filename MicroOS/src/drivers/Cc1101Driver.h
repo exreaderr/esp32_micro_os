@@ -76,6 +76,13 @@ public:
     /// RSSI «прямо сейчас» (статус-регистр чипа, а не латч пакета).
     /// Нужен сканеру АЧХ: замер по каждой точке частотной сетки.
     int16_t  readRssiNow();
+    /// Отладочное чтение КОНФИГ-регистра (0x00-0x2E; чтение = addr|0x80,
+    /// статусные 0x30+ читаются иначе — readStatus). Для бенча AGC:
+    /// подтвердить, что записанное в 0x1B/0x1C живёт в чипе во время RX.
+    uint8_t  readConfigReg(uint8_t addr);
+    /// Оберточно-стойкий счётчик переполнений кольца (5.8.4): uint32 на
+    /// шторме ~114 тыс/с обнулялся за ~10.4 ч — накопление дельт в poll.
+    uint64_t edgesDroppedTotal() const { return _edgesTotal; }
 
     // --- ТОЧКИ ВХОДА ISR (static-обёртки; НЕ для прикладного кода) -----------
     static void IRAM_ATTR isrGdo0();
@@ -112,6 +119,8 @@ private:
     uint32_t _lastPktMs    = 0;
     uint32_t _lastRxEnterMs = 0;             // последний вход в RX (RSSI-латч)
     uint32_t _rxReenters  = 0;               // счётчик перевходов (бенч)
+    uint32_t _lastEdgesRaw = 0;              // последний сырой uint32 (дельты)
+    uint64_t _edgesTotal   = 0;              // оберточно-стойкий накопитель
     int16_t  _rssiDbm      = 0;
     float    _freqMHz      = 915.0f;
     bool     _healthy      = false;
