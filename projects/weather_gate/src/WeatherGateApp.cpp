@@ -15,6 +15,7 @@
 #include <services/DataLogService.h>
 #include <services/TimeService.h>
 #include <services/NetworkManager.h>
+#include <services/UpdateService.h>   // sw-версия в карточке устройства HA
 #include <drivers/Bme280Driver.h>
 #include <drivers/Cc1101Driver.h>
 #include "WxTrend.h"
@@ -453,6 +454,12 @@ void WeatherGateApp::registerExtensions() {
          CFG_NONE, "Телеметрия и сторожа", "Публикация weather-JSON в MQTT"},
         {"wx.pub_min",         ConfigType::UINT, "5", 1, 60,
          CFG_NONE, "Телеметрия и сторожа", "Период retained-публикации, мин"},
+        // 0.3.8 (W4): зеркало weather-JSON в произвольный топик (тот же
+        // JSON, retained). Пусто = выкл. Читается при каждой публикации,
+        // поэтому CFG_NONE — применяется без ребута.
+        {"wx.mirror_topic",    ConfigType::STRING, "", 0, 0,
+         CFG_NONE, "Телеметрия и сторожа",
+         "Зеркало weather-JSON в топик (пусто = выкл)"},
         {"wx.silence_min",     ConfigType::UINT, "15", 2, 120,
          CFG_NONE, "Телеметрия и сторожа", "Тишина эфира -> тревога, мин"},
         {"wx.autoalt_en",      ConfigType::BOOL, "1", 0, 0,
@@ -501,6 +508,10 @@ void WeatherGateApp::start() {
 
     // События инфраструктуры
     EventBus::getInstance().subscribe(SH_EVENT_DEGRADED_LEVEL, this);
+    // 0.3.8: E2 — авто-объявление в HA при каждой MQTT-сессии (образец —
+    // smart_lock); заодно свежая retained-погода для подписчиков после
+    // рестарта брокера
+    EventBus::getInstance().subscribe(SH_EVENT_MQTT_CONNECTED, this);
 
     // Каналы даталоггера (сервис пассивен — каналы объявляет профиль)
     DataLogService& dlog = DataLogService::getInstance();
@@ -535,7 +546,7 @@ void WeatherGateApp::stop() {
 }
 
 bool WeatherGateApp::canHandleEvent(int32_t id) const {
-    return id == SH_EVENT_DEGRADED_LEVEL;
+    return id == SH_EVENT_DEGRADED_LEVEL || id == SH_EVENT_MQTT_CONNECTED;
 }
 
 void WeatherGateApp::onEvent(int32_t eventId, const ShEventData* data) {
@@ -543,6 +554,17 @@ void WeatherGateApp::onEvent(int32_t eventId, const ShEventData* data) {
         // Сеть поднялась до FULL — повод для авто-высоты
         if (data != nullptr && data->code == (int32_t)DegradationLevel::Full)
             maybeRequestAltitude();
+        return;
+    }
+    if (eventId == SH_EVENT_MQTT_CONNECTED) {
+        // 0.3.8: устройство объявляет себя само (конфиги retained — HA
+        // получит их даже после рестарта любой из сторон)
+        publishHaDiscovery();
+        // Свежая retained-погода сразу на новой сессии, не дожидаясь
+        // следующего пакета/периода
+        if (_out.valid && cfgGetBool("wx.mqtt_en", true))
+            publishWeatherMqtt();
+        return;
     }
 }
 
@@ -774,8 +796,172 @@ void WeatherGateApp::publishWeatherMqtt() {
     weatherJson(js, sizeof(js));
     // retained: подписчик (smart_lock, HA) получает свежую погоду сразу
     // после подписки, не дожидаясь следующего пакета
-    MqttTransport::getInstance().publishStateSuffix("weather", js, true);
+    bool rc =
+        MqttTransport::getInstance().publishStateSuffix("weather", js, true);
+    // 0.3.8 (W4): зеркало в произвольный топик (пусто = выкл)
+    char mirror[CFG_VALUE_LEN];
+    cfgGetStr("wx.mirror_topic", mirror, sizeof(mirror), "");
+    if (mirror[0] != '\0')
+        rc = MqttTransport::getInstance().publishRaw(mirror, js, true) && rc;
+    // 0.3.8: учёт результата — молчаливый отказ publishRaw (нет клиента,
+    // outbox выкл) раньше было не отличить от «опубликовано». Лог по
+    // фронту: переходы ok<->fail, не каждый вызов (пакеты идут раз ~48 с).
+    if (rc != _mqttPubOk) {
+        _mqttPubOk = rc;
+        log(rc ? LogLevel::Info : LogLevel::Warning,
+            rc ? "mqtt: weather pub восстановлена"
+               : "mqtt: weather pub ОТКАЗ (publishRaw=false)");
+    }
     _lastPubMs = millis();
+}
+
+// ============================================================================
+// HOME ASSISTANT DISCOVERY (E2, 0.3.8: устройство объявляет себя само)
+// ============================================================================
+// Образец — smart_lock. Конфиги retained + availability на ядерном LWT
+// (<prefix>/<id>/state): HA видит устройство offline при внезапной смерти
+// контроллера. Все погодные сущности читают ОДИН retained weather-JSON
+// (<prefix>/<id>/weather) через val_tpl — новых топиков не плодим.
+// Публикуется на SH_EVENT_MQTT_CONNECTED (каждая сессия — ре-анонс).
+// ============================================================================
+void WeatherGateApp::publishHaDiscovery() {
+    if (!cfgGetBool("mqtt.ha_discovery", true)) return;
+    MqttTransport& mqtt = MqttTransport::getInstance();
+
+    const char* id = NetworkService::getInstance().deviceId();
+    char prefix[CFG_VALUE_LEN];
+    cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+
+    // Общий хвост: availability + карточка устройства (sw — реальная
+    // версия прошивки, урок 5.0.10)
+    char dev[288];
+    snprintf(dev, sizeof(dev),
+        ",\"avty_t\":\"%s/%s/state\",\"pl_avail\":\"online\","
+        "\"pl_not_avail\":\"offline\",\"dev\":{\"ids\":[\"%s\"],"
+        "\"name\":\"%s\",\"mf\":\"MicroOS\",\"mdl\":\"weather_gate\","
+        "\"sw\":\"%s\"}",
+        prefix, id, id, NetworkService::getInstance().hostname(),
+        UpdateService::getInstance().firmwareVersion());
+
+    // Все weather-сенсоры смотрят в один топик
+    char wx[MQTT_TOPIC_LEN];
+    snprintf(wx, sizeof(wx), "%s/%s/weather", prefix, id);
+    char tel[MQTT_TOPIC_LEN];
+    snprintf(tel, sizeof(tel), "%s/%s/telemetry", prefix, id);
+
+    char topic[MQTT_TOPIC_LEN];
+    char cfg[768];
+
+    // --- Улица (из weather-JSON) ---------------------------------------------
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_temp/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Улица, температура\",\"uniq_id\":\"%s_temp\","
+        "\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°C\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.temp }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_feels/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Ощущается как\",\"uniq_id\":\"%s_feels\","
+        "\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°C\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.feels_like }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_hum/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Улица, влажность\",\"uniq_id\":\"%s_hum\","
+        "\"dev_cla\":\"humidity\",\"unit_of_meas\":\"%%\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.humidity }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_wind/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Ветер\",\"uniq_id\":\"%s_wind\","
+        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"м/с\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.wind }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_gust/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Порывы ветра\",\"uniq_id\":\"%s_gust\","
+        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"м/с\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.gust }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_dir/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Направление ветра\",\"uniq_id\":\"%s_dir\","
+        "\"unit_of_meas\":\"°\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.dir }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_rain/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Дождь\",\"uniq_id\":\"%s_rain\","
+        "\"dev_cla\":\"precipitation_intensity\",\"unit_of_meas\":\"мм/ч\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.rain }}\"%s}",
+        id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    // Давление у.м. — BME280 (null, пока датчик не прочитан: HA покажет
+    // «unknown», честнее выдуманного числа)
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_press/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Давление у.м.\",\"uniq_id\":\"%s_press\","
+        "\"dev_cla\":\"atmospheric_pressure\",\"unit_of_meas\":\"гПа\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.press_sea }}\"%s}",
+        id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_rssi/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Сигнал уличного блока\",\"uniq_id\":\"%s_rssi\","
+        "\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"дБм\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.rssi }}\"%s}",
+        id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    // Батарея уличного блока: в weather-JSON batt=1 норма / 0 низкий —
+    // для binary_sensor.battery ON = «низкий»
+    snprintf(topic, sizeof(topic),
+             "homeassistant/binary_sensor/%s_batt/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Батарея уличного блока\",\"uniq_id\":\"%s_batt\","
+        "\"dev_cla\":\"battery\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ 'ON' if value_json.batt == 0 else 'OFF' }}\"%s}",
+        id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_age/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Возраст пакета\",\"uniq_id\":\"%s_age\","
+        "\"dev_cla\":\"duration\",\"unit_of_meas\":\"с\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.age_s }}\"%s}", id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    // --- Сам контроллер (из ядерной telemetry) --------------------------------
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_uptime/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Аптайм\",\"uniq_id\":\"%s_uptime\",\"dev_cla\":\"duration\","
+        "\"unit_of_meas\":\"s\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.uptime }}\"%s}", id, tel, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_heap/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Свободная память\",\"uniq_id\":\"%s_heap\","
+        "\"unit_of_meas\":\"B\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.heap }}\"%s}", id, tel, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_cput/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Температура CPU\",\"uniq_id\":\"%s_cput\","
+        "\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°C\",\"stat_t\":\"%s\","
+        "\"val_tpl\":\"{{ value_json.cpu_t }}\"%s}", id, tel, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    log(LogLevel::Info, "HA discovery: 14 entities announced");
 }
 
 // ============================================================================

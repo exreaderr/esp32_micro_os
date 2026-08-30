@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.7"; } // 5.8.4: дефолты схемы AGC 71/27 (бенч CS закрыт)
+    const char* getVersion() const override { return "0.3.8"; } // HA discovery + wx.mirror_topic + учёт результата MQTT-публикации
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
@@ -103,7 +103,8 @@ private:
     WeatherGateApp() = default;
 
     void onNewRadioPacket();          // пакет -> снимок, лог, MQTT, событие
-    void publishWeatherMqtt();        // retained <prefix>/<id>/weather
+    void publishWeatherMqtt();        // retained <prefix>/<id>/weather (+ зеркало)
+    void publishHaDiscovery();        // retained homeassistant/... (E2, 0.3.8)
     void refreshStats24();            // мин/макс 24ч + баротренд из DataLog
 
     // --- АВТО-ВЫСОТА (wx.lat/wx.lon -> wx.altitude_m, разово) ---------------
@@ -116,6 +117,7 @@ private:
     uint32_t _seenPktSeq     = 0;
     uint32_t _lastPubMs      = 0;
     uint32_t _lastPressLogMs = 0;
+    bool     _mqttPubOk      = true;  // последний результат publish (лог по фронту)
 
     // Статистика 24 ч (кэш; пишется ТОЛЬКО из tick — читатели без гонок)
     float    _mnT24 = 0, _mxT24 = 0, _mnP24 = 0, _mxP24 = 0, _mxW24 = 0;
