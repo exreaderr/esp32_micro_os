@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.8"; } // HA discovery + wx.mirror_topic + учёт результата MQTT-публикации
+    const char* getVersion() const override { return "0.3.9"; } // discovery: каноничные единицы HA (m/s, mm/h, hPa, dBm, s)
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки

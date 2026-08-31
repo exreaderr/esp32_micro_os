@@ -120,6 +120,20 @@ void BridgeService::onBrokerEvent(const BrokerEventInfo& ev) {
         // мастера — аномалия, но fake offline мастера наверху недопустим).
         if (strcmp(ev.clientId,
                    NetworkService::getInstance().hostname()) == 0) return;
+        // Страж гонки переподключения (урок 31.08.2026, репорт профильной
+        // ветки): при жёстком обрыве (power cycle, watchdog) sMQTT
+        // обнаруживает мёртвый TCP с задержкой — RemoveClient СТАРОЙ
+        // сессии приходит ПОСЛЕ того, как устройство переподключилось и
+        // опубликовало retained online. Безусловный synth offline затирал
+        // живой state наверху навсегда. Есть активная сессия с тем же
+        // clientId — не хороним (обратный порядок самолечится: offline
+        // перезаписывается штатным online новой сессии).
+        if (BrokerService::getInstance().hasClient(ev.clientId)) {
+            self.log(LogLevel::Info,
+                     "bridge: synth offline пропущен — '%s' уже переподключился",
+                     ev.clientId);
+            return;
+        }
         char topic[MQTT_TOPIC_LEN];
         const char* learned = self.findAvail(ev.clientId);
         if (learned != nullptr) {

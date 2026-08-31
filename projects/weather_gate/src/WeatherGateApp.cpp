@@ -877,14 +877,14 @@ void WeatherGateApp::publishHaDiscovery() {
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_wind/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Ветер\",\"uniq_id\":\"%s_wind\","
-        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"м/с\",\"stat_t\":\"%s\","
+        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"m/s\",\"stat_t\":\"%s\","
         "\"val_tpl\":\"{{ value_json.wind }}\"%s}", id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
 
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_gust/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Порывы ветра\",\"uniq_id\":\"%s_gust\","
-        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"м/с\",\"stat_t\":\"%s\","
+        "\"dev_cla\":\"wind_speed\",\"unit_of_meas\":\"m/s\",\"stat_t\":\"%s\","
         "\"val_tpl\":\"{{ value_json.gust }}\"%s}", id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
 
@@ -898,7 +898,7 @@ void WeatherGateApp::publishHaDiscovery() {
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_rain/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Дождь\",\"uniq_id\":\"%s_rain\","
-        "\"dev_cla\":\"precipitation_intensity\",\"unit_of_meas\":\"мм/ч\","
+        "\"dev_cla\":\"precipitation_intensity\",\"unit_of_meas\":\"mm/h\","
         "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.rain }}\"%s}",
         id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
@@ -908,7 +908,7 @@ void WeatherGateApp::publishHaDiscovery() {
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_press/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Давление у.м.\",\"uniq_id\":\"%s_press\","
-        "\"dev_cla\":\"atmospheric_pressure\",\"unit_of_meas\":\"гПа\","
+        "\"dev_cla\":\"atmospheric_pressure\",\"unit_of_meas\":\"hPa\","
         "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.press_sea }}\"%s}",
         id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
@@ -916,7 +916,7 @@ void WeatherGateApp::publishHaDiscovery() {
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_rssi/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Сигнал уличного блока\",\"uniq_id\":\"%s_rssi\","
-        "\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"дБм\","
+        "\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"dBm\","
         "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.rssi }}\"%s}",
         id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
@@ -935,7 +935,7 @@ void WeatherGateApp::publishHaDiscovery() {
     snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_age/config", id);
     snprintf(cfg, sizeof(cfg),
         "{\"name\":\"Возраст пакета\",\"uniq_id\":\"%s_age\","
-        "\"dev_cla\":\"duration\",\"unit_of_meas\":\"с\",\"stat_t\":\"%s\","
+        "\"dev_cla\":\"duration\",\"unit_of_meas\":\"s\",\"stat_t\":\"%s\","
         "\"val_tpl\":\"{{ value_json.age_s }}\"%s}", id, wx, dev);
     mqtt.publishRaw(topic, cfg, true);
 

@@ -48,7 +48,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BridgeService"; }
-    const char* getVersion() const override { return "0.1.2-m2"; }   // 0.1.2: down_extra whitelist (погода замка вниз)
+    const char* getVersion() const override { return "0.1.3-m2"; }   // 0.1.3: страж гонки synth offline (RemoveClient старой сессии после reconnect); 0.1.2: down_extra whitelist (погода замка вниз)
     ModuleId getModuleId() const override { return 0x1104; }   // 0x1101=Sd, 0x1102=App, 0x1103=Broker
     void init() override;
     void start() override;

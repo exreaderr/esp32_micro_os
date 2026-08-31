@@ -197,6 +197,20 @@ uint32_t BrokerService::retained() const {
     return _running ? (uint32_t)g_broker.getRetainedTopicCount() : 0;
 }
 
+bool BrokerService::hasClient(const char* clientId) const {
+    if (!_running || clientId == nullptr || clientId[0] == '\0') return false;
+    // Своя таблица принятых сессий — vendored-движок не трогаем (уходящая
+    // сессия уже удалена из таблицы до вызова хуков — см. RemoveClient).
+    for (uint8_t i = 0; i < ACCEPT_TABLE_MAX; ++i) {
+        auto* c = (sMQTTClient*)_accepted[i];
+        if (c != nullptr && c->isConnected() &&
+            strcmp(c->getClientId().c_str(), clientId) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool BrokerService::publishLocal(const char* topic, const char* payload, bool retain) {
     if (!_running || !topic || !payload) return false;
     g_broker.publish(std::string(topic), std::string(payload), 0, retain);

@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BrokerService"; }
-    const char* getVersion() const override { return "0.1.5-m3"; }   // 0.1.5: multi-hook (слоты под мост M2 + журнал M3); 0.1.4: clientId в Publish-хуке; 0.1.2: ёмкость 12 (бенч M1); 0.1.3: хук для моста M2
+    const char* getVersion() const override { return "0.1.6-m3"; }   // 0.1.6: hasClient — страж гонки synth offline (M2); 0.1.5: multi-hook (слоты под мост M2 + журнал M3); 0.1.4: clientId в Publish-хуке; 0.1.2: ёмкость 12 (бенч M1); 0.1.3: хук для моста M2
     ModuleId getModuleId() const override { return 0x1103; }   // 0x1101=SdService, 0x1102=HomeMasterApp
     void init() override;
     void start() override;
@@ -67,6 +67,13 @@ public:
     uint32_t retained() const;                        // retained-топиков (у движка)
     uint32_t rxTotal()  const { return _rxTotal; }    // принято PUBLISH от клиентов
     uint32_t rejected() const { return _rejected; }   // отказов (auth/cap)
+
+    /// true, если у брокера есть АКТИВНАЯ сессия с таким clientId.
+    /// Страж гонки переподключения для моста M2 (урок 31.08.2026, репорт
+    /// профильной ветки): RemoveClient старой (мёртвой) сессии может
+    /// прийти ПОСЛЕ того, как устройство уже переподключилось — synth
+    /// offline в этот момент хоронить нельзя.
+    bool hasClient(const char* clientId) const;
 
     /// Публикация из ядра в брокер (фундамент моста M2: локальные события
     /// парка → подписчики мастера). false — брокер не запущен.
