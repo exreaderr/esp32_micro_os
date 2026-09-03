@@ -173,6 +173,28 @@ void SmartLockApp::tick() {
         if (_chCpu >= 0)  dlog.logPoint(_chCpu,  (float)s.cpuTenths / 10.0f);
         if (_chHeap >= 0) dlog.logPoint(_chHeap, (float)s.heapFree / 1024.0f);
     }
+
+    // --- Авто-чистка просроченных временных ключей (раз в сутки) -----------
+    // Решение владельца 03.09.2026: временный ключ живёт до конца срока;
+    // на следующие сутки его нет в базе (исключаем «забыли удалить»).
+    // Только при ДОСТОВЕРНОМ времени — Fail-Safe: недостоверное = не чистим.
+    if (cfgGetBool("lock.purge_expired", true) &&
+        millis() - _lastPurgeCheckMs >= PURGE_CHECK_MS) {
+        _lastPurgeCheckMs = millis();
+        struct tm t;
+        if (TimeService::getInstance().getLocalTime(t)) {
+            int day = t.tm_year * 400 + t.tm_yday;   // штамп суток
+            if (day != _purgeDay) {
+                _purgeDay = day;
+                uint8_t n = CardStore::getInstance().purgeExpired(
+                    (uint32_t)TimeService::getInstance().getUnixTime());
+                if (n > 0) {
+                    log(LogLevel::Info,
+                        "purge: просроченных временных ключей удалено: %u", n);
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -470,6 +492,12 @@ void SmartLockApp::remoteOpen(SlOpenSource source, const char* userName) {
     }
     LockControl::getInstance().openPulse(source, "REMOTE");
     sayFiltered("sl.remote.open", sl_track::REMOTE_OPEN);
+}
+
+void SmartLockApp::logWebDeny(const char* userName, const char* reason) const {
+    log(LogLevel::Warning, "web: доступ '%s' запрещён (%s, зеркало карты)",
+        userName != nullptr ? userName : "?",
+        reason != nullptr ? reason : "?");
 }
 
 bool SmartLockApp::isExitAllowedNow() const {

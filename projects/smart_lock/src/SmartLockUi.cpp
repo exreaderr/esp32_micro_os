@@ -52,7 +52,9 @@ bool SmartLockUi::isAdmin(const ShUiRequest& req) const {
     return HttpService::getInstance().isAdminToken(req.token);
 }
 
-const SlUser* SmartLockUi::identifyByPin(const ShUiRequest& req) {
+const SlUser* SmartLockUi::identifyByPin(const ShUiRequest& req,
+                                         const char** denyReason) {
+    if (denyReason != nullptr) *denyReason = nullptr;
     AuthService& auth = AuthService::getInstance();
     if (auth.isRateLimited("sl_web")) return nullptr;
 
@@ -65,6 +67,26 @@ const SlUser* SmartLockUi::identifyByPin(const ShUiRequest& req) {
     // Per-user ПИН — основной путь v5.0 (монолит: идентичность жильца)
     const SlUser* u = CardStore::getInstance().findByPin(got);
     if (u != nullptr) {
+        // Правило зеркала (03.09.2026, репорт владельца: временный ключ
+        // Ирины открыл замок через веб ПОСЛЕ истечения срока): веб-доступ
+        // подчиняется ТЕМ ЖЕ запретам, что и карточный путь
+        // (SmartLockApp::onCardPresented, шаги 2 и 4) — заблокированный и
+        // истёкший TEMPORARY не входят и не открывают. ПИН верный — это НЕ
+        // brute-force, noteFailure не трогаем; отказ с явной причиной.
+        if (u->blocked) {
+            SmartLockApp::getInstance().logWebDeny(u->name, "blocked");
+            if (denyReason != nullptr) *denyReason = "blocked";
+            return nullptr;
+        }
+        if (u->type == (uint8_t)KeyType::TEMPORARY && u->expiry > 0) {
+            time_t now = TimeService::getInstance().getUnixTime();
+            if (now == 0 || (uint32_t)now > u->expiry) {
+                SmartLockApp::getInstance().logWebDeny(
+                    u->name, now == 0 ? "expired_notime" : "expired");
+                if (denyReason != nullptr) *denyReason = "expired";
+                return nullptr;
+            }
+        }
         auth.noteSuccess("sl_web");
         return u;
     }
@@ -198,8 +220,13 @@ bool SmartLockUi::handleApi(const char* tail, const ShUiRequest& req,
             snprintf(buf, size, "{\"ok\":1,\"role\":\"user\",\"name\":\"Гость\"}");
             return true;
         }
-        const SlUser* u = identifyByPin(req);
-        if (u == nullptr) { status = 401; snprintf(buf, size, "{\"err\":\"pin\"}"); }
+        const char* deny = nullptr;
+        const SlUser* u = identifyByPin(req, &deny);
+        if (u == nullptr) {
+            status = (deny != nullptr) ? 403 : 401;
+            snprintf(buf, size, "{\"err\":\"%s\"}",
+                     deny != nullptr ? deny : "pin");
+        }
         else snprintf(buf, size,
                       "{\"ok\":1,\"role\":\"user\",\"name\":\"%s\",\"utok\":\"%s\"}",
                       u->name, issueUserToken(u->name));
@@ -361,10 +388,12 @@ bool SmartLockUi::apiOpen(const ShUiRequest& req, char* buf, size_t size,
             snprintf(buf, size, "{\"ok\":1}");
             return true;
         }
-        const SlUser* u = identifyByPin(req);   // per-user ПИН → имя
+        const char* deny = nullptr;
+        const SlUser* u = identifyByPin(req, &deny);   // per-user ПИН → имя
         if (u == nullptr) {
-            status = 401;
-            snprintf(buf, size, "{\"err\":\"pin\"}");
+            status = (deny != nullptr) ? 403 : 401;
+            snprintf(buf, size, "{\"err\":\"%s\"}",
+                     deny != nullptr ? deny : "pin");
             return true;
         }
         app.remoteOpen(SlOpenSource::WEB, u->name);   // персонифицировано

@@ -28,7 +28,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "SmartLockApp"; }
-    const char* getVersion() const override { return "5.5.13"; }     // 5.5.13: гвард первой карты + возраст зеркала (web+API)
+    const char* getVersion() const override { return "5.5.14"; }     // 5.5.14: правило 23 — порядок вкладок (Сеть, ПАЗ, Система, Админ → профильные), «Служебные» не отображаются (web); правило зеркала — веб-доступ чтит blocked/expiry как карта (репорт 03.09)
     ModuleId getModuleId() const override { return 0x1002; }   // профиль
 
     void registerExtensions() override;   // конфиг lock.*, SoundPack
@@ -51,6 +51,11 @@ public:
     /// Дистанционное открытие (веб/MQTT). userName — жилец, чей ПИН принят
     /// (per-user ПИН: открытие тоже персонифицировано — «последний доступ»).
     void remoteOpen(SlOpenSource source, const char* userName = nullptr);
+
+    /// Журнал отказа веб-доступа по blocked/expiry (правило зеркала,
+    /// 03.09.2026). Вызывает SmartLockUi — сам он не ModuleBase, а log()
+    /// ядра protected. reason: "blocked" | "expired" | "expired_notime".
+    void logWebDeny(const char* userName, const char* reason) const;
     /// Смена режима извне (API). Возвращает новый режим.
     void setMode(LockMode mode);
     /// Режим чтения карты для веб-UI (10 с, монолит: web_read_mode).
@@ -150,4 +155,10 @@ private:
     int8_t   _chWx   = -1;
     uint32_t _lastDlogMs = 0;
     static constexpr uint32_t DLOG_SAMPLE_MS = 60000;
+    // Авто-чистка просроченных временных ключей (решение владельца
+    // 03.09.2026): проверка раз в 60 с, чистка при смене штампа суток
+    // (покрывает и полночь, и «устройство было выключено ночью»).
+    uint32_t _lastPurgeCheckMs = 0;
+    static constexpr uint32_t PURGE_CHECK_MS = 60000;
+    int _purgeDay = -1;                     // tm_year*400+tm_yday; -1 = ещё не было
 };

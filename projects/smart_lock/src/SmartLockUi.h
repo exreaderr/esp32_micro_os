@@ -36,7 +36,10 @@ private:
     bool isAdmin(const ShUiRequest& req) const;
     /// Идентификация жильца по ПИНу (per-user, rate-limited; legacy
     /// lock.user_pin — анонимный «Гость»). nullptr — отказ.
-    const SlUser* identifyByPin(const ShUiRequest& req);
+    /// denyReason (необяз.): при отказе по blocked/expiry — "blocked"/"expired"
+    /// (ПИН верный, но запрещён; иначе остаётся nullptr).
+    const SlUser* identifyByPin(const ShUiRequest& req,
+                                const char** denyReason = nullptr);
 
     // --- Сессии жильца (RAM-токены, скользящее окно бездействия) ----------
     // Урок 5.0.x: «сессия» жильца была просто ПИНом в sessionStorage

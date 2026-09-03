@@ -90,6 +90,11 @@ public:
     bool add(const char* id, const char* name, KeyType type,
              uint8_t track, uint32_t expiry, const char* pin = "");
     bool remove(const char* id);              // false — нет такой
+    /// Авто-чистка (решение владельца 03.09.2026): удалить просроченные
+    /// TEMPORARY (expiry>0 и expiry<now). Вызывать ТОЛЬКО при достоверном
+    /// времени (Fail-Safe: now==0 — ничего не делаем). Каждое удаление —
+    /// событие cardRemoved + строка в журнале (имя/HEX). Возврат — число.
+    uint8_t purgeExpired(uint32_t now);
     /// Сентинелы «не менять» для update(): форма редактирования шлёт
     /// ТОЛЬКО реально изменённые поля — пустое поле ≠ «стереть» (5.0.13:
     /// раньше отсутствующие name/track/expiry затирали запись нулями).

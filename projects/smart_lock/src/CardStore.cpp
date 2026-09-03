@@ -152,6 +152,23 @@ bool CardStore::remove(const char* id) {
     return true;
 }
 
+uint8_t CardStore::purgeExpired(uint32_t now) {
+    if (now == 0) return 0;   // время недостоверно — Fail-Safe, не чистим
+    uint8_t removed = 0;
+    // С хвоста — remove() сдвигает массив влево, прямой обход бы пропускал.
+    for (int i = (int)_count - 1; i >= 0; --i) {
+        const SlUser& u = users()[i];
+        if (u.type != (uint8_t)KeyType::TEMPORARY) continue;
+        if (u.expiry == 0 || u.expiry >= now) continue;
+        char id[9];
+        snprintf(id, sizeof(id), "%s", u.id);   // копия ДО remove (сдвиг!)
+        log(LogLevel::Info, "purge: временный ключ '%s' (%s) истёк — удалён",
+            u.name, id);
+        if (remove(id)) ++removed;
+    }
+    return removed;
+}
+
 bool CardStore::update(const char* id, const char* name, uint8_t track,
                        uint32_t expiry, const char* pin) {
     char norm[9];
