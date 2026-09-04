@@ -23,7 +23,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return "0.5.1-m3"; }      // 0.5.1: мост M2 — страж гонки synth offline (BrokerService::hasClient); 0.4.0: M3.1 стержень журнала, 0.5.0: M3.2 вьюер
+    const char* getVersion() const override { return "0.5.2"; }         // 0.5.2: UI по правилу 23 (вкладка Админ, hg-группы); 0.5.1: мост M2 — страж гонки synth offline; 0.5.0: M3.2 вьюер
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

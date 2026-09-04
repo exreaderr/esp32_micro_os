@@ -16,6 +16,7 @@
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
 #include <drivers/WeatherCore.h>
+#include "WgScanCore.h"   // W3.3: чистая логика сканера частоты (0.5.0)
 
 // ============================================================================
 // UI-ПРОВАЙДЕР ПРОФИЛЯ
@@ -49,7 +50,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.3.9"; } // discovery: каноничные единицы HA (m/s, mm/h, hPa, dBm, s)
+    const char* getVersion() const override { return "0.5.1"; } // правило 23 п.3: setHiddenGroups(Планировщик,Счётчики,Звук) + hg-пропуск в рендере (задание ядра 04.09)
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
@@ -99,8 +100,26 @@ public:
     /// под условием wx.diag — см. s_diagLog() в .cpp.
     void logDiag(const char* body);
 
+    // --- СКАНЕР ЧАСТОТЫ (W3.3, 0.5.0) ---------------------------------------
+    // Подбор лучшей частоты приёма по измеренному уровню: сетка ±0.20 МГц
+    // вокруг рабочей (окно монолита v5.2), на точке — окно наблюдения,
+    // метрики pkt/RSSI/шум. Применение результата — только оператором.
+    // receive-only: перестройка = FREQ-регистры + вход в RX (STX нет).
+    bool scanActive() const { return _scan.active; }
+    /// Старт прогона. stepX100: 2|5 (0.02|0.05 МГц), dwellS: 30..120.
+    /// false + err — отказ (уже идёт / драйвер нездоров / параметры).
+    bool   scanStart(uint16_t stepX100, uint16_t dwellS, char* err, size_t errSize);
+    void   scanAbort();                 // отмена: возврат на рабочую частоту
+    /// Живая перестройка вне скана (клик по графику/«Применить»): границы
+    /// схемы 914–916, readback в лог. Конфиг не пишет — только эфир.
+    bool   scanTune(float mhz);
+    /// Статус для UI: state/прогресс/таблица точек/рекомендация.
+    size_t scanStatusJson(char* buf, size_t bufSize) const;
+
 private:
     WeatherGateApp() = default;
+
+    void scanTick();                    // из tick(): шум, пакеты, перестройка
 
     void onNewRadioPacket();          // пакет -> снимок, лог, MQTT, событие
     void publishWeatherMqtt();        // retained <prefix>/<id>/weather (+ зеркало)
@@ -127,6 +146,21 @@ private:
 
     // Каналы DataLog (-1 — не зарегистрирован)
     int8_t _chOutT = -1, _chOutH = -1, _chPress = -1, _chWind = -1, _chRain = -1;
+
+    // Состояние сканера частоты (W3.3). Точки пишутся только из scanTick
+    // (task-контекст), читатели HTTP — копию через scanStatusJson.
+    struct Scan {
+        bool     active = false;
+        bool     done   = false;        // прогон завершён штатно (есть таблица)
+        uint16_t stepX100 = 2;
+        uint16_t dwellS   = 60;
+        uint32_t homeX100 = 91500;      // рабочая частота на момент старта
+        uint8_t  idx    = 0;
+        uint8_t  count  = 0;
+        uint32_t pointStartMs = 0;
+        uint32_t lastPktSeq   = 0;
+        wgs::ScanPoint pts[wgs::SCAN_MAX_POINTS];
+    } _scan;
 
     // Авто-высота
     bool _altRequested  = false;      // есть повод попробовать

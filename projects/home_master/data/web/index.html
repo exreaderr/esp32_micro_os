@@ -122,13 +122,17 @@ footer b{color:var(--text)}
 
   <!-- ================= ЛЕНТА ВКЛАДОК ================= -->
   <div class="tabstrip">
-    <div class="btab on" data-t="status" onclick="showTab('status')"><span class="fav">📊</span>Статус</div>
+    <!-- Правило 23 (решение владельца 02.09.2026): сначала общие вкладки
+         флота — Сеть, ПАЗ, Система, Админ — затем профильные. Стартовая
+         вкладка остаётся «Статус» (мастер = мониторинг контура). -->
     <div class="btab" data-t="net" onclick="showTab('net')"><span class="fav">🌐</span>Сеть</div>
+    <div class="btab" data-t="paz" onclick="showTab('paz')"><span class="fav">🛡</span>ПАЗ</div>
+    <div class="btab" data-t="sys" onclick="showTab('sys')"><span class="fav">🧰</span>Система</div>
+    <div class="btab" data-t="adm" onclick="showTab('adm')"><span class="fav">👑</span>Админ</div>
+    <div class="btab on" data-t="status" onclick="showTab('status')"><span class="fav">📊</span>Статус</div>
     <div class="btab" data-t="mqtt" onclick="showTab('mqtt')"><span class="fav">📡</span>MQTT</div>
     <div class="btab" data-t="jrn" onclick="showTab('jrn')"><span class="fav">📒</span>Журнал</div>
     <div class="btab" data-t="cfg" onclick="showTab('cfg')"><span class="fav">⚙️</span>Настройки</div>
-    <div class="btab" data-t="paz" onclick="showTab('paz')"><span class="fav">🛡</span>ПАЗ</div>
-    <div class="btab" data-t="sys" onclick="showTab('sys')"><span class="fav">🧰</span>Система</div>
   </div>
 
   <div class="pages">
@@ -283,6 +287,9 @@ footer b{color:var(--text)}
       <div class="row"><span class="k">Восстановить из NVS-бэкапа<br><small class="k">применяется сразу, устройство перезагрузится</small></span><span><button class="danger" onclick="doRestore()">Восстановить</button></span></div>
       <div class="note" id="sysMsg"></div>
     </div>
+    <!-- Правило 23: ядерная группа «Система» (NTP, пояс, темп-пороги,
+         OTA-путь) — сюда же, рядом с системными действиями -->
+    <div id="cfgSys"></div>
     <div class="card">
       <h2>Обновление прошивки (OTA)</h2>
       <div id="otaRows"><div class="note">Загрузка сведений…</div></div>
@@ -302,6 +309,12 @@ footer b{color:var(--text)}
       <div id="otaHistory"></div>
       <div class="note" id="otaMsg"></div>
     </div>
+  </section>
+
+  <!-- ================= АДМИН (общая вкладка правила 23) =================
+       Пароль, сессия, журналы, низкий уровень; ядерная группа
+       «Безопасность» рендерится в cfgAdm -->
+  <section id="t-adm" class="hidden">
     <div class="card">
       <h2>Пароль администратора</h2>
       <div class="row"><span class="k">Действующий пароль</span><span><input id="pwOld" type="password" maxlength="32" autocomplete="current-password"></span></div>
@@ -309,6 +322,7 @@ footer b{color:var(--text)}
       <div class="row"><span class="k">Подтверждение</span><span><input id="pwNew2" type="password" maxlength="32" autocomplete="new-password"></span></div>
       <div class="row"><span class="k"></span><span><button onclick="changePw()">Сменить пароль</button></span></div>
     </div>
+    <div id="cfgAdm"></div>
     <div class="card">
       <h2>Сессия</h2>
       <div class="row"><span class="k">Завершить сессию администратора на этом устройстве</span><span><button onclick="doLogout()">Выйти</button></span></div>
@@ -353,10 +367,14 @@ let T=localStorage.getItem('mos_t')||'';
 const SD_RU={mounted:['смонтирована','ok'],no_card:['нет карты','warn'],failed:['сбой монтирования','err'],disabled:['выключена в конфиге','mut']};
 const DEGR=['FULL','LOCAL_NET','AUTONOMOUS'];
 const CHK_ST=[['ok','Ok'],['warn','Warning'],['err','Critical']];
-const TABS=['status','net','mqtt','jrn','cfg','paz','sys'];
-// Распределение конфиг-групп по вкладкам: MQTT отделён от сети (специфика мастера),
-// всё нераспознанное падает в «Настройки» — схема приходит с устройства.
-const GROUP_TAB={'Сеть':'net','MQTT':'mqtt','MQTT-брокер':'mqtt','Мост M2':'mqtt'};
+const TABS=['net','paz','sys','adm','status','mqtt','jrn','cfg'];
+// Распределение конфиг-групп по вкладкам (правило 23): общие группы ядра —
+// в общие вкладки (Сеть/Система/Безопасность→Админ), MQTT отделён от сети
+// (специфика мастера), всё нераспознанное падает в «Настройки» —
+// расширенный профильный набор (Мастер, SD-карта, Журнал M3, Погодное
+// зеркало). Схема приходит с устройства.
+const GROUP_TAB={'Сеть':'net','MQTT':'mqtt','MQTT-брокер':'mqtt','Мост M2':'mqtt',
+  'Система':'sys','Безопасность':'adm'};
 let curTab='status', brokerTimer=null;
 
 // ---------- транспорт ----------
@@ -692,14 +710,21 @@ const TRUTHY={'1':1,'true':1,'on':1};
 async function loadCfg(){
   try{
     const j=await (await api('GET','/api/config')).json();
-    const buckets={net:{},mqtt:{},misc:{}};
+    const buckets={net:{},mqtt:{},sys:{},adm:{},misc:{}};
     Object.keys(j).forEach(k=>{const f=j[k];f.key=k;
+      // Правило 23: группы с флагом hg (ConfigService::setHiddenGroups —
+      // «Планировщик»/«Счётчики» на этом профиле не используются) НЕ
+      // отображаем вовсе. Поля/API живы — убран только показ; ядерная
+      // консоль /admin показывает всё (сервисный контур).
+      if(f.hg) return;
       const b=buckets[GROUP_TAB[f.group]||'misc'];
       (b[f.group]=b[f.group]||[]).push(f);});
     const render=g=>Object.keys(g).map(name=>
       '<div class="card"><h3>'+esc(name)+'</h3>'+g[name].map(cfgRow).join('')+'</div>').join('');
     $('cfgNet').innerHTML=render(buckets.net)||'<div class="card k">Группа «Сеть» не пришла в схеме устройства.</div>';
     $('cfgMqtt').innerHTML=render(buckets.mqtt)||'<div class="card k">MQTT-группы не пришли в схеме устройства.</div>';
+    $('cfgSys').innerHTML=render(buckets.sys)||'';
+    $('cfgAdm').innerHTML=render(buckets.adm)||'<div class="card k">Группа «Безопасность» не пришла в схеме устройства.</div>';
     $('cfgMisc').innerHTML=render(buckets.misc)||'<div class="card k">Прочих групп нет.</div>';
     applyDhcpVisibility();   // начальное состояние — по загруженному конфигу
   }catch(e){if(e.message!=='401')$('cfgMisc').innerHTML='<div class="card">ошибка загрузки</div>';}

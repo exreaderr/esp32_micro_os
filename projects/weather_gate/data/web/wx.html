@@ -67,6 +67,25 @@ input[type=password] {
   display: inline-block; border: none; border-radius: 10px; padding: 10px 16px;
   background: var(--field); color: #fff; font-size: 15px; cursor: pointer;
 }
+/* ---- Настроечные панели (0.4.0, движок по образцу smart_lock 5.5.14) ---- */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.form-grid .span2 { grid-column: span 2; }
+@media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } .form-grid .span2 { grid-column: span 1; } }
+.form-grid label { font-size: 10px; font-weight: 600; color: var(--text2); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
+.form-grid input {
+  width: 100%; padding: 9px 12px; border-radius: 10px; box-sizing: border-box;
+  border: 1.5px solid var(--field); background: var(--card);
+  color: var(--text); font-size: 14px; outline: none; font-family: inherit;
+}
+.form-grid input:focus { border-color: var(--info); }
+.form-grid input:disabled { opacity: .55; }
+.form-grid input[type="checkbox"] { width: auto; }
+.check-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--card); border-radius: 10px; border: 1.5px solid var(--field); }
+.check-row label { margin: 0; text-transform: none; font-size: 13px; color: var(--text); cursor: pointer; flex: 1; }
+.group-card { background: var(--bg); border-radius: 14px; padding: 12px; margin-bottom: 10px; border: 1.5px solid var(--border); }
+.group-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; border-left: 3px solid var(--info); padding-left: 8px; }
+.group-note { font-size: 11px; color: var(--warning); margin-top: 8px; font-weight: 600; }
+.save-row { margin: 4px 0 10px; }
 .err { color: var(--error); font-size: 13px; min-height: 16px; }
 .srow { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; padding: 3px 0; }
 .srow > span:first-child { color: var(--text2); flex-shrink: 0; }
@@ -242,7 +261,7 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     <div class="modal-card">
       <div class="modal-title">🔐 Администратор
         <span class="modal-x" onclick="closeLogin()">✕</span></div>
-      <div class="hint" style="margin-top:6px">Графики, радио, сеть, ПАЗ и система.</div>
+      <div class="hint" style="margin-top:6px">Сеть, ПАЗ, система, графики и радио.</div>
       <input type="password" id="passInput" placeholder="Пароль администратора" autocomplete="current-password">
       <div class="err" id="authErr"></div>
       <button class="btn" style="width:100%" onclick="doLogin()">Войти</button>
@@ -256,16 +275,18 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
   <div class="card hidden" id="navCard">
     <b>Навигация по настройкам</b>
     <div class="nav-chips" id="navChips">
-      <button class="chip active" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
-      <button class="chip" data-tab="radio" onclick="showTab('radio')">📻 Радио</button>
-      <button class="chip" data-tab="net" onclick="showTab('net')">📡 Сеть</button>
+      <!-- Правило 23 (эталон smart_lock 5.5.14): ядерные вкладки первыми
+           в фиксированном порядке Сеть, ПАЗ, Система, Админ → профильные -->
+      <button class="chip active" data-tab="net" onclick="showTab('net')">📡 Сеть</button>
       <button class="chip" data-tab="paz" onclick="showTab('paz')">🛡️ ПАЗ</button>
       <button class="chip" data-tab="sys" onclick="showTab('sys')">🩺 Система</button>
       <button class="chip" data-tab="adm" onclick="showTab('adm')">👑 Админ</button>
+      <button class="chip" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
+      <button class="chip" data-tab="radio" onclick="showTab('radio')">📻 Радио</button>
     </div>
 
     <!-- ГРАФИКИ (даталоггер) -->
-    <div id="tab-charts" class="tab-pane">
+    <div id="tab-charts" class="tab-pane hidden">
       <div class="chips" id="chartChannels"></div>
       <div class="chips">
         <button class="chip chart-range active" data-range="6h" onclick="setChartRange('6h')">6 ч</button>
@@ -278,26 +299,62 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
       <div class="hint" id="chartHint"></div>
     </div>
 
-    <!-- РАДИО (приёмник CC1101) -->
+    <!-- РАДИО (приёмник CC1101): статус + профильные настройки (0.4.0) -->
     <div id="tab-radio" class="tab-pane hidden">
       <div id="radioRows"><div class="hint">Загрузка…</div></div>
       <div class="chips"><button class="chip" onclick="renderRadio()">Обновить</button></div>
-      <div class="hint">Сканер АЧХ для выбора лучшей частоты появится здесь в W3.3 —
-        после приёмки мерджа драйверов (нужны setFreqMHz/readRssiNow в ядерном драйвере).</div>
+      <div id="cfg-radio"></div>
+      <div class="save-row"><button class="btn" onclick="saveConfig('radio')">💾 Сохранить параметры</button></div>
+
+      <!-- СКАНЕР ЧАСТОТЫ (W3.3, 0.5.0): сетка ±0.20 МГц вокруг рабочей,
+           pkt/RSSI/шум на точку, применение — только кнопкой оператора -->
+      <div class="group-card" id="scanCard">
+        <div class="group-title">📡 Сканер лучшей частоты</div>
+        <div class="chips">
+          <select id="scanStep" class="chip">
+            <option value="0.02" selected>шаг 0.02 МГц (21 точка)</option>
+            <option value="0.05">шаг 0.05 МГц (9 точек)</option>
+          </select>
+          <select id="scanDwell" class="chip">
+            <option value="30">окно 30 с</option>
+            <option value="60" selected>окно 60 с</option>
+            <option value="120">окно 120 с</option>
+          </select>
+          <button class="chip" id="scanStartBtn" onclick="scanStart()">Найти лучшую частоту</button>
+          <button class="chip hidden" id="scanAbortBtn" onclick="scanAbort()">Отмена</button>
+        </div>
+        <div class="hint" id="scanProgress"></div>
+        <div id="scanChart"></div>
+        <div class="hint" id="scanLegend" style="display:none">Сплошная — максимум
+          сигнала с пакетами · пунктир — шумовая дорожка · маркер — рабочая
+          частота · клик по точке — живая перестройка (конфиг не пишется)</div>
+        <div id="scanTable"></div>
+        <div class="save-row hidden" id="scanApplyRow">
+          <button class="btn" id="scanApplyBtn" onclick="scanApply()"></button>
+        </div>
+        <div class="hint">Во время прогона сторож тишины на паузе, приём
+          продолжается. По завершении частота возвращается на рабочую
+          (readback в журнале).</div>
+      </div>
     </div>
 
-    <!-- СЕТЬ -->
-    <div id="tab-net" class="tab-pane hidden">
+    <!-- СЕТЬ: статус + настройка групп «Сеть»/«MQTT» (0.4.0) -->
+    <div id="tab-net" class="tab-pane">
       <div id="netRows"><div class="hint">Загрузка…</div></div>
       <div class="chips"><button class="chip" onclick="renderNet()">Обновить</button></div>
-      <div class="hint">Полная настройка сети и MQTT — в ядерной админке (вкладка «Админ»).</div>
+      <div id="cfg-net"></div>
+      <div class="save-row"><button class="btn" onclick="saveConfig('net')">💾 Сохранить параметры</button></div>
+      <div class="hint">Остальные поля (журналы, аудит, даталоггер) — в ядерной
+        админке (вкладка «Админ» → /admin).</div>
     </div>
 
-    <!-- ПАЗ -->
+    <!-- ПАЗ: статус + сторожа эфира (0.4.1) -->
     <div id="tab-paz" class="tab-pane hidden">
       <div id="pazRows"><div class="hint">Загрузка…</div></div>
       <div id="pazJournal"></div>
       <div class="chips"><button class="chip" onclick="renderPaz()">Обновить</button></div>
+      <div id="cfg-paz"></div>
+      <div class="save-row"><button class="btn" onclick="saveConfig('paz')">💾 Сохранить параметры</button></div>
     </div>
 
     <!-- СИСТЕМА: OTA / NVS-бэкап / перезагрузка
@@ -335,12 +392,24 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
         через NVS-бэкап.</div>
     </div>
 
-    <!-- АДМИН -->
+    <!-- АДМИН: смена пароля + группы «Безопасность»/«Система» (0.4.0) -->
     <div id="tab-adm" class="tab-pane hidden">
-      <div class="hint">Ядерная админка: все поля конфигурации, журналы, аудит,
-        время и часовой пояс, сеть, MQTT, безопасность.</div>
+      <div class="group-card">
+        <div class="group-title">🔐 Пароль администратора</div>
+        <div class="form-grid">
+          <div><label>Действующий пароль</label>
+            <input type="password" id="admOld" autocomplete="current-password"></div>
+          <div><label>Новый пароль (4–32, без пробелов)</label>
+            <input type="password" id="admNew" autocomplete="new-password"></div>
+          <div><label>Подтверждение</label>
+            <input type="password" id="admNew2" autocomplete="new-password"></div>
+        </div>
+        <div class="save-row"><button class="btn" onclick="changePassword()">💾 Сменить пароль</button></div>
+      </div>
+      <div id="cfg-adm"></div>
+      <div class="save-row"><button class="btn" onclick="saveConfig('adm')">💾 Сохранить параметры</button></div>
       <div class="chips">
-        <a class="chip" href="/admin">Открыть /admin</a>
+        <a class="chip" href="/admin">Открыть /admin (все поля, журналы, аудит)</a>
         <a class="chip" href="/api/dev/weather" target="_blank">weather-JSON</a>
         <button class="chip" onclick="doLogout()">Выйти из админки</button>
       </div>
@@ -498,6 +567,302 @@ async function isRealAuthFail(r){
 async function apiPost(url){ return api(url,{method:'POST'}); }
 
 // ============================================================================
+// НАСТРОЕЧНЫЕ ПАНЕЛИ (0.4.0, движок по образцу smart_lock 5.5.14)
+// Источник истины — GET /api/config (ядро, профильно-нейтрально); запись —
+// POST /api/config?key=&value= поштучно, только изменённые (dirty).
+// Чужих групп замка здесь нет и быть не может: состав — whitelist.
+// ============================================================================
+var TAB_GROUPS = {
+  net:   ['Сеть','MQTT'],
+  radio: ['Радио CC1101','Датчик BME280','Телеметрия и сторожа'],
+  adm:   ['Безопасность','Система']
+};
+var GROUP_REBOOT_NOTE = { 'Сеть':1, 'MQTT':1 };
+// 0.4.1: человеческие имена сырым полям радио (просьба владельца).
+// Схема не меняется — подмена только в подписи виджета.
+var FIELD_UI_LABEL = {
+  'wx.rf_agcctrl1': 'AGC: защита от перегрузки (AGCCTRL1, дефолт 71)',
+  'wx.rf_agcctrl2': 'AGC: усиление входа LNA (AGCCTRL2, дефолт 27)'
+};
+// 0.4.1: панельный «дом» поля. Поле остаётся в своей группе схемы
+// (перенос между группами сдвинул бы индексы — правило JSON-конфига),
+// но рисуется в другой вкладке: «Тишина эфира» — сторож, его место в ПАЗ.
+var FIELD_TAB_HOME = { 'wx.silence_min': 'paz' };
+var EXTRA_TAB_GROUPS = {
+  paz: { title: 'Сторожа эфира', keys: ['wx.silence_min'] }
+};
+// Явный порядок полей внутри группы (перенесено с замка): сеть — по смыслу,
+// время — сверху (пояс правят чаще всего).
+var GROUP_FIELD_ORDER = {
+  'Сеть': ['net.dhcp','net.dns','sys.hostname','net.enabled',
+           'net.gateway','net.gw_period','net.ip','net.mask','net.ping_gw'],
+  'Система': ['sys.tz_offset','sys.ntp_enabled','sys.ntp_server']
+};
+async function ensureConfig(){
+  if(S.cfg) return true;
+  var r=await api('/api/config');
+  if(!r.ok){ toast('Конфиг недоступен','err'); return false; }
+  S.cfg=r.data; S.dirty={};
+  renderConfigAll();
+  return true;
+}
+function fieldsOfGroup(group, tab){
+  var out=[];
+  for(var key in S.cfg){
+    if(S.cfg[key].group!==group) continue;
+    // поле с панельным «домом» рисуется только в своей вкладке (0.4.1)
+    if(FIELD_TAB_HOME[key] && FIELD_TAB_HOME[key]!==tab) continue;
+    out.push({key:key, f:S.cfg[key]});
+  }
+  var ord=GROUP_FIELD_ORDER[group];
+  if(ord){
+    out.sort(function(a,b){
+      var ia=ord.indexOf(a.key), ib=ord.indexOf(b.key);
+      if(ia<0) ia=999; if(ib<0) ib=999;
+      return ia-ib || (a.key<b.key?-1:1);
+    });
+  } else {
+    out.sort(function(a,b){ return a.key<b.key?-1:1; });
+  }
+  return out;
+}
+function groupCard(name, fields, tab){
+  var gc=document.createElement('div'); gc.className='group-card';
+  var html='<div class="group-title">'+esc(name)+'</div><div class="form-grid">';
+  for(var f=0; f<fields.length; f++) html+=widgetHtml(fields[f], tab);
+  html+='</div>';
+  if(GROUP_REBOOT_NOTE[name]) html+='<div class="group-note">⏻ Применяется после перезагрузки контроллера</div>';
+  gc.innerHTML=html;
+  return gc;
+}
+function renderConfigAll(){
+  for(var tab in TAB_GROUPS){
+    var host=$('cfg-'+tab); if(!host) continue;
+    host.innerHTML='';
+    var groups=TAB_GROUPS[tab];
+    for(var g=0; g<groups.length; g++){
+      var fields=fieldsOfGroup(groups[g], tab);
+      if(!fields.length) continue;
+      // Правило 23 (задание ядра 04.09): группы с флагом hg:1
+      // (ConfigService::setHiddenGroups) НЕ отображаем вовсе. У шлюза
+      // whitelist их и не перечисляет — это страховка на будущее.
+      if(fields[0].f.hg) continue;
+      host.appendChild(groupCard(groups[g], fields, tab));
+    }
+    // панельные «переезды» (0.4.1): поля, чей дом — эта вкладка
+    var extra=EXTRA_TAB_GROUPS[tab];
+    if(extra){
+      var efields=[];
+      for(var k=0; k<extra.keys.length; k++){
+        var key=extra.keys[k];
+        if(S.cfg[key]) efields.push({key:key, f:S.cfg[key]});
+      }
+      if(efields.length) host.appendChild(groupCard(extra.title, efields, tab));
+    }
+  }
+  applyDhcpVisibility();   // начальное состояние — по загруженному конфигу
+}
+function widgetHtml(it, tab){
+  var key=it.key, f=it.f, id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_');
+  var wid='w_'+id.slice(4);   // id обёртки — для скрытия полей (DHCP)
+  var ro=f.ro===1, dis=ro?'disabled':'';
+  var lbl=FIELD_UI_LABEL[key]||f.label;   // 0.4.1: человеческие имена
+  var html;
+  if(f.secret===1){   // SECRET (mqtt.pass): значение с устройства не приходит
+    var ph=f.set===1?'•••••••• — задан, введите новый':'не задан';
+    return '<div id="'+wid+'"><label>'+esc(lbl)+'</label>'+
+      '<input type="password" id="'+id+'" value="" placeholder="'+ph+'"'+
+      ' autocomplete="new-password" '+dis+
+      ' oninput="markDirty(\''+tab+'\',\''+key+'\')"></div>';
+  }
+  if(f.t===3){   // BOOL — чекбокс-строка
+    html='<div class="span2" id="'+wid+'"><div class="check-row">'+
+      '<input type="checkbox" id="'+id+'" '+(f.value==='true'||f.value==='1'?'checked':'')+' '+dis+
+      ' onchange="markDirty(\''+tab+'\',\''+key+'\');applyDhcpVisibility()">'+
+      '<label for="'+id+'">'+esc(lbl)+(ro?' · <i>только чтение</i>':'')+'</label></div></div>';
+  } else {
+    var input;
+    if(f.t===0||f.t===1||f.t===2){   // INT/UINT/FLOAT
+      var step=f.t===2?'any':'1';
+      input='<input type="number" id="'+id+'" value="'+esc(f.value)+'" step="'+step+'"'+
+        (f.min||f.max?' min="'+f.min+'" max="'+f.max+'"':'')+' '+dis+
+        ' oninput="markDirty(\''+tab+'\',\''+key+'\')">';
+    } else {                          // STRING/IP
+      input='<input type="text" id="'+id+'" value="'+esc(f.value)+'" '+dis+
+        ' oninput="markDirty(\''+tab+'\',\''+key+'\')">';
+    }
+    html='<div id="'+wid+'"><label>'+esc(lbl)+(ro?' · <i>только чтение</i>':'')+'</label>'+input+'</div>';
+  }
+  return html;
+}
+// DHCP включён → статические поля прячутся (урок монолита: заполненные
+// поля при активном DHCP вводили в заблуждение). Чисто панельное скрытие.
+var DHCP_HIDES=['net.ip','net.mask','net.gateway','net.dns'];
+function applyDhcpVisibility(){
+  var cb=$('cfg_net_dhcp'); if(!cb) return;
+  var hide=cb.checked;
+  for(var i=0;i<DHCP_HIDES.length;i++){
+    var w=$('w_'+DHCP_HIDES[i].replace(/[^a-zA-Z0-9]/g,'_'));
+    if(w) w.style.display=hide?'none':'';
+  }
+}
+function markDirty(tab, key){
+  if(!S.dirty[tab]) S.dirty[tab]={};
+  S.dirty[tab][key]=true;
+}
+async function saveConfig(tab){
+  var d=S.dirty[tab]||{}, keys=Object.keys(d);
+  if(!keys.length){ toast('Нет изменений',''); return; }
+  var ok=0, fail=0, skipped=0, failKeys=[];
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i], id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_'), el=$(id);
+    if(!el){ continue; }
+    var val = el.type==='checkbox' ? (el.checked?'true':'false') : el.value;
+    // Секрет, оставленный пустым, не отправляем — случайная очистка
+    // пароля брокера одним кликом недопустима.
+    if(el.type==='password' && val===''){ skipped++; continue; }
+    var r=await apiPost('/api/config?key='+encodeURIComponent(key)+'&value='+encodeURIComponent(val));
+    if(r.ok){ ok++; if(el.type==='password'){ el.value=''; S.cfg[key].set=1; } else S.cfg[key].value=val; }
+    else { fail++; failKeys.push(key); }
+  }
+  S.dirty[tab]={};
+  if(fail===0) toast('Сохранено: '+ok+' параметр(ов)'+(skipped?' · секрет пуст — пропущен':''),'ok');
+  else toast('Сохранено '+ok+', отклонено '+fail+' ('+failKeys.join(', ')+')','err');
+}
+async function changePassword(){
+  var o=$('admOld').value, n=$('admNew').value, n2=$('admNew2').value;
+  if(n.length<4||n.length>32||/\s/.test(n)){ toast('Новый пароль: 4–32 символа без пробелов','err'); return; }
+  if(n!==n2){ toast('Новые пароли не совпадают','err'); return; }
+  var r=await apiPost('/api/auth/change?old='+encodeURIComponent(o)+'&new='+encodeURIComponent(n));
+  if(r.ok && r.data.token){
+    S.token=r.data.token; sessionStorage.setItem('mos_token',S.token);
+    $('admOld').value=''; $('admNew').value=''; $('admNew2').value='';
+    toast('Пароль изменён, сессия обновлена','ok');
+  } else if(r.status===403) toast('Действующий пароль неверен','err');
+  else toast('Ошибка смены пароля','err');
+}
+
+// ============================================================================
+// СКАНЕР ЧАСТОТЫ (W3.3, 0.5.0)
+// Управление: POST /api/dev/radio?scan=start|abort|tune (админ);
+// статус: GET scan=status (публичный). Применение — только кнопкой.
+// ============================================================================
+var S_scan = { timer:null, st:null };
+async function scanStart(){
+  var step=$('scanStep').value, dwell=$('scanDwell').value;
+  var r=await apiPost('/api/dev/radio?scan=start&step='+step+'&dwell='+dwell);
+  if(r.ok && r.data.ok){
+    toast('Сканирование запущено','ok');
+    scanPollStart();
+  } else if(r.status===409) toast('Сканер уже работает','err');
+  else toast('Сканер не запустился: '+((r.data&&r.data.err)||r.status),'err');
+}
+async function scanAbort(){
+  await apiPost('/api/dev/radio?scan=abort');
+  scanPollStop();
+  $('scanProgress').textContent='Прогон отменён, частота возвращена на рабочую.';
+  scanUiRunning(false);
+}
+async function scanTune(f){
+  var r=await apiPost('/api/dev/radio?scan=tune&freq='+f.toFixed(2));
+  if(r.ok && r.data.ok) toast('Перестроено на '+Number(r.data.freq).toFixed(2)+' МГц (живьём, конфиг не писался)','ok');
+  else toast('Перестройка не удалась','err');
+}
+async function scanApply(){
+  var st=S_scan.st; if(!st || st.rec==null || st.rec<0) return;
+  var f=st.points[st.rec].f;
+  var r=await apiPost('/api/config?key='+encodeURIComponent('wx.rf_freq_mhz')+'&value='+encodeURIComponent(f.toFixed(2)));
+  if(r.ok){
+    if(S.cfg && S.cfg['wx.rf_freq_mhz']) S.cfg['wx.rf_freq_mhz'].value=f.toFixed(2);
+    await scanTune(f);
+    toast('Рабочая частота сохранена: '+f.toFixed(2)+' МГц','ok');
+  } else toast('Запись конфига отклонена','err');
+}
+function scanPollStart(){
+  scanUiRunning(true);
+  scanPollStop(true);
+  S_scan.timer=setInterval(scanStatusOnce,2000);
+  scanStatusOnce();
+}
+function scanPollStop(keep){ if(S_scan.timer){ clearInterval(S_scan.timer); S_scan.timer=null; } }
+function scanUiRunning(running){
+  $('scanStartBtn').classList.toggle('hidden',running);
+  $('scanAbortBtn').classList.toggle('hidden',!running);
+  $('scanStep').disabled=running; $('scanDwell').disabled=running;
+}
+async function scanStatusOnce(){
+  var r;
+  try{ r=await api('/api/dev/radio?scan=status'); }catch(e){ return; }
+  if(!r.ok) return;
+  var st=r.data; S_scan.st=st;
+  if(st.state==='run'){
+    scanUiRunning(true);
+    $('scanProgress').textContent='Прогон: точка '+(st.idx+1)+'/'+st.count+
+      ' ('+st.points[st.idx].f.toFixed(2)+' МГц), осталось ~'+Math.ceil(st.eta_s/60)+' мин';
+    renderScan(st);
+  } else {
+    scanPollStop();
+    scanUiRunning(false);
+    if(st.state==='done'){
+      $('scanProgress').textContent='Анализ завершён. Частота возвращена на рабочую ('+st.home.toFixed(2)+' МГц).';
+      renderScan(st);
+      var row=$('scanApplyRow');
+      if(st.rec>=0){
+        row.classList.remove('hidden');
+        $('scanApplyBtn').textContent='💾 Применить '+st.points[st.rec].f.toFixed(2)+' МГц (рекомендация)';
+      } else {
+        row.classList.add('hidden');
+        $('scanProgress').textContent+=' Пакетов не поймано — рекомендации нет.';
+      }
+    }
+  }
+}
+function renderScan(st){
+  var pts=st.points; if(!pts || !pts.length) return;
+  // Шкала RSSI: -115..-50 дБм
+  var W=600,H=160,pad=28;
+  var f0=pts[0].f, f1=pts[pts.length-1].f;
+  function X(f){ return pad+(f-f0)/(f1-f0||1)*(W-2*pad); }
+  function Y(v){ v=Math.max(-115,Math.min(-50,v)); return H-pad-(v+115)/65*(H-2*pad); }
+  var s='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;background:var(--card);border-radius:10px;margin:8px 0">';
+  // шумовая дорожка (пунктир)
+  var d='',started=false;
+  for(var i=0;i<pts.length;i++){ if(!pts[i].noise) continue;
+    d+=(started?'L':'M')+X(pts[i].f).toFixed(1)+','+Y(pts[i].noise).toFixed(1); started=true; }
+  if(d) s+='<path d="'+d+'" fill="none" stroke="var(--error)" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  // максимум сигнала (только точки с пакетами)
+  d=''; started=false;
+  for(i=0;i<pts.length;i++){ if(!pts[i].pkt) continue;
+    d+=(started?'L':'M')+X(pts[i].f).toFixed(1)+','+Y(pts[i].rmax).toFixed(1); started=true; }
+  if(d) s+='<path d="'+d+'" fill="none" stroke="var(--info)" stroke-width="2.5"/>';
+  // маркер рабочей частоты
+  s+='<line x1="'+X(st.home).toFixed(1)+'" y1="6" x2="'+X(st.home).toFixed(1)+'" y2="'+(H-14)+'" stroke="var(--warning)" stroke-width="2" stroke-dasharray="4 3"/>';
+  // точки (клик — живая перестройка)
+  for(i=0;i<pts.length;i++){
+    var y=pts[i].pkt?Y(pts[i].rmax):Y(pts[i].noise||-110);
+    var col=i===st.rec?'var(--success)':(pts[i].pkt?'var(--info)':'var(--text2)');
+    s+='<circle cx="'+X(pts[i].f).toFixed(1)+'" cy="'+y.toFixed(1)+'" r="'+(i===st.rec?6:4)+
+       '" fill="'+col+'" style="cursor:pointer" onclick="scanTune('+pts[i].f+')">'+
+       '<title>'+pts[i].f.toFixed(2)+' МГц · пакетов '+pts[i].pkt+'</title></circle>';
+  }
+  s+='<text x="'+pad+'" y="'+(H-6)+'" font-size="10" fill="var(--text2)">'+f0.toFixed(2)+'</text>';
+  s+='<text x="'+(W-pad)+'" y="'+(H-6)+'" font-size="10" fill="var(--text2)" text-anchor="end">'+f1.toFixed(2)+' МГц</text>';
+  s+='</svg>';
+  $('scanChart').innerHTML=s;
+  $('scanLegend').style.display='';
+  // таблица
+  var h='<table style="width:100%;font-size:12px;border-collapse:collapse">'+
+    '<tr style="color:var(--text2)"><td>МГц</td><td>пакеты</td><td>RSSI max</td><td>RSSI avg</td><td>шум</td></tr>';
+  for(i=0;i<pts.length;i++){
+    var p=pts[i], rec=i===st.rec;
+    h+='<tr'+(rec?' style="font-weight:700;color:var(--success)"':'')+'><td>'+p.f.toFixed(2)+
+      (rec?' ◄':'')+'</td><td>'+p.pkt+'</td><td>'+(p.pkt?p.rmax+' дБм':'—')+'</td><td>'+
+      (p.pkt?p.ravg+' дБм':'—')+'</td><td>'+(p.noise?p.noise+' дБм':'—')+'</td></tr>';
+  }
+  $('scanTable').innerHTML=h+'</table>';
+}
+
+// ============================================================================
 // ТЕКУЩЕЕ СОСТОЯНИЕ (публичный /api/dev/weather, обновление 30 с)
 // ============================================================================
 function humState(h){
@@ -620,7 +985,7 @@ async function verifySavedToken(){
 function enterAdmin(){
   closeLogin();
   $('navCard').classList.remove('hidden');
-  showTab('charts');
+  showTab('net');   // правило 23: вход в настройки — с ядерной вкладки
   renderOta();
 }
 function leaveAdmin(){
@@ -645,11 +1010,11 @@ function showTab(t){
   var ps=document.querySelectorAll('.tab-pane');
   for(var j=0;j<ps.length;j++) ps[j].classList.toggle('hidden', ps[j].id!=='tab-'+t);
   if(t==='charts') loadCharts();
-  else if(t==='radio') renderRadio();
-  else if(t==='net') renderNet();
-  else if(t==='paz') renderPaz();
+  else if(t==='radio'){ renderRadio(); ensureConfig(); scanStatusOnce(); }
+  else if(t==='net'){ renderNet(); ensureConfig(); }
+  else if(t==='paz'){ renderPaz(); ensureConfig(); }
   else if(t==='sys') renderOta();
-  else if(t==='adm') renderTrace();
+  else if(t==='adm'){ renderTrace(); ensureConfig(); }
 }
 
 // ============================================================================

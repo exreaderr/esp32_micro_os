@@ -67,6 +67,11 @@ public:
         const Cc1101Driver& r = Cc1101Driver::getInstance();
         if (!r.isHealthy()) return HealthResult::critical("CC1101_LOST");
 
+        // W3.3: во время прогона сканера частота уходит с рабочей точки —
+        // тишина на чужих точках сетки ожидаема, сторож на паузе (0.5.0).
+        if (WeatherGateApp::getInstance().scanActive())
+            return HealthResult::ok();
+
         uint32_t silenceMs =
             cfgGetUInt("wx.silence_min", 15) * 60000UL;
         if (r.lastPacketMs() == 0) {
@@ -324,6 +329,61 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
     if (strcmp(pathTail, "radio") == 0) {
         // Статус приёмника CC1101 (диагностика эфира)
         Cc1101Driver& r = Cc1101Driver::getInstance();
+        // W3.3 (0.5.0): сканер частоты. status — публичный (как probe);
+        // start/abort/tune меняют эфир — только админ (паттерн dlog:
+        // неадмину 404 ядра, существование путей не раскрываем).
+        const char* scan = req.getArg("scan");
+        if (scan != nullptr && scan[0] != '\0') {
+            WeatherGateApp& app = WeatherGateApp::getInstance();
+            if (strcmp(scan, "status") == 0) {
+                app.scanStatusJson(responseBuf, bufSize);
+                statusCode = 200;
+                return true;
+            }
+            if (!HttpService::getInstance().isAdminToken(req.token))
+                return false;   // 404 ядра
+            if (strcmp(scan, "start") == 0) {
+                const char* st = req.getArg("step");
+                const char* dw = req.getArg("dwell");
+                uint16_t stepX100 = (st != nullptr)
+                    ? (uint16_t)(atof(st) * 100.0 + 0.5) : 2;
+                uint16_t dwellS = (dw != nullptr)
+                    ? (uint16_t)atoi(dw) : 60;
+                char err[48] = "";
+                if (app.scanStart(stepX100, dwellS, err, sizeof(err))) {
+                    snprintf(responseBuf, bufSize, "{\"ok\":1}");
+                } else {
+                    snprintf(responseBuf, bufSize,
+                             "{\"ok\":0,\"err\":\"%s\"}", err);
+                    statusCode = 409;
+                    return true;
+                }
+                statusCode = 200;
+                return true;
+            }
+            if (strcmp(scan, "abort") == 0) {
+                app.scanAbort();
+                snprintf(responseBuf, bufSize, "{\"ok\":1}");
+                statusCode = 200;
+                return true;
+            }
+            if (strcmp(scan, "tune") == 0) {
+                const char* fq = req.getArg("freq");
+                float mhz = (fq != nullptr) ? (float)atof(fq) : 0.0f;
+                if (app.scanTune(mhz)) {
+                    snprintf(responseBuf, bufSize,
+                             "{\"ok\":1,\"freq\":%.2f}", (double)r.freqMHz());
+                    statusCode = 200;
+                } else {
+                    snprintf(responseBuf, bufSize,
+                             "{\"ok\":0,\"err\":\"freq out of range or "
+                             "radio unhealthy\"}");
+                    statusCode = 400;
+                }
+                return true;
+            }
+            return false;   // неизвестный scan-аргумент -> 404 ядра
+        }
         // 5.8.4-pre3: probe-контракт бенча (Issue #1, 27.08).
         //   ?probe=1 -> rssi_now = readRssiNow()
         //   ?probe=2 -> ручной перевход RX (setFreqMHz текущей) + rssi_now
@@ -421,6 +481,14 @@ void WeatherGateApp::logDiag(const char* body) {
 }
 
 void WeatherGateApp::registerExtensions() {
+    // Правило 23 (задание ядерной ветки 04.09.2026, 0.5.1): группы
+    // «Планировщик», «Счётчики», «Звук» — сироты на этом профиле (ни
+    // одного SCHED_EVENT, CounterService не используется, DFPlayer/звука
+    // на шлюзе нет — все три сервиса регистрирует ядро безусловно).
+    // Поля и сервисы живут полной программой, /admin показывает всё —
+    // пометка лишь запрещает показ в профильных панелях (hg:1).
+    ConfigService::getInstance().setHiddenGroups("Планировщик,Счётчики,Звук");
+
     // Конфиг-схема профиля. Новые поля — ТОЛЬКО в конец списка (правило
     // JSON-конфига: сдвиг индексов ломает сохранённые значения).
     bool ok = ConfigService::getInstance().addFields("Датчик BME280", {
@@ -582,6 +650,8 @@ void WeatherGateApp::tick() {
         _seenPktSeq = r.packetSeq();
         onNewRadioPacket();
     }
+
+    scanTick();   // W3.3: машина сканера частоты (нет активного — пустой)
 
     // Давление — по своему ритму (раз в минуту), независимо от эфира
     const Bme280Driver& d = Bme280Driver::getInstance();
@@ -1027,4 +1097,159 @@ void WeatherGateApp::altitudeTask(void*) {
     }
     s_altTaskRunning = false;
     vTaskDelete(nullptr);
+}
+
+// ============================================================================
+// СКАНЕР ЧАСТОТЫ (W3.3, 0.5.0)
+// Машина состояний тикает из tick() (1 с): на точке сетки копим шум
+// (1 выборка readRssiNow в секунду) и пакеты (дельта packetSeq — серия из
+// 6 копий станции уже дедуплицирована драйвером). По окну dwell — перестройка
+// на следующую точку; по завершении — возврат на рабочую частоту с readback
+// (урок №23: подбор без readback — гадание). SPI — только из task-контекста
+// tick (как probe-обработчики), HTTP лишь стартует/читает/отменяет.
+// ============================================================================
+bool WeatherGateApp::scanStart(uint16_t stepX100, uint16_t dwellS,
+                               char* err, size_t errSize) {
+    Cc1101Driver& r = Cc1101Driver::getInstance();
+    if (_scan.active) {
+        snprintf(err, errSize, "scan already running");
+        return false;
+    }
+    if (!r.isHealthy()) {
+        snprintf(err, errSize, "cc1101 not healthy");
+        return false;
+    }
+    if (stepX100 < wgs::SCAN_STEP_MIN_X100) stepX100 = wgs::SCAN_STEP_MIN_X100;
+    if (stepX100 > wgs::SCAN_STEP_MAX_X100) stepX100 = wgs::SCAN_STEP_MAX_X100;
+    if (dwellS < wgs::SCAN_DWELL_MIN_S) dwellS = wgs::SCAN_DWELL_MIN_S;
+    if (dwellS > wgs::SCAN_DWELL_MAX_S) dwellS = wgs::SCAN_DWELL_MAX_S;
+
+    _scan.homeX100 = (uint32_t)(r.freqMHz() * 100.0f + 0.5f);
+    uint32_t freqs[wgs::SCAN_MAX_POINTS];
+    _scan.count = wgs::scanGrid(_scan.homeX100, stepX100, freqs,
+                                wgs::SCAN_MAX_POINTS);
+    for (uint8_t i = 0; i < _scan.count; i++) {
+        _scan.pts[i] = wgs::ScanPoint{};
+        _scan.pts[i].freqX100 = freqs[i];
+    }
+    _scan.stepX100 = stepX100;
+    _scan.dwellS   = dwellS;
+    _scan.idx      = 0;
+    _scan.done     = false;
+    _scan.lastPktSeq   = r.packetSeq();
+    _scan.pointStartMs = millis();
+    _scan.active = true;
+    r.setFreqMHz(_scan.pts[0].freqX100 / 100.0f);
+    log(LogLevel::Info,
+        "scan: старт, %u точек x %u с, дом %.2f МГц (сторож тишины на паузе)",
+        (unsigned)_scan.count, (unsigned)dwellS,
+        (double)(_scan.homeX100 / 100.0f));
+    return true;
+}
+
+void WeatherGateApp::scanAbort() {
+    if (!_scan.active) return;
+    Cc1101Driver& r = Cc1101Driver::getInstance();
+    _scan.active = false;
+    _scan.done   = false;
+    r.setFreqMHz(_scan.homeX100 / 100.0f);
+    log(LogLevel::Info, "scan: отменён оператором, возврат на %.2f МГц",
+        (double)r.freqMHz());   // readback из драйвера
+}
+
+bool WeatherGateApp::scanTune(float mhz) {
+    if (mhz < 914.0f || mhz > 916.0f) return false;   // границы схемы
+    Cc1101Driver& r = Cc1101Driver::getInstance();
+    if (!r.isHealthy()) return false;
+    if (!r.setFreqMHz(mhz)) return false;
+    log(LogLevel::Info, "scan: ручная перестройка -> %.2f МГц (readback)",
+        (double)r.freqMHz());
+    return true;
+}
+
+void WeatherGateApp::scanTick() {
+    if (!_scan.active) return;
+    Cc1101Driver& r = Cc1101Driver::getInstance();
+    if (!r.isHealthy()) {           // чип потерян посреди прогона — домой
+        _scan.active = false;
+        log(LogLevel::Warning, "scan: CC1101 потерян, прогон прерван");
+        return;
+    }
+    wgs::ScanPoint& p = _scan.pts[_scan.idx];
+
+    wgs::scanPointOnNoise(p, r.readRssiNow());          // 1 выборка/с
+
+    uint32_t seq = r.packetSeq();
+    if (seq != _scan.lastPktSeq) {
+        uint32_t d = seq - _scan.lastPktSeq;            // уникальные пакеты
+        _scan.lastPktSeq = seq;
+        wgs::scanPointOnPacket(p, (uint16_t)d, r.rssiDbm());
+    }
+
+    if (millis() - _scan.pointStartMs < (uint32_t)_scan.dwellS * 1000UL)
+        return;
+
+    // Точка закрыта: следующая или финиш
+    _scan.idx++;
+    if (_scan.idx >= _scan.count) {
+        _scan.active = false;
+        _scan.done   = true;
+        r.setFreqMHz(_scan.homeX100 / 100.0f);
+        int8_t rec = wgs::scanRecommend(_scan.pts, _scan.count,
+                                        _scan.homeX100);
+        if (rec >= 0)
+            log(LogLevel::Info,
+                "scan: финиш, возврат на %.2f МГц; рекомендация %.2f МГц "
+                "(rssi_max %d дБм, pkt %u)",
+                (double)r.freqMHz(),
+                (double)(_scan.pts[rec].freqX100 / 100.0f),
+                (int)_scan.pts[rec].rssiMax, (unsigned)_scan.pts[rec].pkt);
+        else
+            log(LogLevel::Info,
+                "scan: финиш, возврат на %.2f МГц; пакетов нет — "
+                "рекомендации нет", (double)r.freqMHz());
+        return;
+    }
+    _scan.lastPktSeq   = r.packetSeq();
+    _scan.pointStartMs = millis();
+    r.setFreqMHz(_scan.pts[_scan.idx].freqX100 / 100.0f);
+}
+
+size_t WeatherGateApp::scanStatusJson(char* buf, size_t bufSize) const {
+    const Cc1101Driver& r = Cc1101Driver::getInstance();
+    const char* state = _scan.active ? "run" : (_scan.done ? "done" : "idle");
+    int n = snprintf(buf, bufSize,
+             "{\"state\":\"%s\",\"idx\":%u,\"count\":%u,"
+             "\"home\":%.2f,\"freq\":%.2f,\"dwell_s\":%u,\"step\":%.2f,",
+             state, (unsigned)_scan.idx, (unsigned)_scan.count,
+             (double)(_scan.homeX100 / 100.0f), (double)r.freqMHz(),
+             (unsigned)_scan.dwellS, (double)(_scan.stepX100 / 100.0f));
+    if (n <= 0) return 0;
+    if (_scan.active) {
+        uint32_t per = (uint32_t)_scan.dwellS * 1000UL;
+        uint32_t left = per - (millis() - _scan.pointStartMs);
+        uint32_t eta = (left + (_scan.count - _scan.idx - 1) * per) / 1000UL;
+        n += snprintf(buf + n, bufSize - (size_t)n, "\"eta_s\":%lu,",
+                      (unsigned long)eta);
+    }
+    int8_t rec = (_scan.done || _scan.active)
+               ? wgs::scanRecommend(_scan.pts, _scan.count, _scan.homeX100)
+               : -1;
+    n += snprintf(buf + n, bufSize - (size_t)n, "\"rec\":%d,\"points\":[",
+                  (int)rec);
+    uint8_t upto = _scan.active ? _scan.idx + 1
+                                : (_scan.done ? _scan.count : 0);
+    for (uint8_t i = 0; i < upto && n > 0; i++) {
+        const wgs::ScanPoint& p = _scan.pts[i];
+        n += snprintf(buf + n, bufSize - (size_t)n,
+                      "%s{\"f\":%.2f,\"pkt\":%u,\"rmax\":%d,"
+                      "\"ravg\":%d,\"noise\":%d}",
+                      i ? "," : "",
+                      (double)(p.freqX100 / 100.0f), (unsigned)p.pkt,
+                      p.pkt ? (int)p.rssiMax : 0,
+                      (int)p.rssiAvg(), (int)p.noiseAvg());
+    }
+    if (n > 0)
+        n += snprintf(buf + n, bufSize - (size_t)n, "]}");
+    return (n > 0) ? (size_t)n : 0;
 }

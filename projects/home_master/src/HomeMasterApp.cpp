@@ -38,6 +38,13 @@ const char* HomeMasterApp::modeStr() const {
 void HomeMasterApp::registerExtensions() {
     registerHomeMasterConfig();                       // поля master.*, sd.*
 
+    // Правило 23 (решение владельца 02.09.2026): группы «Планировщик»,
+    // «Счётчики» и «Звук» — сироты на этом профиле (ни одного SCHED_EVENT,
+    // CounterService не используется, DFPlayer на плате мастера нет).
+    // Поля и сервисы живут полной программой — в закрытой зоне панели
+    // просто не отображаются (резервный доступ — /admin).
+    ConfigService::getInstance().setHiddenGroups("Планировщик,Счётчики,Звук");
+
     static HomeMasterUi ui;                           // веб-лицо мастера
     HttpService::getInstance().setUiProvider(&ui);
 
