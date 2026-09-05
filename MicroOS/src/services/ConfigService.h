@@ -140,6 +140,21 @@ public:
     /// {"exists":1,"unix":U,"size":N,"fw":"x.y.z"}.
     size_t backupInfoJson(char* buf, size_t bufSize) const;
 
+    // --- ЭКСПОРТ/ИМПОРТ СНИМКА ПО LAN (5.8.5, M3.3 BackupAggregator) --------
+    /// Полный снимок (ВКЛЮЧАЯ секреты) в buf — для выдачи наружу по
+    /// админ-авторизованному /api/config/export. Решение владельца
+    /// 04.09.2026: контур проводной/доверенный, флэш и так хранит секреты
+    /// открыто — SD мастера = второй экземпляр того же класса хранения,
+    /// нового класса уязвимости не создаётся. Точку закрывает requireAdmin.
+    size_t exportSnapshotJson(char* buf, size_t bufSize) const {
+        return snapshotJson(buf, bufSize, true);
+    }
+    /// Применить снимок из JSON-строки (тело /api/config/import).
+    /// Тот же парсер и семантика, что у restoreFromNvs: >=0 — применено
+    /// полей (и сразу сохранено атомарно), 0 — blob чужой/битый
+    /// (НИЧЕГО не изменено). Ребут — забота вызывающего (HttpService).
+    int    applySnapshotJson(const char* json);
+
 private:
     ConfigService() = default;
 

@@ -372,25 +372,15 @@ bool ConfigService::backupToNvs(uint32_t unixNow, const char* fwVer,
     return true;
 }
 
-int ConfigService::restoreFromNvs() {
-    StorageService& fs = StorageService::getInstance();
-    if (!fs.nvsExists(CFG_NVS_NS, CFG_BAK_KEY)) return -1;
-
-    uint8_t* buf = (uint8_t*)malloc(CFG_SNAPSHOT_CAP + 1);
-    if (buf == nullptr) {
-        log(LogLevel::Error, "config restore: no heap for snapshot");
-        return -1;
-    }
-    size_t n = fs.nvsRestore(CFG_NVS_NS, CFG_BAK_KEY, buf, CFG_SNAPSHOT_CAP);
-    if (n == 0) { free(buf); return -1; }
-    buf[n] = '\0';
-
-    // Тот же ручной парсер, что в loadFromJson: битый/чужой blob просто
-    // не даст совпадений — applied останется нулём и ничего не изменится.
-    // Неизвестные текущей схеме ключи (бэкап с более новой прошивки)
-    // пропускаются — как и при загрузке файла.
+// Общий парсер-применятор снимка (5.8.5: вынесен из restoreFromNvs —
+// та же механика нужна /api/config/import для M3.3 BackupAggregator).
+// Ручной парсер, как в loadFromJson: битый/чужой blob просто не даст
+// совпадений — applied останется нулём и ничего не изменится.
+// Неизвестные текущей схеме ключи (снимок с другой прошивки/профиля)
+// пропускаются — как и при загрузке файла.
+int ConfigService::applySnapshotJson(const char* json) {
     uint8_t applied = 0;
-    const char* p = (const char*)buf;
+    const char* p = json;
     while ((p = strchr(p, '"')) != nullptr) {
         p++;
         const char* keyEnd = strchr(p, '"');
@@ -428,19 +418,39 @@ int ConfigService::restoreFromNvs() {
     }
 
     if (applied == 0) {
-        free(buf);
-        log(LogLevel::Warning, "config restore: blob not recognized (0 fields)");
+        log(LogLevel::Warning, "config apply: blob not recognized (0 fields)");
         return 0;
     }
-    // Буфер разбора больше не нужен — освобождаем ДО saveToJson: пик
-    // транзиентной кучи остаётся одним снимком, а не двумя.
-    free(buf);
     // НЕ scheduleSave: ребут запланирован через 1.5 с, дебаунс 1 с — гонка.
     // Пишем немедленно и атомарно.
     saveToJson();
     _dirty = false;
-    log(LogLevel::Info, "config restored from NVS: %u fields", applied);
     return (int)applied;
+}
+
+int ConfigService::restoreFromNvs() {
+    StorageService& fs = StorageService::getInstance();
+    if (!fs.nvsExists(CFG_NVS_NS, CFG_BAK_KEY)) return -1;
+
+    uint8_t* buf = (uint8_t*)malloc(CFG_SNAPSHOT_CAP + 1);
+    if (buf == nullptr) {
+        log(LogLevel::Error, "config restore: no heap for snapshot");
+        return -1;
+    }
+    size_t n = fs.nvsRestore(CFG_NVS_NS, CFG_BAK_KEY, buf, CFG_SNAPSHOT_CAP);
+    if (n == 0) { free(buf); return -1; }
+    buf[n] = '\0';
+
+    // applySnapshotJson сам делает saveToJson (тот аллоцирует свой буфер),
+    // поэтому пик транзиентной кучи — два снимка на ~10 мс. Принято:
+    // куча держит 80+ КБ, а альтернатива (освободить buf до apply) —
+    // невозможна: парсинг идёт по живому буферу, копий apply не делает.
+    int applied = applySnapshotJson((const char*)buf);
+    free(buf);
+    if (applied > 0) {
+        log(LogLevel::Info, "config restored from NVS: %u fields", applied);
+    }
+    return applied;
 }
 
 size_t ConfigService::backupInfoJson(char* buf, size_t bufSize) const {

@@ -37,7 +37,7 @@ public:
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "JournalService"; }
     const char* getVersion() const override { return "0.3.0"; }   // M3.1 стержень, M3.2 вьюер, 5.8.0 антифлуд+скачивание
-    ModuleId getModuleId() const override { return 0x1104; }   // hm: 0x1101=Sd, 0x1102=App, 0x1103=Broker
+    ModuleId getModuleId() const override { return 0x1106; }   // hm: 0x1101=Sd, 0x1102=App, 0x1103=Broker, 0x1104=Bridge, 0x1105=WxMirror; 04.09.2026: 0x1104→0x1106 (был дубль с BridgeService)
     void init() override;
     void start() override;
     void stop() override;

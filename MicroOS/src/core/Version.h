@@ -16,7 +16,7 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.8.4"
+#define MICROOS_VERSION_STR "5.8.5"   // 5.8.5: /api/config/export|import (полный снимок под админом) для M3.3 BackupAggregator
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 

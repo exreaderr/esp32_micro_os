@@ -106,6 +106,8 @@ void HttpService::registerRoutes() {
     _server.on("/api/config/backup",  HTTP_GET,  [this]() { handleApiConfigBackupInfo(); });
     _server.on("/api/config/backup",  HTTP_POST, [this]() { handleApiConfigBackup(); });
     _server.on("/api/config/restore", HTTP_POST, [this]() { handleApiConfigRestore(); });
+    _server.on("/api/config/export",  HTTP_GET,  [this]() { handleApiConfigExport(); });
+    _server.on("/api/config/import",  HTTP_POST, [this]() { handleApiConfigImport(); });
     _server.on("/api/logs",       HTTP_GET,  [this]() { handleApiLogs(); });
     _server.on("/api/audit",      HTTP_GET,  [this]() { handleApiAudit(); });
     _server.on("/api/reboot",     HTTP_POST, [this]() { handleApiReboot(); });
@@ -433,6 +435,40 @@ void HttpService::handleApiConfigRestore() {
     }
     if (applied == 0) {
         sendJson(422, "{\"error\":\"backup_corrupt\"}");
+        return;
+    }
+    snprintf(jsonBuf(), jsonBufSize(),
+             "{\"ok\":1,\"applied\":%d,\"reboot_in_ms\":1500}", applied);
+    sendJson(200, jsonBuf());
+    _restartAtMs = millis() + HTTP_RESTART_DELAY_MS;
+}
+
+// ============================================================================
+// ЭКСПОРТ/ИМПОРТ ПОЛНОГО СНИМКА ПО LAN (5.8.5, M3.3 BackupAggregator)
+// Секреты ВКЛЮЧАЮТСЯ — решение владельца 04.09.2026 (контур проводной/
+// доверенный; флэш и так хранит секреты открыто, SD мастера = тот же
+// класс хранения). Точки закрыты requireAdmin — как весь закрытый контур.
+// ============================================================================
+void HttpService::handleApiConfigExport() {
+    if (!requireAdmin()) return;
+    ConfigService::getInstance().exportSnapshotJson(jsonBuf(), jsonBufSize());
+    sendJson(200, jsonBuf());
+}
+
+void HttpService::handleApiConfigImport() {
+    if (!requireAdmin()) return;
+    // БЕЗ подтверждений и предупреждений — осознанное действие оператора
+    // (зеркало /api/config/restore; инициатор — мастер или панель).
+    // Тело запроса (arg("plain")) — сам снимок; WebServer уже собрал его
+    // целиком в кучу (снимок ~8 КБ при HTTP_JSON_BUF 24 КБ — лимиты сходятся).
+    String body = _server.arg("plain");
+    if (body.length() == 0) {
+        sendJson(400, "{\"error\":\"empty_body\"}");
+        return;
+    }
+    int applied = ConfigService::getInstance().applySnapshotJson(body.c_str());
+    if (applied == 0) {
+        sendJson(422, "{\"error\":\"snapshot_corrupt\"}");
         return;
     }
     snprintf(jsonBuf(), jsonBufSize(),

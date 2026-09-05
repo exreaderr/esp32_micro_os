@@ -7,6 +7,7 @@
 #include "BrokerService.h"
 #include "BridgeService.h"
 #include "JournalService.h"
+#include "BackupService.h"
 #include "WeatherMirror.h"
 #include "HomeMasterApp.h"
 #include <core/ResourceManager.h>
@@ -54,5 +55,7 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     // M3.1: журнал — слушатель брокера (multi-hook), потребитель SD.
     // После моста: оба на fireHooks, порядок внутри слотов не важен.
     k.registerModule(&JournalService::getInstance(), 9, 1);
+    // M3.3: бэкапы парка — слушатель брокера (multi-hook), потребитель SD.
+    k.registerModule(&BackupService::getInstance(),  9, 2);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }

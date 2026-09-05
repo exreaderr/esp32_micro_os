@@ -46,7 +46,7 @@ public:
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherMirror"; }
     const char* getVersion() const override { return "0.1.0-w4"; }
-    ModuleId getModuleId() const override { return 0x1105; }   // hm: 0x1101=Sd, 0x1102=App, 0x1103=Broker, 0x1104=Bridge/Journal (дубль — отдельным вопросом)
+    ModuleId getModuleId() const override { return 0x1105; }   // hm: 0x1101=Sd, 0x1102=App, 0x1103=Broker, 0x1104=Bridge, 0x1106=Journal; дубль 0x1104 закрыт 04.09.2026
     void init() override;
     void start() override;
     void stop() override;

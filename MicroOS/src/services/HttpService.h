@@ -116,6 +116,8 @@ private:
     void handleApiConfigBackupInfo();  // admin GET: есть ли бэкап в NVS
     void handleApiConfigBackup();      // admin POST: снимок всех полей -> NVS
     void handleApiConfigRestore();     // admin POST: NVS -> поля + ребут
+    void handleApiConfigExport();      // admin GET: ПОЛНЫЙ снимок (5.8.5, M3.3)
+    void handleApiConfigImport();      // admin POST: снимок -> поля + ребут
     void handleApiLogs();              // admin: tail лога
     void handleApiAudit();             // admin: выгрузка /audit.log
     void handleApiReboot();            // admin

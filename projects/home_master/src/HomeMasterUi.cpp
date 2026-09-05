@@ -7,6 +7,7 @@
 #include "BrokerService.h"
 #include "BridgeService.h"
 #include "JournalService.h"
+#include "BackupService.h"
 #include <services/HttpService.h>
 #include <services/ConfigService.h>
 #include <services/MqttTransport.h>
@@ -100,6 +101,39 @@ bool HomeMasterUi::handleApi(const char* pathTail, const ShUiRequest& req,
     // --- 5.8.0: «Скачать журнал» — сегмент честным файлом (admin, потоково)
     if (strcmp(pathTail, "hm/journal/dl") == 0) {
         return apiJournalDl(req, responseBuf, bufSize, statusCode);
+    }
+    // --- M3.3: бэкапы парка (BackupService; admin уже проверен ядром) ---
+    if (strcmp(pathTail, "hm/backup/status") == 0) {
+        statusCode = 200;
+        BackupService::getInstance().apiStatus(responseBuf, bufSize);
+        return true;
+    }
+    if (strcmp(pathTail, "hm/backup/files") == 0) {
+        statusCode = 200;
+        char ip[20] = "";
+        const char* a = req.getArg("ip");
+        if (a != nullptr) { strncpy(ip, a, sizeof(ip) - 1); ip[sizeof(ip)-1] = '\0'; }
+        BackupService::getInstance().apiFiles(ip, responseBuf, bufSize);
+        return true;
+    }
+    if (strcmp(pathTail, "hm/backup/snapshot") == 0) {
+        statusCode = 200;
+        char ip[20] = "all";
+        const char* a = req.getArg("ip");
+        if (a != nullptr) { strncpy(ip, a, sizeof(ip) - 1); ip[sizeof(ip)-1] = '\0'; }
+        BackupService::getInstance().apiSnapshot(ip, responseBuf, bufSize);
+        return true;
+    }
+    if (strcmp(pathTail, "hm/backup/restore") == 0) {
+        statusCode = 200;
+        // Два аргумента — копии ДО следующего getArg (указатель кольцевой)
+        char ip[20] = "", file[44] = "";
+        const char* a = req.getArg("ip");
+        if (a != nullptr) { strncpy(ip, a, sizeof(ip) - 1); ip[sizeof(ip)-1] = '\0'; }
+        a = req.getArg("file");
+        if (a != nullptr) { strncpy(file, a, sizeof(file) - 1); file[sizeof(file)-1] = '\0'; }
+        BackupService::getInstance().apiRestore(ip, file, responseBuf, bufSize);
+        return true;
     }
     return false;   // 404 — нет такого профильного пути
 }

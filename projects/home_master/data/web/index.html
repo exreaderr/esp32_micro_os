@@ -132,6 +132,7 @@ footer b{color:var(--text)}
     <div class="btab on" data-t="status" onclick="showTab('status')"><span class="fav">📊</span>Статус</div>
     <div class="btab" data-t="mqtt" onclick="showTab('mqtt')"><span class="fav">📡</span>MQTT</div>
     <div class="btab" data-t="jrn" onclick="showTab('jrn')"><span class="fav">📒</span>Журнал</div>
+    <div class="btab" data-t="bk" onclick="showTab('bk')"><span class="fav">💾</span>Бэкапы</div>
     <div class="btab" data-t="cfg" onclick="showTab('cfg')"><span class="fav">⚙️</span>Настройки</div>
   </div>
 
@@ -256,6 +257,19 @@ footer b{color:var(--text)}
     </div>
   </section>
 
+  <!-- ================= БЭКАПЫ (M3.3) ================= -->
+  <section id="t-bk" class="hidden">
+    <div class="card">
+      <h2>Бэкапы парка (SD) <button style="float:right" onclick="needAuth(bkLoad)">Обновить</button></h2>
+      <div class="note">Мастер снимает ПОЛНЫЕ снимки конфигов устройств (включая секреты — решение владельца 04.09.2026)
+      на SD: расписание <code>bk.period_days</code> (по умолчанию раз в неделю) + внепланово через ~5 минут после смены конфига.
+      «Развернуть» отправляет снимок на устройство — оно применяет его и <b>перезагружается</b>.
+      Настройки — группа «Бэкапы» во вкладке ⚙️ Настройки.</div>
+      <div id="bkSummary" class="note" style="margin-top:8px"></div>
+    </div>
+    <div id="bkHosts"></div>
+  </section>
+
   <!-- ================= НАСТРОЙКИ (прочие группы) ================= -->
   <section id="t-cfg" class="hidden">
     <div class="card">
@@ -367,7 +381,7 @@ let T=localStorage.getItem('mos_t')||'';
 const SD_RU={mounted:['смонтирована','ok'],no_card:['нет карты','warn'],failed:['сбой монтирования','err'],disabled:['выключена в конфиге','mut']};
 const DEGR=['FULL','LOCAL_NET','AUTONOMOUS'];
 const CHK_ST=[['ok','Ok'],['warn','Warning'],['err','Critical']];
-const TABS=['net','paz','sys','adm','status','mqtt','jrn','cfg'];
+const TABS=['net','paz','sys','adm','status','mqtt','jrn','bk','cfg'];
 // Распределение конфиг-групп по вкладкам (правило 23): общие группы ядра —
 // в общие вкладки (Сеть/Система/Безопасность→Админ), MQTT отделён от сети
 // (специфика мастера), всё нераспознанное падает в «Настройки» —
@@ -448,6 +462,7 @@ function openTab(t,force){
   else if(t==='net'){needAuth(()=>loadCfg(),force);}
   else if(t==='cfg'){needAuth(()=>loadCfg(),force);}
   else if(t==='paz'){needAuth(()=>loadPaz());}
+  else if(t==='bk'){needAuth(()=>bkLoad());}
   else if(t==='sys'){needAuth(()=>{$('auditLink').href='/api/audit?token='+encodeURIComponent(T);renderOta();});}
   // status — публичный, обновляется глобальным таймером шапки
 }
@@ -891,6 +906,59 @@ function otaUpload(input,type){
   if(T)xhr.setRequestHeader('X-Auth-Token',T);
   xhr.send(fd);
 }
+// ---------- бэкапы парка (M3.3) ----------
+// Статусы и списки снимков — с мастера; развёртывание уходит на устройство
+// (оно применяет снимок и перезагружается — панель честно предупреждает).
+async function bkLoad(){
+  try{
+    const j=await (await api('GET','/api/dev/hm/backup/status')).json();
+    const s=$('bkSummary');
+    s.innerHTML='Съём: <b>'+(j.enabled?'включён':'выключен')+'</b>'
+      +(j.running?' · <span class="badge ok">цикл идёт</span>':'')
+      +(j.nextPlanIn>=0?' · плановый через '+fmtUp(j.nextPlanIn):'');
+    const box=$('bkHosts');box.innerHTML='';
+    (j.hosts||[]).forEach(h=>{
+      const c=document.createElement('div');c.className='card';
+      const badge=h.blocked?'<span class="badge err">ждёт пароль</span>'
+        :(h.err?'<span class="badge warn">'+h.err+'</span>'
+        :(h.lastOk?'<span class="badge ok">ok</span>':'<span class="badge">ещё не было</span>'));
+      c.innerHTML='<h2>'+h.ip+' '+badge
+        +'<button style="float:right" onclick="bkSnap(\''+h.ip+'\')">Снять сейчас</button></h2>'
+        +'<div class="row"><span class="k">Последний снимок</span><span>'
+        +(h.lastOk?new Date(h.lastOk*1000).toLocaleString('ru-RU'):'—')+'</span></div>'
+        +'<div class="row"><span class="k">Снимки на SD</span><span><button onclick="bkFiles(\''+h.ip+'\',this)">Показать список</button></span></div>'
+        +'<div class="bk-files" id="bkF-'+h.ip.replace(/\./g,'_')+'"></div>';
+      box.appendChild(c);
+    });
+    if(!(j.hosts||[]).length)box.innerHTML='<div class="card k">Список bk.hosts пуст.</div>';
+  }catch(e){}
+}
+async function bkSnap(ip){
+  try{await api('POST','/api/dev/hm/backup/snapshot?ip='+encodeURIComponent(ip));setTimeout(bkLoad,1500);}catch(e){}
+}
+async function bkFiles(ip,btn){
+  const id='bkF-'+ip.replace(/\./g,'_');const box=$(id);
+  if(box.dataset.open){box.innerHTML='';delete box.dataset.open;btn.textContent='Показать список';return;}
+  try{
+    const j=await (await api('GET','/api/dev/hm/backup/files?ip='+encodeURIComponent(ip))).json();
+    box.dataset.open='1';btn.textContent='Скрыть список';
+    if(j.err){box.innerHTML='<div class="note">'+j.err+'</div>';return;}
+    if(!(j.files||[]).length){box.innerHTML='<div class="note">снимков нет</div>';return;}
+    box.innerHTML=j.files.map(f=>
+      '<div class="row"><span class="k">'+f+'</span><span>'
+      +'<button onclick="bkRestore(\''+ip+'\',\''+f+'\')">Развернуть</button></span></div>'
+    ).join('');
+  }catch(e){}
+}
+function bkRestore(ip,f){
+  if(!confirm('Развернуть снимок '+f+' на '+ip+'?\n\nУстройство применит конфиг (включая пароли) и ПЕРЕЗАГРУЗИТСЯ.'))return;
+  api('POST','/api/dev/hm/backup/restore?ip='+encodeURIComponent(ip)+'&file='+encodeURIComponent(f))
+    .then(r=>r.json()).then(j=>{
+      alert(j.ok?'Снимок отправлен, устройство перезагружается.':'Не удалось: '+(j.err||'?'));
+      bkLoad();
+    }).catch(()=>{});
+}
+
 async function loadLogs(){
   try{
     const t=await (await api('GET','/api/logs')).text();

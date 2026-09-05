@@ -509,6 +509,9 @@ bool MqttTransport::cmdRateOk() {
 // ============================================================================
 const char* MqttTransport::mirrorName(int32_t eventId) {
     switch (eventId) {
+        // 5.8.5: CFG_CHANGED — триггер внепланового снимка BackupAggregator
+        // (M3.3) на мастере; payload = ключ изменённого поля.
+        case CFG_EVENT_CHANGED:          return "CFG_CHANGED";
         case ACCESS_EVENT_GRANTED:       return "ACCESS_GRANTED";
         case ACCESS_EVENT_DENIED:        return "ACCESS_DENIED";
         case ACCESS_EVENT_LOCKED:        return "LOCKED";
