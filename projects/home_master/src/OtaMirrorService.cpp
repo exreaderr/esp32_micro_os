@@ -364,6 +364,8 @@ bool OtaMirrorService::downloadBin(const char* host, const char* url,
     char dir[64], tmp[80];
     snprintf(dir, sizeof(dir), "/ota/%s", host);
     snprintf(tmp, sizeof(tmp), "%s/%s.tmp", dir, localName);
+    // Урок 0.6.1-fix: SD.mkdir НЕ рекурсивен — сначала родитель /ota.
+    if (!sd->exists("/ota") && !sd->mkdir("/ota")) { snprintf(err, errCap, "sd_mkdir"); return false; }
     if (!sd->exists(dir) && !sd->mkdir(dir)) { snprintf(err, errCap, "sd_mkdir"); return false; }
     sd->remove(tmp);   // остатки прошлого обрыва
 

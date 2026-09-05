@@ -16,7 +16,7 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.8.5"   // 5.8.5: /api/config/export|import (полный снимок под админом) для M3.3 BackupAggregator
+#define MICROOS_VERSION_STR "5.8.6"   // 5.8.6: KERNEL_MAX_MODULES 24→32 (мастер 0.6.1 уперся, HomeMasterApp отвергался); 5.8.5: export/import
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 

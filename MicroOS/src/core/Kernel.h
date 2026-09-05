@@ -38,7 +38,10 @@
 // ============================================================================
 // БЮДЖЕТЫ ЯДРА
 // ============================================================================
-constexpr uint8_t  KERNEL_MAX_MODULES    = 24;   // модулей в системе
+constexpr uint8_t  KERNEL_MAX_MODULES    = 32;   // модулей в системе
+   // 5.8.6: было 24 — мастер 0.6.1 уперся (HomeMasterApp отвергнут: Sd,
+   // Broker, Bridge, Journal, Backup, OtaMirror + ядерные). Слот лёгкий
+   // (указатель + служебные байты), +8 слотов ≈ сотня байт BSS — дёшево.
 constexpr uint32_t KERNEL_TICK_BUDGET_MS = 50;   // бюджет tick() модуля (B2)
 constexpr uint32_t KERNEL_EVENT_BUDGET_MS= 50;   // бюджет onEvent() модуля (B2)
 constexpr uint32_t KERNEL_STABLE_MS      = 60000;// "стабильная работа" для
