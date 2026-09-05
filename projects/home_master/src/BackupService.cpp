@@ -143,6 +143,13 @@ void BackupService::scheduleCycle(uint32_t delayMs, int8_t only) {
 }
 
 void BackupService::tick() {
+    // 0.6.2, bk.self: отложенный ребут после восстановления СЕБЯ —
+    // срабатывает даже при bk.enabled=false (ответ панели уже ушёл).
+    if (_selfRebootAtMs != 0 && (int32_t)(millis() - _selfRebootAtMs) >= 0) {
+        log(LogLevel::Info, "bk: self-restore применён — перезагрузка");
+        delay(50);
+        ESP.restart();
+    }
     if (!_enabled) return;
     uint32_t now = millis();
 
@@ -178,6 +185,39 @@ void BackupService::tick() {
     }
 }
 
+// ============================================================================
+// 0.6.2, bk.self: снимок САМОГО мастера — локально (exportSnapshotJson),
+// без HTTP и пароля. Те же tmp+rename и ротация, что у парка.
+// ============================================================================
+void BackupService::stepSelf(HostState& h) {
+    if (SdService::getInstance().fs() == nullptr) {
+        strncpy(h.lastErr, "no_sd", sizeof(h.lastErr) - 1);
+        h.lastErr[sizeof(h.lastErr) - 1] = '\0';
+        return;
+    }
+    // Буфер из кучи на время операции (урок saveToJson: стек loop 8 КБ).
+    char* snap = (char*)malloc(BK_SNAPSHOT_CAP);
+    if (snap == nullptr) {
+        strncpy(h.lastErr, "no_heap", sizeof(h.lastErr) - 1);
+        h.lastErr[sizeof(h.lastErr) - 1] = '\0';
+        return;
+    }
+    size_t len = ConfigService::getInstance().exportSnapshotJson(snap, BK_SNAPSHOT_CAP);
+    char err[24] = "export";
+    bool ok = (len > 0) && storeSnapshot("self", snap, len, err, sizeof(err));
+    free(snap);
+    if (ok) {
+        h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
+        h.lastErr[0] = '\0';
+        rotate("self", (uint8_t)cfgGetInt("bk.keep", 10));
+        log(LogLevel::Info, "bk: self снимок сохранён (%u Б)", (unsigned)len);
+    } else {
+        strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
+        h.lastErr[sizeof(h.lastErr) - 1] = '\0';
+        log(LogLevel::Warning, "bk: self снимок не удался (%s)", err);
+    }
+}
+
 void BackupService::runCycleStep() {
     if (_cycleIdx < 0) return;
     if (_cycleIdx >= _cycleEnd || _cycleIdx >= (int8_t)_hostCount) {
@@ -191,6 +231,7 @@ void BackupService::runCycleStep() {
     _nextStepAtMs = millis() + CYCLE_GAP_MS;
 
     if (h.ip[0] == '\0') return;
+    if (strcmp(h.ip, "self") == 0) { stepSelf(h); return; }
     if (h.blocked) {
         log(LogLevel::Warning, "bk: %s пропущен (ждёт смены bk.admin_pin)", h.ip);
         return;
@@ -558,6 +599,44 @@ size_t BackupService::apiSnapshot(const char* ip, char* buf, size_t bufSize) {
 size_t BackupService::apiRestore(const char* ip, const char* file,
                                  char* buf, size_t bufSize) {
     char err[24] = "";
+    // 0.6.2, bk.self: восстановление САМОГО мастера — локально:
+    // читаем снимок с SD, applySnapshotJson, отложенный ребут.
+    // Ответ несёт reboot_in_ms — панель покажет оверлей перезагрузки.
+    if (strcmp(ip, "self") == 0) {
+        if (strchr(file, '/') != nullptr || strstr(file, "..") != nullptr) {
+            return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"name\"}");
+        }
+        fs::FS* sd = SdService::getInstance().fs();
+        if (sd == nullptr) {
+            return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"no_sd\"}");
+        }
+        char path[64];
+        snprintf(path, sizeof(path), "/backup/self/%s", file);
+        File f = sd->open(path, FILE_READ);
+        if (!f) {
+            return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"no_file\"}");
+        }
+        char* snap = (char*)malloc(BK_SNAPSHOT_CAP);
+        if (snap == nullptr) {
+            f.close();
+            return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"no_heap\"}");
+        }
+        size_t len = f.read((uint8_t*)snap, BK_SNAPSHOT_CAP - 1);
+        f.close();
+        snap[len] = '\0';
+        int applied = ConfigService::getInstance().applySnapshotJson(snap);
+        free(snap);
+        if (applied == 0) {
+            return (size_t)snprintf(buf, bufSize,
+                                    "{\"ok\":0,\"err\":\"snapshot_corrupt\"}");
+        }
+        _selfRebootAtMs = millis() + 1500;
+        log(LogLevel::Info, "bk: self-restore из %s (полей %d), ребут через 1.5 с",
+            file, applied);
+        return (size_t)snprintf(buf, bufSize,
+                                "{\"ok\":1,\"applied\":%d,\"reboot_in_ms\":1500}",
+                                applied);
+    }
     if (pushSnapshot(ip, file, err, sizeof(err))) {
         return (size_t)snprintf(buf, bufSize, "{\"ok\":1}");
     }

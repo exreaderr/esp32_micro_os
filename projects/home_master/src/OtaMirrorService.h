@@ -93,7 +93,8 @@ private:
     void     reloadHosts();              // otam.hosts -> _hosts[] (стейты сохраняются)
     int      findHost(const char* host) const;
     void     scheduleCycle(uint32_t delayMs, int8_t only = -1);
-    void     runCycleStep();             // конечный автомат: один хост за шаг
+    void     runCycleStep();             // конечный автомат: одна ФАЗА хоста за тик
+    void     finishHost(HostState& h, const char* err);   // итог хоста + следующий
 
     // --- одна итерация по хосту -------------------------------------------
     bool     fetchManifest(const char* host, char* buf, size_t cap,
@@ -125,6 +126,15 @@ private:
     int8_t    _cycleIdx     = -1;
     int8_t    _cycleEnd     = -1;
     uint32_t  _nextStepAtMs = 0;
+    // 0.6.1-fix (приёмка 05.09): шаг хоста разбит на ФАЗЫ по одной за тик
+    // (0=манифест, 1=fw, 2=fs, 3=коммит-манифеста). Причина: WDT loopTask
+    // 10 с, а сумма «манифест + 2 скачивания» в одном тике её превышала;
+    // хуже того, цикл скачивания по connected() ВИС на keep-alive HA —
+    // сторож перезагружал кристалл каждые ~2 минуты (урок: ручной цикл
+    // чтения HTTP выходит по Content-Length/закрытию, не по connected()).
+    uint8_t   _phase        = 0;
+    char      _manifest[MANIFEST_CAP];   // манифест текущего хоста (между фазами)
+    char      _pVer[20], _pFwUrl[160], _pFsUrl[160], _pFwMd5[40], _pFsMd5[40];
     uint32_t  _nextPollAtMs = 0;         // 0 = назначить FIRST_POLL_MS при 1-м tick
     uint32_t  _lastRunUnix  = 0;
 

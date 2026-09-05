@@ -180,6 +180,7 @@ void OtaMirrorService::scheduleCycle(uint32_t delayMs, int8_t only) {
 void OtaMirrorService::runCycleStep() {
     if (_cycleIdx < 0 || _cycleIdx >= _cycleEnd) {
         _cycleIdx = -1;
+        _phase = 0;
         uint32_t h = cfgGetUInt("otam.period_h", 6);
         if (h < 1) h = 1;
         if (h > 168) h = 168;
@@ -190,100 +191,108 @@ void OtaMirrorService::runCycleStep() {
     }
     HostState& h = _hosts[_cycleIdx];
     char err[24] = "";
-    // static, не стек: цикл loop-задачи всего 8 КБ, а манифесты крупные
-    // (однопоточный tick — гонок нет).
-    static char manifest[MANIFEST_CAP];
 
-    fs::FS* sd = SdService::getInstance().fs();
-    if (sd == nullptr) {
-        snprintf(err, sizeof(err), "no_sd");
-    } else if (!fetchManifest(h.host, manifest, sizeof(manifest), err, sizeof(err))) {
-        // err заполнен внутри
-    } else {
-        char ver[20] = "", fwUrl[160] = "", fsUrl[160] = "";
-        char fwMd5[40] = "", fsMd5[40] = "";
-        omJsonStr(manifest, "\"version\"", ver, sizeof(ver));
-        omJsonStr(manifest, "\"fw_url\"", fwUrl, sizeof(fwUrl));
-        omJsonStr(manifest, "\"fs_url\"", fsUrl, sizeof(fsUrl));
+    // Одна ФАЗА за тик (см. .h): каждая фаза ограничена по времени и укладывается
+    // в бюджет WDT loopTask (10 с) с запасом; между фазами пауза CYCLE_GAP_MS.
+    switch (_phase) {
+    case 0: {   // манифест + решение «качать/не качать»
+        fs::FS* sd = SdService::getInstance().fs();
+        if (sd == nullptr) { finishHost(h, "no_sd"); return; }
+        if (!fetchManifest(h.host, _manifest, sizeof(_manifest), err, sizeof(err))) {
+            finishHost(h, err);
+            return;
+        }
+        omJsonStr(_manifest, "\"version\"", _pVer, sizeof(_pVer));
+        omJsonStr(_manifest, "\"fw_url\"", _pFwUrl, sizeof(_pFwUrl));
+        omJsonStr(_manifest, "\"fs_url\"", _pFsUrl, sizeof(_pFsUrl));
         // Урок 5.0.12: поле Build Master — «fw_md5» (не «md5»)
-        if (!omJsonStr(manifest, "\"fw_md5\"", fwMd5, sizeof(fwMd5)))
-            omJsonStr(manifest, "\"md5\"", fwMd5, sizeof(fwMd5));
-        omJsonStr(manifest, "\"fs_md5\"", fsMd5, sizeof(fsMd5));
-
-        if (ver[0] == '\0' || (fwUrl[0] == '\0' && fsUrl[0] == '\0')) {
-            snprintf(err, sizeof(err), "manifest_bad");
-        } else if (strcmp(h.version, ver) == 0) {
-            // Версия на зеркале совпадает — качать нечего. (h.version живёт
-            // и после ребута мастера? Нет — RAM чист. Поэтому ниже, при
-            // пустом h.version, манифест совпадения не даст: скачаем заново
-            // — редкая лишняя закачка раз за ребут, зато самолечение после
-            // любых ручных манипуляций с SD.)
-        } else if (h.version[0] == '\0') {
-            // Первый опрос после ребута: заглянем на SD — вдруг зеркало
-            // уже собрано прошлым циклом (RAM чист, файлы живы).
-            char path[96], js[MANIFEST_CAP], sdVer[20] = "";
+        if (!omJsonStr(_manifest, "\"fw_md5\"", _pFwMd5, sizeof(_pFwMd5)))
+            omJsonStr(_manifest, "\"md5\"", _pFwMd5, sizeof(_pFwMd5));
+        omJsonStr(_manifest, "\"fs_md5\"", _pFsMd5, sizeof(_pFsMd5));
+        if (_pVer[0] == '\0' || (_pFwUrl[0] == '\0' && _pFsUrl[0] == '\0')) {
+            finishHost(h, "manifest_bad");
+            return;
+        }
+        if (strcmp(h.version, _pVer) == 0) { finishHost(h, nullptr); return; }
+        if (h.version[0] == '\0') {
+            // Первый опрос после ребута мастера: RAM чист, но зеркало могло
+            // собраться прошлым циклом — сверимся с манифестом на SD.
+            char path[96], sdVer[20] = "";
             snprintf(path, sizeof(path), "/ota/%s/version.json", h.host);
             File f = sd->open(path, FILE_READ);
             if (f) {
+                static char js[MANIFEST_CAP];   // static, не стек
                 size_t r = f.read((uint8_t*)js, sizeof(js) - 1);
                 f.close();
                 js[r] = '\0';
                 omJsonStr(js, "\"version\"", sdVer, sizeof(sdVer));
             }
-            if (strcmp(sdVer, ver) == 0) {
-                // Зеркало живо — поднимаем версию в RAM, скачивать не надо.
+            if (strcmp(sdVer, _pVer) == 0) {
                 safeStrCopy(h.version, sizeof(h.version), sdVer);
+                finishHost(h, nullptr);
+                return;
             }
         }
-        if (err[0] == '\0' && strcmp(h.version, ver) != 0) {
-            // Новая версия: скачиваем fw/fs в *.tmp, md5, rename; манифест —
-            // ПОСЛЕДНИМ (точка коммита: питание дёрнули — старая пара цела).
-            bool ok = true;
-            if (fwUrl[0] != '\0') {
-                char url[200];
-                urlResolve(h.host, fwUrl, url, sizeof(url));
-                uint32_t sz = 0;
-                if (!downloadBin(h.host, url, "firmware.bin", fwMd5, &sz, err, sizeof(err))) {
-                    ok = false;
-                } else if (!commitBin(h.host, "firmware.bin", err, sizeof(err))) {
-                    ok = false;
-                } else {
-                    h.fwSize = sz;
-                }
-            }
-            if (ok && fsUrl[0] != '\0') {
-                char url[200];
-                urlResolve(h.host, fsUrl, url, sizeof(url));
-                uint32_t sz = 0;
-                if (!downloadBin(h.host, url, "littlefs.bin", fsMd5, &sz, err, sizeof(err))) {
-                    ok = false;
-                } else if (!commitBin(h.host, "littlefs.bin", err, sizeof(err))) {
-                    ok = false;
-                } else {
-                    h.fsSize = sz;
-                }
-            }
-            if (ok) {
-                if (storeManifest(h.host, manifest, strlen(manifest), err, sizeof(err))) {
-                    safeStrCopy(h.version, sizeof(h.version), ver);
-                    log(LogLevel::Info, "OTA-зеркало: %s -> %s (fw %u, fs %u)",
-                        h.host, h.version, h.fwSize, h.fsSize);
-                }
-            }
-        }
+        _phase = 1;
+        _nextStepAtMs = millis() + CYCLE_GAP_MS;
+        return;
     }
+    case 1: {   // firmware.bin: tmp -> md5 -> rename
+        if (_pFwUrl[0] == '\0') { _phase = 2; _nextStepAtMs = millis() + CYCLE_GAP_MS; return; }
+        char url[200];
+        urlResolve(h.host, _pFwUrl, url, sizeof(url));
+        uint32_t sz = 0;
+        if (!downloadBin(h.host, url, "firmware.bin", _pFwMd5, &sz, err, sizeof(err)) ||
+            !commitBin(h.host, "firmware.bin", err, sizeof(err))) {
+            finishHost(h, err);
+            return;
+        }
+        h.fwSize = sz;
+        _phase = 2;
+        _nextStepAtMs = millis() + CYCLE_GAP_MS;
+        return;
+    }
+    case 2: {   // littlefs.bin: tmp -> md5 -> rename
+        if (_pFsUrl[0] == '\0') { _phase = 3; _nextStepAtMs = millis() + CYCLE_GAP_MS; return; }
+        char url[200];
+        urlResolve(h.host, _pFsUrl, url, sizeof(url));
+        uint32_t sz = 0;
+        if (!downloadBin(h.host, url, "littlefs.bin", _pFsMd5, &sz, err, sizeof(err)) ||
+            !commitBin(h.host, "littlefs.bin", err, sizeof(err))) {
+            finishHost(h, err);
+            return;
+        }
+        h.fsSize = sz;
+        _phase = 3;
+        _nextStepAtMs = millis() + CYCLE_GAP_MS;
+        return;
+    }
+    default: {  // 3 — коммит: манифест ПОСЛЕДНИМ (точка коммита)
+        if (storeManifest(h.host, _manifest, strlen(_manifest), err, sizeof(err))) {
+            safeStrCopy(h.version, sizeof(h.version), _pVer);
+            log(LogLevel::Info, "OTA-зеркало: %s -> %s (fw %u, fs %u)",
+                h.host, h.version, h.fwSize, h.fsSize);
+            finishHost(h, nullptr);
+        } else {
+            finishHost(h, err);
+        }
+        return;
+    }
+    }
+}
 
+void OtaMirrorService::finishHost(HostState& h, const char* err) {
     uint32_t nowU = TimeService::getInstance().getUnixTime();
-    if (err[0] != '\0') {
+    if (err != nullptr && err[0] != '\0') {
         strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
         log(LogLevel::Warning, "OTA-зеркало: %s — %s", h.host, err);
     } else {
         h.lastErr[0] = '\0';
-        h.lastOkUnix = (nowU >= 1700000000UL) ? nowU : h.lastOkUnix;
+        if (nowU >= 1700000000UL) h.lastOkUnix = nowU;
     }
-
     ++_cycleIdx;
+    _phase = 0;
     _nextStepAtMs = millis() + CYCLE_GAP_MS;
     if (_cycleIdx >= _cycleEnd) {
         _cycleIdx = -1;
@@ -321,7 +330,7 @@ bool OtaMirrorService::fetchManifest(const char* host, char* buf, size_t cap,
     char url[200];
     snprintf(url, sizeof(url), "http://%s:8123/local/ota/%s/version.json", ha, host);
     HTTPClient http;
-    http.setTimeout(6000);
+    http.setTimeout(4000);   // фаза целиком < WDT (10 с): connect+headers ≤ 4 с
     if (!http.begin(url)) { snprintf(err, errCap, "begin"); return false; }
     int code = http.GET();
     if (code != 200) {
@@ -370,7 +379,7 @@ bool OtaMirrorService::downloadBin(const char* host, const char* url,
     sd->remove(tmp);   // остатки прошлого обрыва
 
     HTTPClient http;
-    http.setTimeout(10000);
+    http.setTimeout(4000);   // connect/headers ≤ 4 с; тело сторожит цикл ниже (7 с cap)
     if (!http.begin(url)) { snprintf(err, errCap, "begin"); return false; }
     int code = http.GET();
     if (code != 200) {
@@ -387,7 +396,14 @@ bool OtaMirrorService::downloadBin(const char* host, const char* url,
     uint8_t buf[512];
     uint32_t total = 0;
     bool ok = true;
-    while (http.connected()) {
+    int expect = http.getSize();          // Content-Length (-1 = chunked)
+    uint32_t dlStart = millis(), lastRx = millis();
+    // Урок 0.6.1-fix (приёмка 05.09): выход по Content-Length/закрытию, НЕ по
+    // connected() — HA держит keep-alive ПОСЛЕ последнего байта, цикл по
+    // connected() висел вечно, и WDT (10 с) перезагружал кристалл каждые
+    // ~2 минуты. Плюс сторожа: 2,5 с без прогресса = stall, 7 с всего = cap
+    // (одна фаза обязана укладываться в бюджет WDT с запасом).
+    while (expect < 0 ? stream->connected() : total < (uint32_t)expect) {
         size_t avail = stream->available();
         if (avail > 0) {
             int r = stream->read(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
@@ -398,14 +414,29 @@ bool OtaMirrorService::downloadBin(const char* host, const char* url,
                 break;
             }
             total += (uint32_t)r;
+            lastRx = millis();
         } else if (!stream->connected()) {
+            break;
+        } else if (millis() - lastRx > 2500) {
+            snprintf(err, errCap, "dl_stall");
+            ok = false;
             break;
         } else {
             delay(1);
         }
+        if (millis() - dlStart > 7000) {
+            snprintf(err, errCap, "dl_timeout");
+            ok = false;
+            break;
+        }
     }
     f.close();
     http.end();
+    // Недокачанный файл (сервер закрыл раньше Content-Length) — не годится.
+    if (ok && expect >= 0 && total != (uint32_t)expect) {
+        snprintf(err, errCap, "dl_short");
+        ok = false;
+    }
     if (!ok || total == 0) {
         sd->remove(tmp);
         if (ok) snprintf(err, errCap, "empty");

@@ -374,6 +374,15 @@ footer b{color:var(--text)}
   </div>
 </div>
 
+<!-- 0.6.2: оверлей перезагрузки (ответы с reboot_in_ms) -->
+<div id="rbOverlay" class="hidden" style="position:fixed;inset:0;z-index:900;background:rgba(60,50,40,.45);display:flex;align-items:center;justify-content:center">
+  <div class="box" style="text-align:center">
+    <h2>🔄 Перезагрузка</h2>
+    <div class="note" id="rbTxt">Устройство перезагружается…</div>
+    <div class="note" style="margin-top:6px">Сессия живёт в RAM и при перезагрузке сбрасывается — после возвращения устройства попросим пароль ещё раз. Это штатно.</div>
+  </div>
+</div>
+
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
@@ -398,7 +407,30 @@ async function api(method,url,body){
   if(body!==undefined){opt.headers['Content-Type']='application/x-www-form-urlencoded';opt.body=body;}
   const r=await fetch(url,opt);
   if(r.status===401&&url!=='/api/auth'){T='';localStorage.removeItem('mos_t');showLogin();throw new Error('401');}
+  // 0.6.2: ответ с reboot_in_ms — устройство уходит в перезагрузку, сессия
+  // (RAM-only) умрёт. Показываем оверлей ожидания и по возвращении честно
+  // просим пароль — вместо внезапного 401 «ни с того ни с сего».
+  r.clone().json().then(j=>{if(j&&j.reboot_in_ms)rbWait(j.reboot_in_ms);}).catch(()=>{});
   return r;
+}
+// Оверлей перезагрузки: ждём, пока /api/system снова оживёт, затем логин.
+let _rbBusy=false;
+async function rbWait(ms){
+  if(_rbBusy)return;_rbBusy=true;
+  const o=$('rbOverlay');o.classList.remove('hidden');
+  $('rbTxt').textContent='Устройство перезагружается…';
+  await new Promise(res=>setTimeout(res,Math.max(1500,ms||1500)));
+  for(;;){
+    await new Promise(res=>setTimeout(res,2000));
+    try{
+      const r=await fetch('/api/system',{cache:'no-store'});
+      if(r.ok){break;}
+    }catch(e){/* ещё не поднялся — ждём */}
+  }
+  o.classList.add('hidden');_rbBusy=false;
+  T='';localStorage.removeItem('mos_t');
+  showLogin();
+  $('loginSub').textContent='Перезагрузка завершена — войдите снова';
 }
 let setupMode=false;
 async function showLogin(){
@@ -808,7 +840,7 @@ async function doRestore(){
   try{
     const r=await api('POST','/api/config/restore','');
     const j=await r.json().catch(()=>({}));
-    if(r.ok){sysMsg('Восстановлено полей: '+j.applied+'. Перезагрузка…');setTimeout(()=>location.reload(),15000);}
+    if(r.ok){sysMsg('Восстановлено полей: '+j.applied+'. Перезагрузка…');}
     else if(j.error==='backup_not_found'){sysMsg('Бэкап в NVS не найден.','var(--error)');}
     else if(j.error==='backup_corrupt'){sysMsg('Бэкап повреждён (CRC).','var(--error)');}
     else{sysMsg('Ошибка: '+(j.error||r.status),'var(--error)');}
@@ -919,10 +951,11 @@ async function bkLoad(){
     const box=$('bkHosts');box.innerHTML='';
     (j.hosts||[]).forEach(h=>{
       const c=document.createElement('div');c.className='card';
+      const nm=h.ip==='self'?'🏠 мастер (этот)':h.ip;
       const badge=h.blocked?'<span class="badge err">ждёт пароль</span>'
         :(h.err?'<span class="badge warn">'+h.err+'</span>'
         :(h.lastOk?'<span class="badge ok">ok</span>':'<span class="badge">ещё не было</span>'));
-      c.innerHTML='<h2>'+h.ip+' '+badge
+      c.innerHTML='<h2>'+nm+' '+badge
         +'<button style="float:right" onclick="bkSnap(\''+h.ip+'\')">Снять сейчас</button></h2>'
         +'<div class="row"><span class="k">Последний снимок</span><span>'
         +(h.lastOk?new Date(h.lastOk*1000).toLocaleString('ru-RU'):'—')+'</span></div>'
@@ -951,10 +984,13 @@ async function bkFiles(ip,btn){
   }catch(e){}
 }
 function bkRestore(ip,f){
-  if(!confirm('Развернуть снимок '+f+' на '+ip+'?\n\nУстройство применит конфиг (включая пароли) и ПЕРЕЗАГРУЗИТСЯ.'))return;
+  const who=ip==='self'?'МАСТЕР (это устройство)':ip;
+  if(!confirm('Развернуть снимок '+f+' на '+who+'?\n\nУстройство применит конфиг (включая пароли) и ПЕРЕЗАГРУЗИТСЯ.'))return;
   api('POST','/api/dev/hm/backup/restore?ip='+encodeURIComponent(ip)+'&file='+encodeURIComponent(f))
     .then(r=>r.json()).then(j=>{
-      alert(j.ok?'Снимок отправлен, устройство перезагружается.':'Не удалось: '+(j.err||'?'));
+      if(j.ok&&!j.reboot_in_ms)alert('Снимок отправлен, устройство перезагружается.');
+      else if(!j.ok)alert('Не удалось: '+(j.err||'?'));
+      // ответ с reboot_in_ms (self) — оверлей сам дождётся мастера
       bkLoad();
     }).catch(()=>{});
 }

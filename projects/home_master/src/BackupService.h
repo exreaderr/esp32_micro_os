@@ -39,7 +39,14 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.1.0-m33"; }
+    const char* getVersion() const override { return "0.2.0-m33"; }
+    // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
+    // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
+    // в /backup/self/. Восстановление: applySnapshotJson + отложенный
+    // ребут мастера (ответ содержит reboot_in_ms — панель покажет
+    // оверлей перезагрузки). Закрывает дыру M3.3: флот бэкапился,
+    // а его глава — нет (владелец 05.09: «делаем и бэкап мастера,
+    // всё-таки во главе флота»).
     ModuleId getModuleId() const override { return 0x1107; }   // hm: 0x1101=Sd, 0x1102=App, 0x1103=Broker, 0x1104=Bridge, 0x1105=WxMirror, 0x1106=Journal
     void init() override;
     void start() override;
@@ -85,8 +92,9 @@ private:
         bool     blocked     = false;    // 401: ждём смену bk.admin_pin
     };
 
-    void     reloadHosts();              // bk.hosts -> _hosts[]
+    void     reloadHosts();              // bk.hosts -> _hosts[] (слот 0 — "self")
     int      findHost(const char* ip) const;
+    void     stepSelf(HostState& h);     // 0.6.2: снимок самого мастера (локально)
     /// Запуск цикла: only >= 0 — точечно один хост (ручной «Снять»),
     /// иначе весь список. Цикл идёт [_cycleIdx, _cycleEnd).
     void     scheduleCycle(uint32_t delayMs, int8_t only = -1);
@@ -121,4 +129,5 @@ private:
     uint32_t  _onChangeAtMs  = 0;
 
     uint32_t  _lastRunUnix   = 0;        // для «следующий через»
+    uint32_t  _selfRebootAtMs = 0;       // 0.6.2: отложенный ребут после self-restore
 };
