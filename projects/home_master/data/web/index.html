@@ -374,8 +374,10 @@ footer b{color:var(--text)}
   </div>
 </div>
 
-<!-- 0.6.2: оверлей перезагрузки (ответы с reboot_in_ms) -->
-<div id="rbOverlay" class="hidden" style="position:fixed;inset:0;z-index:900;background:rgba(60,50,40,.45);display:flex;align-items:center;justify-content:center">
+<!-- 0.6.2: оверлей перезагрузки (ответы с reboot_in_ms).
+     Урок 0.6.2-fix: НЕ прятать через classList .hidden — инлайн display
+     побеждает класс; видимостью управляет только style.display из JS. -->
+<div id="rbOverlay" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(60,50,40,.45);align-items:center;justify-content:center">
   <div class="box" style="text-align:center">
     <h2>🔄 Перезагрузка</h2>
     <div class="note" id="rbTxt">Устройство перезагружается…</div>
@@ -417,7 +419,7 @@ async function api(method,url,body){
 let _rbBusy=false;
 async function rbWait(ms){
   if(_rbBusy)return;_rbBusy=true;
-  const o=$('rbOverlay');o.classList.remove('hidden');
+  const o=$('rbOverlay');o.style.display='flex';
   $('rbTxt').textContent='Устройство перезагружается…';
   await new Promise(res=>setTimeout(res,Math.max(1500,ms||1500)));
   for(;;){
@@ -427,7 +429,7 @@ async function rbWait(ms){
       if(r.ok){break;}
     }catch(e){/* ещё не поднялся — ждём */}
   }
-  o.classList.add('hidden');_rbBusy=false;
+  o.style.display='none';_rbBusy=false;
   T='';localStorage.removeItem('mos_t');
   showLogin();
   $('loginSub').textContent='Перезагрузка завершена — войдите снова';
