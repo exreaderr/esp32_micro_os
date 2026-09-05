@@ -265,9 +265,6 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
       <input type="password" id="passInput" placeholder="Пароль администратора" autocomplete="current-password">
       <div class="err" id="authErr"></div>
       <button class="btn" style="width:100%" onclick="doLogin()">Войти</button>
-      <div class="hint" style="margin-top:10px"><b>Трассировка запросов</b>
-        (diag4, последние 16; пин не пишется):</div>
-      <div id="traceRowsLogin" style="font-size:12px"></div>
     </div>
   </div>
 
@@ -390,6 +387,12 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
         проверки (60 с), при сбое загрузчик сам откатывается на предыдущую. Обновление ФС
         стирает накопленный даталог (LittleFS перезаписывается) — конфигурация переживает
         через NVS-бэкап.</div>
+      <details style="margin-top:10px">
+        <summary class="hint" style="cursor:pointer"><b>🖥️ Трассировка запросов</b>
+          (diag3, последние 16; пин в /api/auth не пишется; инструмент отладки,
+          свёрнут по умолчанию)</summary>
+        <div id="traceRows" style="margin-top:6px"><div class="hint">запросов ещё не было</div></div>
+      </details>
     </div>
 
     <!-- АДМИН: смена пароля + группы «Безопасность»/«Система» (0.4.0) -->
@@ -413,9 +416,6 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
         <a class="chip" href="/api/dev/weather" target="_blank">weather-JSON</a>
         <button class="chip" onclick="doLogout()">Выйти из админки</button>
       </div>
-      <div class="hint" style="margin-top:12px"><b>Трассировка запросов</b>
-        (diag3, последние 16; пин в /api/auth не пишется):</div>
-      <div id="traceRows"><div class="hint">запросов ещё не было</div></div>
     </div>
   </div>
 
@@ -518,7 +518,6 @@ function renderTrace(){
     }
   }
   var host=$('traceRows');       if(host) host.innerHTML=h;
-  var hostL=$('traceRowsLogin'); if(hostL) hostL.innerHTML=h;
 }
 async function api(url, opts){
   opts=opts||{};

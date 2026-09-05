@@ -89,6 +89,11 @@ void MqttTransport::init() {
 void MqttTransport::start() {
     EventBus& bus = EventBus::getInstance();
     static const int32_t MIRRORED[] = {
+        // 5.8.5-fix: CFG_EVENT_CHANGED забыт в списке подписки — случай
+        // mirrorName добавлен, а событие не доходит (найдено приёмкой M3.3:
+        // внеплановый снимок не запускался). Урок: имя и подписка — пара,
+        // проверять обе стороны.
+        CFG_EVENT_CHANGED,
         ACCESS_EVENT_GRANTED, ACCESS_EVENT_DENIED,
         ACCESS_EVENT_LOCKED, ACCESS_EVENT_UNLOCKED,
         AUTH_EVENT_LOGIN, AUTH_EVENT_LOCKED_OUT,

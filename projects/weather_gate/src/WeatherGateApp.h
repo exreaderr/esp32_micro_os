@@ -50,7 +50,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.5.1"; } // правило 23 п.3: setHiddenGroups(Планировщик,Счётчики,Звук) + hg-пропуск в рендере (задание ядра 04.09)
+    const char* getVersion() const override { return "0.5.3"; } // трассировка запросов: из модала убрана совсем, из Админа переехала свёрнутой (<details>) во вкладку Система (решение владельца 04.09)
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
