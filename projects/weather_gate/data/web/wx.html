@@ -1114,6 +1114,13 @@ function drawChart(d, ch){
 // ============================================================================
 // РАДИО: статус приёмника CC1101 (публичный /api/dev/radio)
 // ============================================================================
+// 0.5.4 (edgesDroppedTotal): абсолютный счётчик потерь фронтов монотонен от
+// запуска и пугает (сотни тысяч за CS-штормы — это ИСТОРИЯ, а не состояние).
+// Человеческий показатель — ТЕМП: дельта между обновлениями вкладки за окно
+// наблюдения. 0/мин — тишина (зелёный); >0 при живых пакетах — шторм,
+// который AGC переваривает (нейтрально); сторож ТИШИНЫ эфира (ПАЗ) ловит
+// противоположный случай (шторм без пакетов) — дублировать его не надо.
+var S_edges={t:0,v:0};   // последний замер {время мс, счётчик}
 async function renderRadio(){
   var r=await api('/api/dev/radio');
   if(!r.ok){ $('radioRows').innerHTML='<div class="hint">Недоступно ('+r.status+')</div>'; return; }
@@ -1123,7 +1130,19 @@ async function renderRadio(){
   rr('Частота', (+d.freq).toFixed(2)+' МГц');
   rr('Пакетов принято', d.pkt);
   rr('Дублей отброшено', d.dup);
-  rr('Потери фронтов (GDO0)', d.edges_dropped, d.edges_dropped>0?'warn':'');
+  var now=Date.now(), ev=d.edges_dropped, etxt, ecls;
+  if(S_edges.t>0 && now>S_edges.t && ev>=S_edges.v){
+    var dE=ev-S_edges.v, dMin=(now-S_edges.t)/60000;
+    var rate=Math.round(dE/dMin);
+    etxt='+'+dE+' за '+fmtAge(Math.round((now-S_edges.t)/1000))+
+         ' ('+rate+'/мин) · всего '+ev;
+    ecls=(dE===0)?'ok':'';   // темп нулевой — зелёный; шторм при живых пакетах — нейтрально
+  } else {
+    etxt='всего '+ev+' (темп — со второго обновления)';
+    ecls='';
+  }
+  S_edges={t:now,v:ev};
+  rr('Потери фронтов (GDO0), темп', etxt, ecls);
   rr('RSSI последнего пакета', d.rssi+' дБм');
   rr('Возраст пакета', fmtAge(Math.round(d.age_ms/1000)));
   $('radioRows').innerHTML=rows;

@@ -50,7 +50,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.5.3"; } // трассировка запросов: из модала убрана совсем, из Админа переехала свёрнутой (<details>) во вкладку Система (решение владельца 04.09)
+    const char* getVersion() const override { return "0.5.4"; } // edgesDroppedTotal: в Радио темп потерь фронтов (+Δ за окно, N/мин) вместо пугающего абсолюта; всего — вторично (дорожная карта 05.09)
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
