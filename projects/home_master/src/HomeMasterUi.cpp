@@ -8,6 +8,7 @@
 #include "BridgeService.h"
 #include "JournalService.h"
 #include "BackupService.h"
+#include "OtaMirrorService.h"
 #include <services/HttpService.h>
 #include <services/ConfigService.h>
 #include <services/MqttTransport.h>
@@ -133,6 +134,20 @@ bool HomeMasterUi::handleApi(const char* pathTail, const ShUiRequest& req,
         a = req.getArg("file");
         if (a != nullptr) { strncpy(file, a, sizeof(file) - 1); file[sizeof(file)-1] = '\0'; }
         BackupService::getInstance().apiRestore(ip, file, responseBuf, bufSize);
+        return true;
+    }
+    // --- 0.6.1: OTA-зеркало (OtaMirrorService; admin уже проверен ядром) ---
+    if (strcmp(pathTail, "hm/otam/status") == 0) {
+        statusCode = 200;
+        OtaMirrorService::getInstance().apiStatus(responseBuf, bufSize);
+        return true;
+    }
+    if (strcmp(pathTail, "hm/otam/check") == 0) {
+        statusCode = 200;
+        char host[24] = "all";
+        const char* a = req.getArg("host");
+        if (a != nullptr) { strncpy(host, a, sizeof(host) - 1); host[sizeof(host)-1] = '\0'; }
+        OtaMirrorService::getInstance().apiCheck(host, responseBuf, bufSize);
         return true;
     }
     return false;   // 404 — нет такого профильного пути

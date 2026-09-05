@@ -23,7 +23,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return "0.6.0"; }         // 0.6.0: M3.3 BackupAggregator (снимки парка на SD, ядро 5.8.5 export/import); 0.5.2: UI по правилу 23
+    const char* getVersion() const override { return "0.6.1"; }         // 0.6.1: OTA-зеркало (прошивки парка с HA на SD, раздача :8123); 0.6.0: M3.3 BackupAggregator
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

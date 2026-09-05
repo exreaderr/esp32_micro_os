@@ -8,6 +8,7 @@
 #include "BridgeService.h"
 #include "JournalService.h"
 #include "BackupService.h"
+#include "OtaMirrorService.h"
 #include "WeatherMirror.h"
 #include "HomeMasterApp.h"
 #include <core/ResourceManager.h>
@@ -57,5 +58,7 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     k.registerModule(&JournalService::getInstance(), 9, 1);
     // M3.3: бэкапы парка — слушатель брокера (multi-hook), потребитель SD.
     k.registerModule(&BackupService::getInstance(),  9, 2);
+    // 0.6.1: OTA-зеркало — опрос HA + раздача :8123 с SD.
+    k.registerModule(&OtaMirrorService::getInstance(), 9, 3);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }

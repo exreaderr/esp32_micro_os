@@ -462,7 +462,7 @@ function openTab(t,force){
   else if(t==='net'){needAuth(()=>loadCfg(),force);}
   else if(t==='cfg'){needAuth(()=>loadCfg(),force);}
   else if(t==='paz'){needAuth(()=>loadPaz());}
-  else if(t==='bk'){needAuth(()=>bkLoad());}
+  else if(t==='bk'){needAuth(()=>{bkLoad();omLoad();});}
   else if(t==='sys'){needAuth(()=>{$('auditLink').href='/api/audit?token='+encodeURIComponent(T);renderOta();});}
   // status — публичный, обновляется глобальным таймером шапки
 }
@@ -957,6 +957,41 @@ function bkRestore(ip,f){
       alert(j.ok?'Снимок отправлен, устройство перезагружается.':'Не удалось: '+(j.err||'?'));
       bkLoad();
     }).catch(()=>{});
+}
+
+// ---------- OTA-зеркало парка (0.6.1) ----------
+// Мастер зеркалит прошивки с HA на SD и раздаёт устройствам на :8123 —
+// устройства и так смотрят на мастера (их mqtt.host = мастер).
+async function omLoad(){
+  try{
+    const j=await (await api('GET','/api/dev/hm/otam/status')).json();
+    const s=$('omSummary');
+    s.innerHTML='Зеркало: <b>'+(j.enabled?'включено':'выключено')+'</b>'
+      +' · опрос HA каждые '+j.period_h+' ч'
+      +(j.enabled&&j.nextIn>0?' · следующий через '+fmtUp(j.nextIn):'')
+      +(j.enabled&&j.nextIn===0?' · <span class="badge ok">цикл идёт</span>':'')
+      +' <button onclick="omCheck(\'all\')">Проверить сейчас</button>';
+    const box=$('omHosts');box.innerHTML='';
+    (j.hosts||[]).forEach(h=>{
+      const c=document.createElement('div');c.className='card';
+      const badge=h.version
+        ?'<span class="badge ok">'+h.version+'</span>'
+        :(h.lastErr?'<span class="badge warn">'+h.lastErr+'</span>':'<span class="badge">ещё не снято</span>');
+      c.innerHTML='<h2>'+h.host+' '+badge
+        +'<button style="float:right" onclick="omCheck(\''+h.host+'\')">Проверить</button></h2>'
+        +'<div class="row"><span class="k">Зеркалированная версия</span><span>'+(h.version||'—')+'</span></div>'
+        +'<div class="row"><span class="k">Размеры</span><span>fw '+(h.fwSize?Math.round(h.fwSize/1024)+' КБ':'—')
+        +' · fs '+(h.fsSize?Math.round(h.fsSize/1024)+' КБ':'—')+'</span></div>'
+        +'<div class="row"><span class="k">Последняя сверка</span><span>'
+        +(h.lastOkUnix?new Date(h.lastOkUnix*1000).toLocaleString('ru-RU'):'—')+'</span></div>'
+        +(h.lastErr?'<div class="row"><span class="k">Ошибка</span><span class="badge warn">'+h.lastErr+'</span></div>':'');
+      box.appendChild(c);
+    });
+    if(!(j.hosts||[]).length)box.innerHTML='<div class="card k">Список otam.hosts пуст.</div>';
+  }catch(e){}
+}
+async function omCheck(host){
+  try{await api('POST','/api/dev/hm/otam/check?host='+encodeURIComponent(host));setTimeout(omLoad,3000);}catch(e){}
 }
 
 async function loadLogs(){
