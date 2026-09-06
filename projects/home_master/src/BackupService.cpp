@@ -58,13 +58,28 @@ bool BackupService::ipListed(const char* csv, const char* ip) {
 void BackupService::reloadHosts() {
     char csv[CFG_VALUE_LEN];
     cfgGetStr("bk.hosts", csv, sizeof(csv), "10.146.75.53,10.146.75.55");
+    // Свой IP — чтобы вычеркнуть его из bk.hosts (урок 0.6.2-пр1 ниже).
+    char ownIp[20];
+    NetworkService::getInstance().ipString(ownIp, sizeof(ownIp));
     // Состояние (lastOk/blocked) переживает перечитывание: ищем по ip.
     HostState fresh[BK_MAX_HOSTS];
     uint8_t freshCount = 0;
+    // 0.6.2, bk.self: слот 0 ВСЕГДА сам мастер ("self" — локальный снимок,
+    // без сети). ПРИЧИНА ЖЁСТКОСТИ (урок 0.6.2-пр1): если IP самого мастера
+    // стоит в bk.hosts обычной строкой, "Снять сейчас" посылает мастера
+    // по HTTP к САМОМУ СЕБЕ — однопоточный WebServer ждёт сам себя,
+    // дедлок, TWDT 10 с, task_wdt-ребут (пойман в приёмке 05.09).
+    int oldSelf = findHost("self");
+    if (oldSelf >= 0) fresh[freshCount] = _hosts[oldSelf];
+    else strncpy(fresh[freshCount].ip, "self", sizeof(fresh[freshCount].ip) - 1);
+    freshCount++;
     char* save = nullptr;
     for (char* t = strtok_r(csv, ",", &save);
          t != nullptr && freshCount < BK_MAX_HOSTS;
          t = strtok_r(nullptr, ",", &save)) {
+        // "self" и собственный IP мастера — уже покрыты слотом 0, не плодим
+        // сетевой слот на самих себя (см. урок выше).
+        if (strcmp(t, "self") == 0 || strcmp(t, ownIp) == 0) continue;
         int old = findHost(t);
         if (old >= 0) fresh[freshCount] = _hosts[old];
         else {
@@ -599,6 +614,13 @@ size_t BackupService::apiSnapshot(const char* ip, char* buf, size_t bufSize) {
 size_t BackupService::apiRestore(const char* ip, const char* file,
                                  char* buf, size_t bufSize) {
     char err[24] = "";
+    // Страховка (урок 0.6.2-пр1): собственный IP мастера — это "self",
+    // сетевой запрос к самому себе недопустим (дедлок WebServer, TWDT).
+    {
+        char ownIp[20];
+        NetworkService::getInstance().ipString(ownIp, sizeof(ownIp));
+        if (ip != nullptr && strcmp(ip, ownIp) == 0) ip = "self";
+    }
     // 0.6.2, bk.self: восстановление САМОГО мастера — локально:
     // читаем снимок с SD, applySnapshotJson, отложенный ребут.
     // Ответ несёт reboot_in_ms — панель покажет оверлей перезагрузки.
