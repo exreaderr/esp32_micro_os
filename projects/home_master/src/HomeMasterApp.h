@@ -23,7 +23,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return "0.6.3"; }         // 0.6.3: правка bk.self (слот 0 всегда self, защита от само-бэкапа по IP — TWDT-дедлок); 0.6.2: bk.self + оверлей перезагрузки; 0.6.1: OTA-зеркало
+    const char* getVersion() const override { return "0.6.4"; }         // 0.6.4: bk само-проверка в момент цикла (init без DHCP-IP — урок 0.6.3-пр1); 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

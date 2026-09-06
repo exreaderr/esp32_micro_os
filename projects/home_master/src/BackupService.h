@@ -39,7 +39,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.2.1-m34"; }   // m34: self всегда слот 0 + защита от само-запроса по собственному IP (урок 0.6.2-пр1: дедлок WebServer → TWDT)
+    const char* getVersion() const override { return "0.2.2-m35"; }   // m35: проверка «не я ли» в момент цикла (init без IP — урок 0.6.3-пр1: TWDT посреди OTA-раздачи); m34: self слот 0
     // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
     // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
     // в /backup/self/. Восстановление: applySnapshotJson + отложенный

@@ -247,6 +247,22 @@ void BackupService::runCycleStep() {
 
     if (h.ip[0] == '\0') return;
     if (strcmp(h.ip, "self") == 0) { stepSelf(h); return; }
+    // Урок 0.6.3-пр1: reloadHosts бежит при init, когда DHCP ещё НЕ дал IP
+    // (ownIp="0.0.0.0"), поэтому собственный IP может просочиться в список
+    // сетевым слотом. Проверяем «а не я ли это» ЗДЕСЬ, в момент цикла,
+    // когда IP уже известен: самих себя снимаем локально, без сети.
+    // Иначе: HTTP к самому себе → дедлок/зависание → TWDT-ребут ПОСРЕДИ
+    // OTA-раздачи зеркала (поймано в приёмке 06.09: stall_timeout у шлюза).
+    {
+        char ownIp[20];
+        NetworkService::getInstance().ipString(ownIp, sizeof(ownIp));
+        if (ownIp[0] != '\0' && strcmp(ownIp, "0.0.0.0") != 0 &&
+            strcmp(h.ip, ownIp) == 0) {
+            log(LogLevel::Info, "bk: %s — это я сам, снимаю локально", h.ip);
+            stepSelf(h);
+            return;
+        }
+    }
     if (h.blocked) {
         log(LogLevel::Warning, "bk: %s пропущен (ждёт смены bk.admin_pin)", h.ip);
         return;
@@ -305,6 +321,17 @@ void BackupService::runCycleStep() {
 // ============================================================================
 bool BackupService::loginHost(const char* ip, char* token, size_t tokCap,
                               char* err, size_t errCap) {
+    // Страховка (урок 0.6.3-пр1): никогда не ходим по сети на собственный
+    // IP — даже если он каким-то путём оказался в списке хостов.
+    {
+        char ownIp[20];
+        NetworkService::getInstance().ipString(ownIp, sizeof(ownIp));
+        if (ownIp[0] != '\0' && strcmp(ownIp, "0.0.0.0") != 0 &&
+            strcmp(ip, ownIp) == 0) {
+            snprintf(err, errCap, "self_ip");
+            return false;
+        }
+    }
     char pin[CFG_VALUE_LEN];
     cfgGetStr("bk.admin_pin", pin, sizeof(pin), "");
     if (pin[0] == '\0') {
