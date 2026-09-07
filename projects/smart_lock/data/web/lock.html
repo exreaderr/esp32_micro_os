@@ -1892,8 +1892,8 @@ async function renderOta(){
        o.pending_verify===1?'health-warn':'health-ok');
   if(o.remote.checked===1){
     orow('Прошивка на сервере HA', o.remote.version?esc(o.remote.version):'манифест недоступен',
-         o.update_available===1?'health-warn':'health-ok');
-    if(o.update_available===1) orow('Статус','⬆️ Доступно обновление!','health-warn');
+         (o.remote||{}).update_available===1?'health-warn':'health-ok');
+    if((o.remote||{}).update_available===1) orow('Статус','⬆️ Доступно обновление!','health-warn');
     if(o.remote.notes) rows+='<div class="health-row"><span class="health-name">Changelog</span>'+
         '<span class="health-msg">'+esc(o.remote.notes)+'</span></div>';
   } else {
@@ -2020,7 +2020,7 @@ async function otaCheck(){
   toast('Запрашиваю манифест у HA (до 4 с)…','ok');
   var r=await apiPost('/api/ota/check');
   if(r.ok && r.data){
-    if(r.data.update_available===1) toast('Доступна прошивка '+r.data.remote.version+'!','ok');
+    if((r.data.remote||{}).update_available===1) toast('Доступна прошивка '+r.data.remote.version+'!','ok');
     else if(r.data.remote.version) toast('Обновлений нет (сервер: '+r.data.remote.version+')','ok');
     else toast('Манифест не получен (нет сети или HA)','err');
     renderOta();

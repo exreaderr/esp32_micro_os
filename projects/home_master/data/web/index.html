@@ -414,6 +414,10 @@ let T=localStorage.getItem('mos_t')||'';
 const SD_RU={mounted:['смонтирована','ok'],no_card:['нет карты','warn'],failed:['сбой монтирования','err'],disabled:['выключена в конфиге','mut']};
 const DEGR=['FULL','LOCAL_NET','AUTONOMOUS'];
 const CHK_ST=[['ok','Ok'],['warn','Warning'],['err','Critical']];
+// Человеческие имена проверок ПАЗ (как вкладка ПАЗ у замка): техимена
+// hm.* остаются в JSON/логах, на панели — понятные подписи. Неизвестное
+// имя показывается как есть (новые проверки не требуют правки панели).
+const CHK_NAME={'hm.sd':'SD-карта мастера','hm.bk':'Бэкапы конфигов парка','hm.ota':'OTA-зеркало прошивок','hm.fleet':'Присутствие парка','heap':'Свободная память (heap)','cpu_temp':'Температура кристалла'};
 const TABS=['net','paz','sys','adm','status','mqtt','jrn','bk','cfg'];
 // Распределение конфиг-групп по вкладкам (правило 23): общие группы ядра —
 // в общие вкладки (Сеть/Система/Безопасность→Админ), MQTT отделён от сети
@@ -767,7 +771,7 @@ async function loadPaz(){
     $('pazWdt').innerHTML=j.wdt?badge('вооружён','ok'):badge('выключен','mut');
     $('pazChecks').innerHTML=(j.checks||[]).map(c=>{
       const s=CHK_ST[c.st]||['mut','?'];
-      return '<div class="chk"><span>'+esc(c.name)+'</span><span>'+badge(s[1],s[0])+'</span><span class="k" style="flex:1">'+esc(c.msg||'')+'</span><span class="k">'+Math.round((c.age_ms||0)/1000)+' с назад</span></div>';
+      return '<div class="chk"><span>'+esc(CHK_NAME[c.name]||c.name)+'</span><span>'+badge(s[1],s[0])+'</span><span class="k" style="flex:1">'+esc(c.msg||'')+'</span><span class="k">'+Math.round((c.age_ms||0)/1000)+' с назад</span></div>';
     }).join('')||'—';
     $('pazJournal').innerHTML=(j.journal||[]).map(e=>{
       const when=e.unix?new Date(e.unix*1000).toLocaleString('ru-RU'):('аптайм '+fmtUp(e.up));
@@ -882,7 +886,7 @@ async function renderOta(){
     orow('Текущая прошивка','<b>'+esc(o.fw)+'</b>'+(o.build?' · сборка '+esc(o.build):'')+(o.pending_verify===1?' · ⏳ идёт валидация':''));
     if(o.remote&&o.remote.checked===1){
       orow('Прошивка на сервере HA',o.remote.version?esc(o.remote.version):'манифест недоступен');
-      if(o.update_available===1)orow('Статус','<b style="color:var(--success)">⬆️ Доступно обновление!</b>');
+      if((o.remote||{}).update_available===1)orow('Статус','<b style="color:var(--success)">⬆️ Доступно обновление!</b>');
       if(o.remote.notes)orow('Changelog',esc(o.remote.notes));
     }else orow('Прошивка на сервере HA','ещё не проверялась');
     orow('Манифест','<small>'+esc((o.remote&&o.remote.url)||'')+'</small>');
@@ -906,7 +910,9 @@ async function otaCheck(){
   try{
     const r=await api('POST','/api/ota/check','');
     const j=await r.json().catch(()=>({}));
-    if(j.update_available===1)otaMsg('Доступна прошивка '+j.remote.version+'!','var(--success)');
+    // Урок 07.09.2026: update_available живёт ВНУТРИ remote (otaInfoJson
+    // ядра), не в корне — чтение из корня вечно давало «Обновлений нет».
+    if((j.remote||{}).update_available===1)otaMsg('Доступна прошивка '+j.remote.version+'!','var(--success)');
     else if(j.remote&&j.remote.version)otaMsg('Обновлений нет (сервер: '+j.remote.version+').');
     else otaMsg('Манифест не получен (нет сети или HA).','var(--error)');
     renderOta();
