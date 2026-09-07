@@ -730,3 +730,27 @@ uint8_t BackupService::troubleCount(char* out, size_t cap) const {
     }
     return n;
 }
+
+// ============================================================================
+// ДЛЯ ПАЗ (hm.fleet, 0.6.8): присутствие парка по сессиям брокера
+// ============================================================================
+uint8_t BackupService::fleetSilence(char* out, size_t cap,
+                                    uint8_t& checkable) const {
+    checkable = 0;
+    uint8_t silent = 0;
+    if (out != nullptr && cap > 0) out[0] = '\0';
+    BrokerService& br = BrokerService::getInstance();
+    for (uint8_t i = 0; i < _hostCount; ++i) {
+        const HostState& h = _hosts[i];
+        if (strcmp(h.ip, "self") == 0) continue;     // мастер — не клиент сам себе
+        if (h.host[0] == '\0') continue;             // имени нет — нет данных
+        checkable++;
+        if (!br.hasClient(h.host)) {
+            if (silent == 0 && out != nullptr && cap > 0) {
+                snprintf(out, cap, "%s молчит", h.host);
+            }
+            silent++;
+        }
+    }
+    return silent;
+}

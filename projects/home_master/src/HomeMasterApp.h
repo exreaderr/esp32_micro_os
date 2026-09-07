@@ -23,7 +23,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return "0.6.7"; }         // 0.6.7: ручная загрузка троек в зеркало с верификацией + otam.src; 0.6.6: broker.pass → NVS, hostname в карточках; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
+    const char* getVersion() const override { return "0.6.8"; }         // 0.6.8: hm.fleet + гистерезис доменных проверок ПАЗ (вариант Б); 0.6.7: ручная загрузка троек в зеркало с верификацией + otam.src; 0.6.6: broker.pass → NVS, hostname в карточках; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

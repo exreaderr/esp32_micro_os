@@ -39,7 +39,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.3.0-m36"; }   // m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
+    const char* getVersion() const override { return "0.3.1-m37"; }   // m37: fleetSilence для hm.fleet (0.6.8); m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
     // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
     // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
     // в /backup/self/. Восстановление: applySnapshotJson + отложенный
@@ -75,6 +75,15 @@ public:
     /// Сколько хостов в беде (blocked или lastErr); первую — в out
     /// ("ip:err" / "ip:blocked"). 0 — всё чисто.
     uint8_t  troubleCount(char* out, size_t cap) const;
+
+    // --- Для ПАЗ (hm.fleet, 0.6.8) -----------------------------------------
+    /// Присутствие парка: хосты реестра (кроме "self") с ИЗВЕСТНЫМ hostname
+    /// сверяются с активными MQTT-сессиями брокера (clientId = hostname).
+    /// checkable — сколько хостов удалось проверить (hostname известен);
+    /// возврат — сколько из них молчит; первого молчащего — в out.
+    /// Хосты без hostname (ещё ни одного снимка) не проверяются: нет данных
+    /// ≠ молчание (иначе свежий мастер поднял бы ложную тревогу).
+    uint8_t  fleetSilence(char* out, size_t cap, uint8_t& checkable) const;
 
 private:
     BackupService() = default;
