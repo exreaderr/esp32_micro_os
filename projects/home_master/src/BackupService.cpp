@@ -217,6 +217,8 @@ void BackupService::stepSelf(HostState& h) {
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
         return;
     }
+    // 0.6.6: имя хозяина снимка — для карточки (IP + hostname).
+    cfgGetStr("sys.hostname", h.host, sizeof(h.host), "");
     size_t len = ConfigService::getInstance().exportSnapshotJson(snap, BK_SNAPSHOT_CAP);
     char err[24] = "export";
     bool ok = (len > 0) && storeSnapshot("self", snap, len, err, sizeof(err));
@@ -231,6 +233,26 @@ void BackupService::stepSelf(HostState& h) {
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
         log(LogLevel::Warning, "bk: self снимок не удался (%s)", err);
     }
+}
+
+// 0.6.6: вытащить "sys.hostname" из снимка (простой скан, без парсера:
+// hostname — простое значение без экранирования, по построению).
+static void extractHostname(const char* json, char* out, size_t cap) {
+    if (out == nullptr || cap == 0) return;
+    out[0] = '\0';
+    if (json == nullptr) return;
+    const char* p = strstr(json, "\"sys.hostname\"");
+    if (p == nullptr) return;
+    p = strchr(p + 14, ':');
+    if (p == nullptr) return;
+    p = strchr(p + 1, '"');
+    if (p == nullptr) return;
+    const char* e = strchr(p + 1, '"');
+    if (e == nullptr || e <= p + 1) return;
+    size_t n = (size_t)(e - (p + 1));
+    if (n >= cap) n = cap - 1;
+    memcpy(out, p + 1, n);
+    out[n] = '\0';
 }
 
 void BackupService::runCycleStep() {
@@ -300,6 +322,7 @@ void BackupService::runCycleStep() {
     size_t len = 0;
     bool ok = fetchSnapshot(h.ip, token, snap, BK_SNAPSHOT_CAP, &len,
                             err, sizeof(err));
+    if (ok) extractHostname(snap, h.host, sizeof(h.host));   // 0.6.6: имя для карточки
     if (ok) ok = storeSnapshot(h.ip, snap, len, err, sizeof(err));
     free(snap);
 
@@ -565,8 +588,8 @@ size_t BackupService::apiStatus(char* buf, size_t bufSize) {
     for (uint8_t i = 0; i < _hostCount && pos < bufSize - 96; ++i) {
         const HostState& h = _hosts[i];
         n = snprintf(buf + pos, bufSize - pos,
-                     "%s{\"ip\":\"%s\",\"lastOk\":%lu,\"err\":\"%s\",\"blocked\":%u}",
-                     i ? "," : "", h.ip, (unsigned long)h.lastOkUnix,
+                     "%s{\"ip\":\"%s\",\"host\":\"%s\",\"lastOk\":%lu,\"err\":\"%s\",\"blocked\":%u}",
+                     i ? "," : "", h.ip, h.host, (unsigned long)h.lastOkUnix,
                      h.lastErr, h.blocked ? 1 : 0);
         if (n < 0) break;
         pos += (size_t)n;

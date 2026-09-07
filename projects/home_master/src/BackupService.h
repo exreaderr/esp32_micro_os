@@ -39,7 +39,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.2.2-m35"; }   // m35: проверка «не я ли» в момент цикла (init без IP — урок 0.6.3-пр1: TWDT посреди OTA-раздачи); m34: self слот 0
+    const char* getVersion() const override { return "0.3.0-m36"; }   // m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
     // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
     // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
     // в /backup/self/. Восстановление: applySnapshotJson + отложенный
@@ -86,6 +86,7 @@ private:
 
     struct HostState {
         char     ip[20]      = "";
+        char     host[25]    = "";       // sys.hostname из снимка (0.6.6: IP+имя в карточке)
         uint32_t lastOkUnix  = 0;        // последний удачный снимок
         char     lastErr[32] = "";       // "http_401" / "offline" / ...
         uint8_t  files       = 0;        // снимков на SD (оценка, при статусе)

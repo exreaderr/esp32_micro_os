@@ -33,8 +33,8 @@ void registerHomeMasterConfig() {
           "MQTT-брокер", "Потолок клиентов (стенд 07.08: 16 сокетов lwIP = 12 + 4 служебных)" },
         { "broker.user", ConfigType::STRING, "", 0, 0, CFG_CRITICAL,
           "MQTT-брокер", "Логин (пусто = анонимный доступ)" },
-        { "broker.pass", ConfigType::STRING, "", 0, 0, CFG_CRITICAL,
-          "MQTT-брокер", "Пароль (сверяется, только если задан логин)" },
+        { "broker.pass", ConfigType::SECRET, "", 0, 0, CFG_SECRET | CFG_CRITICAL,
+          "MQTT-брокер", "Пароль (только NVS; сверяется, если задан логин)" },
     });
 
     // === ГРУППА: Мост M2 ==============================================

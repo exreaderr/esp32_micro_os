@@ -953,7 +953,10 @@ async function bkLoad(){
     const box=$('bkHosts');box.innerHTML='';
     (j.hosts||[]).forEach(h=>{
       const c=document.createElement('div');c.className='card';
-      const nm=h.ip==='self'?'🏠 мастер (этот)':h.ip;
+      // 0.6.6: имя хоста рядом с IP (не храним связку IP↔имя в голове).
+      // self — всегда «мастер»; у сетевых — h.host из снимка (если уже снимался).
+      const nm=h.ip==='self'?'🏠 мастер (этот)'
+        :(h.host?h.host+' · '+h.ip:h.ip);
       const badge=h.blocked?'<span class="badge err">ждёт пароль</span>'
         :(h.err?'<span class="badge warn">'+h.err+'</span>'
         :(h.lastOk?'<span class="badge ok">ok</span>':'<span class="badge">ещё не было</span>'));

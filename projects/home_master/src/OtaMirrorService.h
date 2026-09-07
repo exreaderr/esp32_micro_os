@@ -47,7 +47,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "OtaMirrorService"; }
-    const char* getVersion() const override { return "0.1.0-om1"; }
+    const char* getVersion() const override { return "0.1.1-om2"; }   // om2: раздача кусками + кормление TWDT (урок 0.6.4-пр1: streamFile ребутил мастера посреди OTA)
     ModuleId getModuleId() const override { return 0x1108; }   // hm: ... 0x1107=Backup, 0x1108=OtaMirror
     void init() override;
     void start() override;

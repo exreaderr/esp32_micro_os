@@ -8,6 +8,8 @@
 #include <services/TimeService.h>
 #include <HTTPClient.h>
 #include <MD5Builder.h>
+#include <esp_task_wdt.h>
+#include <WiFiClient.h>
 #include <time.h>
 
 OtaMirrorService& OtaMirrorService::getInstance() {
@@ -518,8 +520,36 @@ void OtaMirrorService::handleOtaHttp() {
     snprintf(path, sizeof(path), "/ota/%s/%s", host.c_str(), file.c_str());
     File f = sd->open(path, FILE_READ);
     if (!f) { _otaServer.send(404, "text/plain", "not_mirrored"); return; }
-    _otaServer.streamFile(f, file == "version.json" ? "application/json"
-                                                    : "application/octet-stream");
+    // Урок 0.6.4-пр1: streamFile гонит ВЕСЬ файл за один вызов handler'а
+    // (handleClient зовётся из tick → контекст loopTask). Клиент-устройство
+    // душит TCP, пока пишет принятое во flash, — раздача 1,4 МБ ФС длится
+    // дольше 10 с → TWDT ребутит мастера ПОСРЕДИ сессии, устройство ловит
+    // stall_timeout (приёмка 06.09). Поэтому раздаём кусками сами и кормим
+    // сторож на каждом куске: это одна долгая ЛЕГИТИМНАЯ работа, а не зависание.
+    _otaServer.setContentLength(f.size());
+    _otaServer.send(200, file == "version.json" ? "application/json"
+                                                : "application/octet-stream",
+                    "");
+    {
+        WiFiClient cl = _otaServer.client();
+        uint8_t* buf = (uint8_t*)malloc(4096);
+        if (buf == nullptr) { f.close(); return; }   // header ушёл, тела нет — клиент отвалится по длине
+        uint32_t lastProgress = millis();
+        while (f.available()) {
+            int r = f.read(buf, 4096);
+            if (r <= 0) break;
+            size_t w = cl.write(buf, (size_t)r);
+            esp_task_wdt_reset();   // живы: работаем, не висим
+            if (w == 0) {                       // клиент не принимает
+                if (millis() - lastProgress > 8000) break;   // совсем встал — выходим
+            } else {
+                lastProgress = millis();
+            }
+            if (!cl.connected()) break;
+            yield();
+        }
+        free(buf);
+    }
     f.close();
 }
 
