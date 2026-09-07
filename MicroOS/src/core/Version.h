@@ -16,7 +16,7 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.8.6"   // 5.8.6: KERNEL_MAX_MODULES 24→32 (мастер 0.6.1 уперся, HomeMasterApp отвергался); 5.8.5: export/import
+#define MICROOS_VERSION_STR "5.8.7"   // 5.8.7: подтверждение переходов проверок ПАЗ (paz.confirm_bad/ok) + свёртка TICK_OVERRUN в всплески с логом; 5.8.6: KERNEL_MAX_MODULES 24→32; 5.8.5: export/import
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 

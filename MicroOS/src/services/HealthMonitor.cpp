@@ -8,6 +8,7 @@
 #include "ConfigService.h"
 #include "../core/Events.h"
 #include "../core/DriverRegistry.h"
+#include "../core/Kernel.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <cstdlib>
@@ -19,6 +20,21 @@ static constexpr const char* HM_JOURNAL_PATH = "/paz_journal.ndjson";
 HealthMonitor& HealthMonitor::getInstance() {
     static HealthMonitor instance;
     return instance;
+}
+
+// ============================================================================
+// КОНФИГ-СХЕМА (5.8.7)
+// ============================================================================
+void HealthMonitor::registerExtensions() {
+    // Подтверждение переходов проверок (перенос ConfirmState из профиля
+    // мастера, решение владельца 07.09.2026). Дефолты 3/2 = поведение,
+    // принятое в 0.6.8. Ключи добавлены в КОНЕЦ схемы (правило порядка).
+    ConfigService::getInstance().addFields("Система", {
+        { "paz.confirm_bad", ConfigType::UINT, "3", 1, 10, CFG_NONE,
+          "Система", "ПАЗ: плохих прогонов подряд до тревоги" },
+        { "paz.confirm_ok", ConfigType::UINT, "2", 1, 10, CFG_NONE,
+          "Система", "ПАЗ: хороших прогонов подряд до снятия тревоги" },
+    });
 }
 
 // ============================================================================
@@ -135,12 +151,46 @@ void HealthMonitor::onEvent(int32_t eventId, const ShEventData* data) {
                 journalAdd("cpu_temp", msg);
             }
             break;
-        case SH_EVENT_TICK_OVERRUN:
-            _warningCount++;
-            safeStrCopy(d.payload, sizeof(d.payload), "TICK_BUDGET_EXCEEDED");
-            if (data) d.code = data->code;   // длительность, мс
-            postEvent(HEALTH_EVENT_WARNING, &d);
+        case SH_EVENT_TICK_OVERRUN: {
+            // 5.8.7: свёртка всплесков. Было: +1 warn за КАЖДЫЙ тик сверх
+            // бюджета, без строки в логе — в активные фазы (upload, бэкап,
+            // раздача) счётчик крутился при чистом журнале (наблюдение
+            // приёмки 0.6.8: warn 6→23). Стало: всплеск = ОДНО warn +
+            // запись в лог (модуль, длительность); повторные тики — только
+            // статистика; HM_OVERRUN_QUIET_MS тишины — recovered с итогом
+            // (закрытие — в tick(), здесь только накопление).
+            const uint32_t ms = data ? (uint32_t)data->code : 0;
+            if (!_overrunActive) {
+                _overrunActive = true;
+                _overrunCount  = 0;
+                _overrunMaxMs  = 0;
+                _overrunMod[0] = '\0';
+                if (data) {
+                    // Имя модуля по его ModuleId (Kernel знает состав).
+                    Kernel& k = Kernel::getInstance();
+                    for (uint8_t i = 0; i < k.moduleCount(); ++i) {
+                        const Kernel::ModuleSlot* ms2 = k.moduleAt(i);
+                        if (ms2 && ms2->module &&
+                            ms2->module->getModuleId() == data->sourceModule) {
+                            safeStrCopy(_overrunMod, sizeof(_overrunMod),
+                                        ms2->module->getName());
+                            break;
+                        }
+                    }
+                }
+                _warningCount++;
+                ShEventData d; d.clear();
+                d.code = (int32_t)ms;
+                safeStrCopy(d.payload, sizeof(d.payload), "TICK_OVERRUN_BURST");
+                postEvent(HEALTH_EVENT_WARNING, &d);
+                log(LogLevel::Warning, "tick overrun: %s %lu ms (начало всплеска)",
+                    _overrunMod[0] ? _overrunMod : "?", (unsigned long)ms);
+            }
+            _overrunCount++;
+            if (ms > _overrunMaxMs) _overrunMaxMs = ms;
+            _overrunLastMs = millis();
             break;
+        }
     }
 }
 
@@ -156,6 +206,21 @@ void HealthMonitor::tick() {
     if (millis() - _lastHeapCheckMs > HM_HEAP_CHECK_MS) {
         _lastHeapCheckMs = millis();
         checkHeap();
+    }
+
+    // Свёртка TICK_OVERRUN (5.8.7): тишина HM_OVERRUN_QUIET_MS после
+    // последнего перебора = конец всплеска — recovered с итогом в лог.
+    if (_overrunActive && millis() - _overrunLastMs > HM_OVERRUN_QUIET_MS) {
+        _overrunActive = false;
+        if (_warningCount > 0) _warningCount--;
+        ShEventData d; d.clear();
+        d.code = (int32_t)_overrunMaxMs;
+        safeStrCopy(d.payload, sizeof(d.payload), "TICK_OVERRUN_END");
+        postEvent(HEALTH_EVENT_RECOVERED, &d);
+        log(LogLevel::Info,
+            "tick overrun: всплеск закрыт (%s), тиков %u, макс %lu ms",
+            _overrunMod[0] ? _overrunMod : "?",
+            (unsigned)_overrunCount, (unsigned long)_overrunMaxMs);
     }
 
     // Дежурные «залипших датчиков» — раз в 5 с
@@ -282,6 +347,22 @@ void HealthMonitor::runChecks() {
 
         HealthResult r = s.check->run();
         safeStrCopy(s.lastMsg, sizeof(s.lastMsg), r.message);
+
+        // Подтверждение переходов (5.8.7): новый статус принимается после
+        // paz.confirm_bad подряд УХУДШЕНИЙ / paz.confirm_ok подряд
+        // УЛУЧШЕНИЙ. До подтверждения — статус слота неизменен, событий
+        // нет; последнее сообщение (lastMsg) обновляется всегда — панель
+        // видит сырую картину, счётчики/события — только устойчивую.
+        if (r.status != s.lastStatus) {
+            const bool improving = ((int)r.status < (int)s.lastStatus);
+            const uint8_t need = improving
+                ? (uint8_t)cfgGetUInt("paz.confirm_ok", 2)
+                : (uint8_t)cfgGetUInt("paz.confirm_bad", 3);
+            if (r.status == s.pendStatus) s.pendRun++;
+            else { s.pendStatus = r.status; s.pendRun = 1; }
+            if (s.pendRun < need) continue;   // ждём подтверждения
+        }
+        s.pendRun = 0;
 
         // События публикуем только на ПЕРЕХОДАХ статуса (как у драйверов —
         // шина для фактов, не для каждого чиха)

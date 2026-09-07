@@ -57,13 +57,14 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HealthMonitor"; }
-    const char* getVersion() const override { return "5.0.0"; }
+    const char* getVersion() const override { return "5.1.0"; }   // 5.1.0 (ядро 5.8.7): подтверждение переходов проверок (paz.confirm_bad/ok) + свёртка TICK_OVERRUN
     ModuleId getModuleId() const override { return 0x0007; }
 
     void init() override;
     void start() override;
     void stop() override;
     void tick() override;
+    void registerExtensions() override;   // 5.8.7: paz.confirm_bad / paz.confirm_ok
     uint32_t getTickIntervalMs() const override { return 100; }
     void onEvent(int32_t eventId, const ShEventData* data) override;
     bool canHandleEvent(int32_t eventId) const override;
@@ -115,6 +116,12 @@ private:
         uint32_t      lastRunMs;
         HealthResult::Status lastStatus;   // для событий переходов
         char          lastMsg[32];         // последнее сообщение (для /api/health)
+        // Подтверждение переходов (5.8.7, перенос ConfirmState из профиля
+        // мастера): новый статус принимается после paz.confirm_bad подряд
+        // ухудшений / paz.confirm_ok подряд улучшений. «Мигающая» проверка
+        // больше не крутит счётчики и не спамит событиями.
+        HealthResult::Status pendStatus = HealthResult::Status::Ok;
+        uint8_t      pendRun = 0;
     };
 
     CheckSlot _checks[HM_MAX_CHECKS];
@@ -153,4 +160,16 @@ private:
     uint8_t   _warningCount = 0;
     uint8_t   _criticalCount = 0;
     bool      _wdtArmed = false;
+
+    // Свёртка TICK_OVERRUN (5.8.7): всплеск = ОДНО предупреждение с именем
+    // модуля и длительностью в логе; повторные тики всплеска — статистика;
+    // HM_OVERRUN_QUIET_MS тишины — recovered с итогом. Было: +1 warn за
+    // каждый тик сверх бюджета молча — счётчик крутился без строк в логе
+    // (наблюдение приёмки 0.6.8: warn 6→23 при чистом журнале).
+    static constexpr uint32_t HM_OVERRUN_QUIET_MS = 60000;
+    bool      _overrunActive = false;
+    uint32_t  _overrunLastMs = 0;
+    uint16_t  _overrunCount  = 0;
+    uint32_t  _overrunMaxMs  = 0;
+    char      _overrunMod[24] = "";
 };
