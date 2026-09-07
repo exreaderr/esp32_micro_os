@@ -125,5 +125,7 @@ void registerHomeMasterConfig() {
           "OTA-зеркало", "Hostname-ы устройств парка через запятую (sys.hostname)" },
         { "otam.period_h", ConfigType::UINT, "6", 1, 168, CFG_NONE,
           "OTA-зеркало", "Период опроса HA на новые версии, часов" },
+        { "otam.src", ConfigType::STRING, "", 0, 0, CFG_NONE,
+          "OTA-зеркало", "Источник-переопределение (пусто = HA; напр. http://192.168.1.10:8123)" },
     });
 }

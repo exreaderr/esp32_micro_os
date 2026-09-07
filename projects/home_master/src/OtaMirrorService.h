@@ -40,6 +40,7 @@
 #include <core/ModuleBase.h>
 #include <core/ShTypes.h>
 #include <WebServer.h>
+#include <FS.h>
 
 class OtaMirrorService : public ModuleBase {
 public:
@@ -47,7 +48,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "OtaMirrorService"; }
-    const char* getVersion() const override { return "0.1.1-om2"; }   // om2: раздача кусками + кормление TWDT (урок 0.6.4-пр1: streamFile ребутил мастера посреди OTA)
+    const char* getVersion() const override { return "0.2.0-om3"; }   // om3: ручная загрузка троек с верификацией (0.6.7) + otam.src; om2: раздача кусками + TWDT-feed (урок 0.6.4-пр1)
     ModuleId getModuleId() const override { return 0x1108; }   // hm: ... 0x1107=Backup, 0x1108=OtaMirror
     void init() override;
     void start() override;
@@ -110,10 +111,38 @@ private:
     /// urlResolve-семантика ядра: абсолютный как есть; "/path" — от корня HA;
     /// имя файла — от каталога манифеста этого хоста.
     void     urlResolve(const char* host, const char* src, char* out, size_t n) const;
+    /// 0.6.7: база источника — otam.src, если задан (сценарий «просто
+    /// компьютер» без HA), иначе http://<mqtt.host>:8123 как раньше.
+    void     sourceBase(char* out, size_t n) const;
     static bool md5FileOk(fs::File& f, const char* expectHex);  // MD5Builder ядра Arduino
 
     // --- раздача :8123 -----------------------------------------------------
     void     handleOtaHttp();            // onNotFound: whitelist-раздача с SD
+    void     attachRoutes();             // onNotFound + маршруты загрузки (0.6.7)
+
+    // --- 0.6.7: РУЧНАЯ ЗАГРУЗКА ТРОЙКИ (сценарий «соседа»: файлы пришли ---
+    // по почте, источника-HTTP нет вовсе). Приём на :8123 с админ-токеном
+    // (чтение раздачи — открытое, ЗАПИСЬ — только по токену), staging в
+    // /ota/<host>/.stage/, верификация комплекта и атомарный коммит.
+    void     handleOtaUpload();          // куски (upload-обработчик WebServer)
+    void     handleOtaUploadDone();      // HTTP-ответ POST'а
+    /// Все нужные файлы в .stage? Тогда проверки и коммит. msg — вердикт
+    /// для панели ("ok:5.8.7" / "reject:<причина>").
+    bool     tryFinalize(const char* host, char* msg, size_t cap);
+    bool     uploadAuthOk();             // X-Auth-Token / ?token= — админский?
+    static void corsHeaders(WebServer& srv);   // панель на :80, приём на :8123
+    /// md5 файла с SD в hex (проверка против fw_md5/fs_md5 манифеста).
+    static bool fileMd5Hex(const char* path, char* out, size_t cap);
+    /// Версия из бин-тега MICROOS|x.y.z|END внутри firmware.bin ("" — нет).
+    static bool binTagVersion(const char* path, char* out, size_t cap);
+
+    // Состояние текущей загрузки (сервер однопоточный — одна за раз).
+    File     _upFile;
+    char     _upHost[24]  = "";
+    char     _upName[16]  = "";          // version.json / firmware.bin / littlefs.bin
+    bool     _upFailed    = false;
+    uint32_t _upBytes     = 0;
+    char     _upVerdict[96] = "";        // итог tryFinalize для ответа
 
     HostState _hosts[OM_MAX_HOSTS];
     uint8_t   _hostCount   = 0;

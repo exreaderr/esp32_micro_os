@@ -268,6 +268,28 @@ footer b{color:var(--text)}
       <div id="bkSummary" class="note" style="margin-top:8px"></div>
     </div>
     <div id="bkHosts"></div>
+
+    <!-- 0.6.1: OTA-зеркало; 0.6.7: + ручная загрузка тройки (сценарий «соседа») -->
+    <div class="card">
+      <h2>OTA-зеркало парка (SD) <button style="float:right" onclick="needAuth(omLoad)">Обновить</button></h2>
+      <div class="note">Мастер забирает прошивки парка с HA (или из источника <code>otam.src</code>) на SD
+      и раздаёт устройствам по :8123 — устройствам адрес HA не нужен.
+      Настройки — группа «OTA-зеркало» во вкладке ⚙️ Настройки.</div>
+      <div id="omSummary" class="note" style="margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h2>Загрузить обновление вручную</h2>
+      <div class="note">Сценарий «по почте»: получили тройку файлов — выберите устройство и файлы,
+      мастер сам проверит комплект (привязка к устройству, md5 против манифеста, метка версии в прошивке)
+      и примет в строй только целый согласованный набор. Чужой или битый комплект будет ОТКЛОНЁН с причиной.</div>
+      <div class="row"><span class="k">Устройство</span><span><select id="omUpHost"></select></span></div>
+      <div class="row"><span class="k">version.json</span><span><input type="file" id="omUpMan" accept=".json"></span></div>
+      <div class="row"><span class="k">firmware.bin</span><span><input type="file" id="omUpFw" accept=".bin"></span></div>
+      <div class="row"><span class="k">littlefs.bin</span><span><input type="file" id="omUpFs" accept=".bin"></span></div>
+      <div class="row"><span class="k"></span><span><button onclick="omUpload()">Загрузить в зеркало</button></span></div>
+      <div id="omUpMsg" class="note" style="margin-top:8px"></div>
+    </div>
+    <div id="omHosts"></div>
   </section>
 
   <!-- ================= НАСТРОЙКИ (прочие группы) ================= -->
@@ -1029,10 +1051,62 @@ async function omLoad(){
       box.appendChild(c);
     });
     if(!(j.hosts||[]).length)box.innerHTML='<div class="card k">Список otam.hosts пуст.</div>';
+    // 0.6.7: список устройств в форму ручной загрузки (выбор сохраняем).
+    const sel=$('omUpHost');
+    if(sel){
+      const cur=sel.value;
+      sel.innerHTML='';
+      (j.hosts||[]).forEach(h=>{
+        const o=document.createElement('option');
+        o.value=h.host;o.textContent=h.host;
+        sel.appendChild(o);
+      });
+      if(cur)sel.value=cur;
+    }
   }catch(e){}
 }
 async function omCheck(host){
   try{await api('POST','/api/dev/hm/otam/check?host='+encodeURIComponent(host));setTimeout(omLoad,3000);}catch(e){}
+}
+// 0.6.7: ручная загрузка тройки на :8123 (другой origin — прямой fetch,
+// токен тот же админский). Файлы идут по одному; вердикт мастера — текстом.
+async function omUpload(){
+  const m=$('omUpMsg');
+  const host=$('omUpHost').value;
+  if(!host){m.textContent='Выберите устройство.';return;}
+  const files=[['omUpMan','version.json'],['omUpFw','firmware.bin'],['omUpFs','littlefs.bin']];
+  const base='http://'+location.hostname+':8123/local/ota/upload';
+  let verdict='';
+  for(const [id,name] of files){
+    const inp=$(id);
+    if(!inp.files||!inp.files.length)continue;
+    m.textContent='Загружаю '+name+' ('+Math.round(inp.files[0].size/1024)+' КБ)...';
+    const fd=new FormData();
+    fd.append('file',inp.files[0],name);
+    try{
+      const r=await fetch(base+'?host='+encodeURIComponent(host)+'&file='+name,
+        {method:'POST',headers:{'X-Auth-Token':T},body:fd});
+      const j=await r.json();
+      if(!j.ok){m.innerHTML='<span class="badge err">'+name+': '+(j.err||r.status)+'</span>';return;}
+      if(j.verdict)verdict=j.verdict;
+    }catch(e){m.innerHTML='<span class="badge err">'+name+': сеть/порт недоступен</span>';return;}
+  }
+  if(!verdict){m.textContent='Файлы приняты в staging — ждём остальные части комплекта.';return;}
+  // Вердикт мастера — понятным текстом.
+  const RU={
+    'reject:manifest_bad':'ОТКЛОНЕНО: манифест повреждён или неполон',
+    'reject:fw_md5':'ОТКЛОНЕНО: md5 прошивки не сошёлся с манифестом',
+    'reject:fs_md5':'ОТКЛОНЕНО: md5 файловой системы не сошёлся с манифестом',
+    'reject:no_sd':'ОТКЛОНЕНО: SD не смонтирована'};
+  let txt=RU[verdict];
+  if(!txt){
+    if(verdict.startsWith('ok:'))txt='ПРИНЯТО: версия '+verdict.slice(3)+' принята в строй (старая — в archive)';
+    else if(verdict.startsWith('reject:wrong_host:'))txt='ОТКЛОНЕНО: комплект для «'+verdict.slice(18)+'», а выбрано «'+host+'»';
+    else if(verdict.startsWith('reject:fw_ver:'))txt='ОТКЛОНЕНО: в прошивке зашита версия '+verdict.slice(14)+', в манифесте — другая';
+    else txt=verdict;
+  }
+  m.innerHTML=(verdict.startsWith('ok:')?'<span class="badge ok">':'<span class="badge err">')+txt+'</span>';
+  setTimeout(omLoad,2000);
 }
 
 async function loadLogs(){

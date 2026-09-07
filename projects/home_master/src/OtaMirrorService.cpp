@@ -6,6 +6,7 @@
 #include <core/Events.h>
 #include <services/ConfigService.h>
 #include <services/TimeService.h>
+#include <services/HttpService.h>
 #include <HTTPClient.h>
 #include <MD5Builder.h>
 #include <esp_task_wdt.h>
@@ -46,11 +47,22 @@ void OtaMirrorService::init() {
     EventBus::getInstance().subscribe(CFG_EVENT_CHANGED, this);
 }
 
+void OtaMirrorService::attachRoutes() {
+    // Второй HTTP-сервер: whitelist-раздача /local/ota/ с SD (onNotFound
+    // ловит всё — внутри строгая проверка пути) + приём троек (0.6.7).
+    _otaServer.onNotFound([this]() { handleOtaHttp(); });
+    // 0.6.7: ручная загрузка комплекта (сценарий «соседа»). OPTIONS —
+    // preflight: панель на :80, приёмник на :8123 (другой origin).
+    _otaServer.on("/local/ota/upload", HTTP_OPTIONS,
+                  [this]() { corsHeaders(_otaServer); _otaServer.send(204); });
+    _otaServer.on("/local/ota/upload", HTTP_POST,
+                  [this]() { handleOtaUploadDone(); },
+                  [this]() { handleOtaUpload(); });
+}
+
 void OtaMirrorService::start() {
     if (_enabled) {
-        // Второй HTTP-сервер: только whitelist-раздача /local/ota/ с SD.
-        // onNotFound ловит всё — внутри строгая проверка пути (handleOtaHttp).
-        _otaServer.onNotFound([this]() { handleOtaHttp(); });
+        attachRoutes();
         _otaServer.begin();
         _serverUp = true;
     }
@@ -94,7 +106,7 @@ void OtaMirrorService::onEvent(int32_t eventId, const ShEventData* data) {
     if (strcmp(data->payload, "otam.enabled") == 0) {
         _enabled = cfgGetBool("otam.enabled", true);
         if (_enabled && !_serverUp) {
-            _otaServer.onNotFound([this]() { handleOtaHttp(); });
+            attachRoutes();
             _otaServer.begin();
             _serverUp = true;
         }
@@ -310,27 +322,37 @@ void OtaMirrorService::finishHost(HostState& h, const char* err) {
 // HTTP-КЛИЕНТ К HA (контекст tick — там HTTPClient безопасен, урок
 // UpdateService: «в loop, где HTTPClient безопасен по стеку»)
 // ============================================================================
+void OtaMirrorService::sourceBase(char* out, size_t n) const {
+    // 0.6.7: otam.src — переопределение источника (сценарий «соседа»:
+    // просто компьютер с веб-сервером, HA нет). Пусто — как раньше: HA.
+    cfgGetStr("otam.src", out, n, "");
+    if (out[0] != '\0') return;
+    char ha[CFG_VALUE_LEN];
+    cfgGetStr("mqtt.host", ha, sizeof(ha), "");
+    snprintf(out, n, "http://%s:8123", ha);
+}
+
 void OtaMirrorService::urlResolve(const char* host, const char* src,
                                   char* out, size_t n) const {
     if (strncmp(src, "http", 4) == 0) {
         safeStrCopy(out, n, src);
         return;
     }
-    char ha[CFG_VALUE_LEN];
-    cfgGetStr("mqtt.host", ha, sizeof(ha), "");
+    char base[CFG_VALUE_LEN];
+    sourceBase(base, sizeof(base));
     if (src[0] == '/') {
-        snprintf(out, n, "http://%s:8123%s", ha, src);
+        snprintf(out, n, "%s%s", base, src);
         return;
     }
-    snprintf(out, n, "http://%s:8123/local/ota/%s/%s", ha, host, src);
+    snprintf(out, n, "%s/local/ota/%s/%s", base, host, src);
 }
 
 bool OtaMirrorService::fetchManifest(const char* host, char* buf, size_t cap,
                                      char* err, size_t errCap) {
-    char ha[CFG_VALUE_LEN];
-    cfgGetStr("mqtt.host", ha, sizeof(ha), "");
+    char base[CFG_VALUE_LEN];
+    sourceBase(base, sizeof(base));
     char url[200];
-    snprintf(url, sizeof(url), "http://%s:8123/local/ota/%s/version.json", ha, host);
+    snprintf(url, sizeof(url), "%s/local/ota/%s/version.json", base, host);
     HTTPClient http;
     http.setTimeout(4000);   // фаза целиком < WDT (10 с): connect+headers ≤ 4 с
     if (!http.begin(url)) { snprintf(err, errCap, "begin"); return false; }
@@ -551,6 +573,250 @@ void OtaMirrorService::handleOtaHttp() {
         free(buf);
     }
     f.close();
+}
+
+// ============================================================================
+// 0.6.7: РУЧНАЯ ЗАГРУЗКА ТРОЙКИ (сценарий «соседа»)
+// Приём на :8123 (staging → верификация → атомарный коммит). Проверки
+// против «человеческого фактора» (владелец 07.09: «чем больше проверок на
+// соответствие, тем лучше»):
+//   1) host манифеста (если поле есть) == выбранному устройству;
+//   2) md5 firmware.bin == fw_md5, md5 littlefs.bin == fs_md5;
+//   3) версия из бин-тега MICROOS|x.y.z|END == version манифеста.
+// До коммита зеркало раздаёт СТАРУЮ целую тройку; старая уходит в archive/.
+// ============================================================================
+void OtaMirrorService::corsHeaders(WebServer& srv) {
+    // Панель открыта с :80, приёмник на :8123 — другой origin, нужен CORS.
+    srv.sendHeader("Access-Control-Allow-Origin", "*");
+    srv.sendHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    srv.sendHeader("Access-Control-Allow-Headers", "X-Auth-Token,Content-Type");
+}
+
+bool OtaMirrorService::uploadAuthOk() {
+    // Запись — только по админскому токену (чтение раздачи открыто —
+    // устройства токенов не шлют, но и не пишут).
+    String tok;
+    if (_otaServer.hasHeader("X-Auth-Token")) tok = _otaServer.header("X-Auth-Token");
+    else tok = _otaServer.arg("token");
+    return tok.length() > 0 &&
+           HttpService::getInstance().isAdminToken(tok.c_str());
+}
+
+void OtaMirrorService::handleOtaUpload() {
+    HTTPUpload& up = _otaServer.upload();
+    if (up.status == UPLOAD_FILE_START) {
+        _upFailed = false;
+        _upBytes  = 0;
+        _upVerdict[0] = '\0';
+        // Хост и имя — из АРГУМЕНТОВ (имя файла на компьютере клиента
+        // не доверяем: оно может быть каким угодно).
+        safeStrCopy(_upHost, sizeof(_upHost), _otaServer.arg("host").c_str());
+        safeStrCopy(_upName, sizeof(_upName), _otaServer.arg("file").c_str());
+        bool nameOk = (strcmp(_upName, "version.json") == 0 ||
+                       strcmp(_upName, "firmware.bin") == 0 ||
+                       strcmp(_upName, "littlefs.bin") == 0);
+        bool pathOk = (strstr(_upHost, "..") == nullptr &&
+                       strchr(_upHost, '/') == nullptr && _upHost[0] != '\0');
+        char csv[CFG_VALUE_LEN];
+        cfgGetStr("otam.hosts", csv, sizeof(csv), "");
+        fs::FS* sd = SdService::getInstance().fs();
+        if (!uploadAuthOk() || !nameOk || !pathOk ||
+            !hostListed(csv, _upHost) || sd == nullptr) {
+            _upFailed = true;
+            return;
+        }
+        // Staging: /ota/<host>/.stage/ (mkdir нерекурсивен — урок 0.6.1).
+        char dir[96];
+        if (!sd->exists("/ota")) sd->mkdir("/ota");
+        snprintf(dir, sizeof(dir), "/ota/%s", _upHost);
+        if (!sd->exists(dir)) sd->mkdir(dir);
+        snprintf(dir, sizeof(dir), "/ota/%s/.stage", _upHost);
+        if (!sd->exists(dir)) sd->mkdir(dir);
+        char path[112];
+        snprintf(path, sizeof(path), "%s/%s", dir, _upName);
+        sd->remove(path);
+        _upFile = sd->open(path, FILE_WRITE);
+        if (!_upFile) _upFailed = true;
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+        if (_upFailed || !_upFile) return;
+        if (_upFile.write(up.buf, up.currentSize) != up.currentSize) {
+            _upFailed = true;
+        } else {
+            _upBytes += up.currentSize;
+        }
+        esp_task_wdt_reset();   // серия кусков — долгая легитимная работа
+    } else if (up.status == UPLOAD_FILE_END) {
+        if (_upFile) _upFile.close();
+        if (!_upFailed) {
+            // Комплект собран? Тогда верификация и коммит (вердикт — в ответ).
+            tryFinalize(_upHost, _upVerdict, sizeof(_upVerdict));
+        }
+    } else {   // UPLOAD_FILE_ABORTED
+        if (_upFile) _upFile.close();
+        _upFailed = true;
+    }
+}
+
+void OtaMirrorService::handleOtaUploadDone() {
+    corsHeaders(_otaServer);
+    if (!uploadAuthOk()) {
+        _otaServer.send(401, "application/json", "{\"ok\":0,\"err\":\"auth\"}");
+        return;
+    }
+    if (_upFailed) {
+        _otaServer.send(400, "application/json", "{\"ok\":0,\"err\":\"upload\"}");
+        return;
+    }
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":1,\"file\":\"%s\",\"bytes\":%lu,\"verdict\":\"%s\"}",
+             _upName, (unsigned long)_upBytes, _upVerdict);
+    _otaServer.send(200, "application/json", buf);
+}
+
+bool OtaMirrorService::fileMd5Hex(const char* path, char* out, size_t cap) {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr || cap < 33) return false;
+    File f = sd->open(path, FILE_READ);
+    if (!f) return false;
+    MD5Builder md5;
+    md5.begin();
+    uint8_t buf[1024];
+    while (f.available()) {
+        int r = f.read(buf, sizeof(buf));
+        if (r <= 0) break;
+        md5.add(buf, (size_t)r);
+    }
+    f.close();
+    md5.calculate();
+    safeStrCopy(out, cap, md5.toString().c_str());
+    return true;
+}
+
+bool OtaMirrorService::binTagVersion(const char* path, char* out, size_t cap) {
+    // Ищем тег MICROOS|x.y.z|END (зашит в .bin, урок «застрявшего слота»).
+    // Читаем кусками с нахлёстом — тег может попасть на границу.
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) return false;
+    File f = sd->open(path, FILE_READ);
+    if (!f) return false;
+    static char win[1088];   // 1024 + нахлёст 64 (static, не стек)
+    size_t carry = 0;
+    while (f.available()) {
+        int r = f.read((uint8_t*)win + carry, 1024);
+        if (r <= 0) break;
+        size_t total = carry + (size_t)r;
+        char* tag = (char*)memmem(win, total, "MICROOS|", 8);
+        if (tag != nullptr) {
+            char* end = (char*)memmem(tag + 8, total - (size_t)(tag - win) - 8,
+                                      "|END", 4);
+            if (end != nullptr) {
+                size_t n = (size_t)(end - (tag + 8));
+                if (n > 0 && n < cap) {
+                    memcpy(out, tag + 8, n);
+                    out[n] = '\0';
+                    f.close();
+                    return true;
+                }
+            }
+        }
+        // нахлёст: последние 63 байта — в начало окна
+        carry = total < 63 ? total : 63;
+        memmove(win, win + total - carry, carry);
+    }
+    f.close();
+    return false;
+}
+
+bool OtaMirrorService::tryFinalize(const char* host, char* msg, size_t cap) {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) { snprintf(msg, cap, "reject:no_sd"); return false; }
+    char dir[96], pMan[112], pFw[112], pFs[112];
+    snprintf(dir, sizeof(dir), "/ota/%s/.stage", host);
+    snprintf(pMan, sizeof(pMan), "%s/version.json", dir);
+    snprintf(pFw,  sizeof(pFw),  "%s/firmware.bin", dir);
+    snprintf(pFs,  sizeof(pFs),  "%s/littlefs.bin", dir);
+    // Комплект неполон — НЕ ошибка: ждём остальные файлы (вердикт пуст).
+    if (!sd->exists(pMan) || !sd->exists(pFw)) return false;
+
+    auto wipeStage = [&]() {
+        sd->remove(pMan); sd->remove(pFw); sd->remove(pFs);
+    };
+
+    static char js[MANIFEST_CAP];   // static, не стек
+    {
+        File f = sd->open(pMan, FILE_READ);
+        size_t r = f ? f.read((uint8_t*)js, sizeof(js) - 1) : 0;
+        if (f) f.close();
+        js[r] = '\0';
+    }
+    char ver[20] = "", fwMd5[40] = "", fsMd5[40] = "", mhost[24] = "";
+    omJsonStr(js, "\"version\"", ver, sizeof(ver));
+    if (!omJsonStr(js, "\"fw_md5\"", fwMd5, sizeof(fwMd5)))
+        omJsonStr(js, "\"md5\"", fwMd5, sizeof(fwMd5));
+    omJsonStr(js, "\"fs_md5\"", fsMd5, sizeof(fsMd5));
+    omJsonStr(js, "\"host\"", mhost, sizeof(mhost));
+
+    if (ver[0] == '\0' || fwMd5[0] == '\0') {
+        wipeStage(); snprintf(msg, cap, "reject:manifest_bad"); return false;
+    }
+    // Проверка 1: привязка к устройству (манифесты Build Master 0.6.7+).
+    if (mhost[0] != '\0' && strcmp(mhost, host) != 0) {
+        wipeStage(); snprintf(msg, cap, "reject:wrong_host:%s", mhost);
+        return false;
+    }
+    // Проверка 2: md5 бинарей против манифеста.
+    char hex[40];
+    if (!fileMd5Hex(pFw, hex, sizeof(hex)) || strcasecmp(hex, fwMd5) != 0) {
+        wipeStage(); snprintf(msg, cap, "reject:fw_md5"); return false;
+    }
+    bool needFs = (fsMd5[0] != '\0');
+    if (needFs && !sd->exists(pFs)) return false;   // ждём littlefs.bin
+    if (needFs &&
+        (!fileMd5Hex(pFs, hex, sizeof(hex)) || strcasecmp(hex, fsMd5) != 0)) {
+        wipeStage(); snprintf(msg, cap, "reject:fs_md5"); return false;
+    }
+    // Проверка 3: версия из бин-тега прошивки == version манифеста.
+    char tag[20] = "";
+    if (binTagVersion(pFw, tag, sizeof(tag)) && strcmp(tag, ver) != 0) {
+        wipeStage(); snprintf(msg, cap, "reject:fw_ver:%s", tag);
+        return false;
+    }
+
+    // КОММИТ: старая тройка — в archive/, новая — на место (rename).
+    char adir[96];
+    snprintf(adir, sizeof(adir), "/ota/%s/archive", host);
+    if (!sd->exists(adir)) sd->mkdir(adir);
+    static const char* TRIO[3] = { "version.json", "firmware.bin", "littlefs.bin" };
+    for (uint8_t i = 0; i < 3; ++i) {
+        char dst[112], arc[128], stg[112];
+        snprintf(dst, sizeof(dst), "/ota/%s/%s", host, TRIO[i]);
+        snprintf(arc, sizeof(arc), "%s/%s", adir, TRIO[i]);
+        snprintf(stg, sizeof(stg), "%s/%s", dir, TRIO[i]);
+        if (sd->exists(dst)) { sd->remove(arc); sd->rename(dst, arc); }
+        if (sd->exists(stg)) sd->rename(stg, dst);
+    }
+    sd->rmdir(dir);
+
+    // Стейт хоста: версия/размеры — из принятого комплекта.
+    int idx = findHost(host);
+    if (idx >= 0) {
+        HostState& h = _hosts[idx];
+        safeStrCopy(h.version, sizeof(h.version), ver);
+        h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
+        h.lastErr[0] = '\0';
+        char fin[112];
+        File f;
+        snprintf(fin, sizeof(fin), "/ota/%s/firmware.bin", host);
+        f = sd->open(fin, FILE_READ);
+        if (f) { h.fwSize = (uint32_t)f.size(); f.close(); }
+        snprintf(fin, sizeof(fin), "/ota/%s/littlefs.bin", host);
+        f = sd->open(fin, FILE_READ);
+        if (f) { h.fsSize = (uint32_t)f.size(); f.close(); }
+    }
+    snprintf(msg, cap, "ok:%s", ver);
+    log(LogLevel::Info, "om: ручная загрузка %s ПРИНЯТА (v%s)", host, ver);
+    return true;
 }
 
 // ============================================================================
