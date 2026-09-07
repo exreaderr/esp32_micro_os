@@ -1084,7 +1084,9 @@ async function omUpload(){
     const fd=new FormData();
     fd.append('file',inp.files[0],name);
     try{
-      const r=await fetch(base+'?host='+encodeURIComponent(host)+'&file='+name,
+      // токен и в заголовке, и в query (урок 0.6.7-пр1: collectHeaders)
+      const r=await fetch(base+'?host='+encodeURIComponent(host)+'&file='+name
+          +'&token='+encodeURIComponent(T),
         {method:'POST',headers:{'X-Auth-Token':T},body:fd});
       const j=await r.json();
       if(!j.ok){m.innerHTML='<span class="badge err">'+name+': '+(j.err||r.status)+'</span>';return;}

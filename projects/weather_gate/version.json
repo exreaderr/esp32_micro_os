@@ -1,8 +1,9 @@
 {
   "version": "5.8.6",
   "fw_md5": "1a6ec0dd8e56d33182a52219272add31",
-  "fs_md5": "7954d022883acce8cbbd4d0224957217",
+  "fs_md5": "b4b7c9dd475c0b2940c99a2afd44ccdf",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
-  "fs_url": "littlefs.bin"
+  "fs_url": "littlefs.bin",
+  "host": "weather_gate"
 }

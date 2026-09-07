@@ -50,6 +50,10 @@ void OtaMirrorService::init() {
 void OtaMirrorService::attachRoutes() {
     // Второй HTTP-сервер: whitelist-раздача /local/ota/ с SD (onNotFound
     // ловит всё — внутри строгая проверка пути) + приём троек (0.6.7).
+    // Урок 0.6.7-пр1: WebServer собирает ТОЛЬКО объявленные заголовки —
+    // без collectHeaders X-Auth-Token до handler'а не доходит (401 «auth»).
+    static const char* HDRS[] = { "X-Auth-Token" };
+    _otaServer.collectHeaders(HDRS, 1);
     _otaServer.onNotFound([this]() { handleOtaHttp(); });
     // 0.6.7: ручная загрузка комплекта (сценарий «соседа»). OPTIONS —
     // preflight: панель на :80, приёмник на :8123 (другой origin).
