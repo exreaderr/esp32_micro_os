@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Умный счётчик — МикроОС 5.0</title>
+<!--
+  sc.html — панель профиля smart_counter (МикроОС 5.0, ядро 5.8.8).
+  Дизайн — наследие монолита v4.4.2 (Mushroom-карточки, тёмная тема).
+  Данные: GET /api/dev/state (публично, показания — не секрет).
+  Графики: GET /api/dev/dlog (история — только админ, паттерн smart_lock;
+  токен ядерной сессии X-Auth-Token, общий с /admin — localStorage mos_t).
+  Настройки — ядерная админка /admin (правило 23: Сеть/ПАЗ/Система/Админ,
+  профильные группы sc.* рендерятся там автоматически).
+-->
+<link rel="stylesheet" href="/web/uplot.css">
+<script src="/web/uplot.js"></script>
+<style>
+:root{
+  --bg:#000;--surface:#1c1c1e;--text:#fff;--muted:#aeaeaf;--border:#2c2c2e;
+  --primary:#4caf50;--info:#2196f3;--warn:#ff9800;--err:#f44336;--gas:#9c27b0;
+}
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{background:var(--bg);color:var(--text);padding:12px;display:flex;flex-direction:column;align-items:center}
+.container{width:100%;max-width:560px;display:flex;flex-direction:column;gap:12px}
+.hdr{display:flex;justify-content:space-between;align-items:baseline;padding:4px 6px}
+.hdr b{font-size:18px}
+.hdr span{font-size:11px;color:var(--muted)}
+.card{background:var(--surface);border-radius:20px;padding:14px;border:1px solid var(--border)}
+.chead{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.ctitle{font-size:15px;font-weight:700}
+.csub{font-size:11px;color:var(--muted)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px;border-radius:14px}
+.ticon{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;color:#fff;flex-shrink:0}
+.tt{font-size:11px;font-weight:600;color:var(--muted)}
+.tv{font-size:16px;font-weight:700;white-space:nowrap}
+table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
+td{padding:6px 4px;border-bottom:1px solid var(--border)}
+tr:last-child td{border:none}
+td.l{color:var(--muted)} td.v{text-align:right;font-weight:700}
+.badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700}
+.b-ok{background:#1b3a24;color:#7bd88f}.b-warn{background:#3a2c12;color:#ffb74d}.b-err{background:#3a1512;color:#ef9a9a}
+@keyframes pulse{0%{background:rgba(244,67,54,.08)}50%{background:rgba(244,67,54,.28)}100%{background:rgba(244,67,54,.08)}}
+.crit{animation:pulse 2s infinite}
+.chart{width:100%;height:150px;background:var(--bg);border-radius:14px;padding:6px;margin-top:8px;overflow:hidden}
+.uplot{font-size:10px!important}
+.foot{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 6px}
+a{color:#6af}
+.muted-note{font-size:12px;color:var(--muted);background:var(--bg);border-radius:12px;padding:10px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="hdr"><b>Умный счётчик</b><span>МикроОС 5.0 · профиль <b id="ver">—</b></span></div>
+
+  <!-- ВОДА -->
+  <div class="card" id="card_water">
+    <div class="chead"><div class="ctitle">💧 Холодная вода</div>
+      <span class="badge b-ok" id="leak_badge">протечек нет</span></div>
+    <div class="grid2">
+      <div class="tile"><div class="ticon" style="background:var(--info)">📊</div>
+        <div><div class="tt">Общий итог</div><div class="tv" id="w_total">—</div></div></div>
+      <div class="tile"><div class="ticon" style="background:var(--primary)">💰</div>
+        <div><div class="tt">За расчётный месяц</div><div class="tv" id="w_month">—</div></div></div>
+    </div>
+    <table>
+      <tr><td class="l">Расход сейчас:</td><td class="v" id="w_flow">—</td></tr>
+      <tr><td class="l">К оплате за месяц:</td><td class="v" id="w_bill">—</td></tr>
+    </table>
+    <div class="chart" id="ch_water"></div>
+  </div>
+
+  <!-- ГАЗ (скрывается, если канал выключен — честное отсутствие, правило 23) -->
+  <div class="card" id="card_gas" style="display:none">
+    <div class="chead"><div class="ctitle">🔥 Газ</div></div>
+    <div class="grid2">
+      <div class="tile"><div class="ticon" style="background:var(--gas)">📊</div>
+        <div><div class="tt">Общий итог</div><div class="tv" id="g_total">—</div></div></div>
+      <div class="tile"><div class="ticon" style="background:var(--primary)">💰</div>
+        <div><div class="tt">За расчётный месяц</div><div class="tv" id="g_month">—</div></div></div>
+    </div>
+    <table><tr><td class="l">К оплате за месяц:</td><td class="v" id="g_bill">—</td></tr></table>
+  </div>
+
+  <!-- ЭЛЕКТРО -->
+  <div class="card">
+    <div class="chead"><div class="ctitle">⚡ Электросеть (Меркурий-206)</div>
+      <span class="csub" id="e_sub"></span></div>
+    <div class="grid2">
+      <div class="tile"><div class="ticon" style="background:var(--warn)">📈</div>
+        <div><div class="tt">Накоплено всего</div><div class="tv" id="e_total">—</div></div></div>
+      <div class="tile"><div class="ticon" style="background:var(--primary)">💰</div>
+        <div><div class="tt">За расчётный месяц</div><div class="tv" id="e_month">—</div></div></div>
+    </div>
+    <table><tr><td class="l">К оплате за месяц:</td><td class="v" id="e_bill">—</td></tr></table>
+    <div class="muted-note">Онлайн-параметры сети (напряжение, ток, мощность) появятся
+      со стадией C2 — драйвер RS-485 в работе. Показания и биллинг уже считаются.</div>
+  </div>
+
+  <!-- ФИЛЬТР -->
+  <div class="card" id="card_filter">
+    <div class="chead"><div class="ctitle">🛢️ Фильтр Big Blue 20"</div>
+      <span class="badge b-ok" id="f_badge">в норме</span></div>
+    <table>
+      <tr><td class="l">Израсходовано ресурса:</td><td class="v" id="f_used">—</td></tr>
+    </table>
+  </div>
+
+  <!-- ПИТАНИЕ / ДИАГНОСТИКА -->
+  <div class="card" id="card_pwr">
+    <div class="chead"><div class="ctitle">🔋 Питание и диагностика</div></div>
+    <table>
+      <tr><td class="l">Источник питания:</td><td class="v" id="p_src">—</td></tr>
+      <tr><td class="l">Аккумулятор ИБП:</td><td class="v" id="p_batt">—</td></tr>
+      <tr><td class="l">Записей в NVS / потерь:</td><td class="v" id="p_flush">—</td></tr>
+      <tr><td class="l">Отчётный день / последний сброс:</td><td class="v" id="p_bill">—</td></tr>
+    </table>
+    <div class="chart" id="ch_batt"></div>
+  </div>
+
+  <div class="foot">
+    <span><a href="/admin">Настройки и система →</a></span>
+    <span id="upd">обновлено —</span>
+  </div>
+</div>
+
+<script>
+const T = localStorage.mos_t || '';
+const fmt3 = v => v.toFixed(3) + ' м³';
+const fmtR = v => v.toFixed(2) + ' руб';
+let chW = null, chB = null, chWaterId = -1, chBattId = -1;
+
+async function loadState() {
+  try {
+    const j = await (await fetch('/api/dev/state')).json();
+    // Вода
+    document.getElementById('w_total').textContent = fmt3(j.water.total);
+    document.getElementById('w_month').textContent = fmt3(j.water.monthly);
+    document.getElementById('w_flow').textContent  = j.water.flow_lh.toFixed(1) + ' л/ч';
+    document.getElementById('w_bill').textContent  = fmtR(j.water.bill);
+    const lb = document.getElementById('leak_badge');
+    if (j.leak.active) { lb.textContent = 'ПРОТЕЧКА'; lb.className = 'badge b-err';
+      document.getElementById('card_water').classList.add('crit'); }
+    else { lb.textContent = 'протечек нет'; lb.className = 'badge b-ok';
+      document.getElementById('card_water').classList.remove('crit'); }
+    // Газ (честное отсутствие при выключенном канале)
+    if (j.gas.enabled) {
+      document.getElementById('card_gas').style.display = '';
+      document.getElementById('g_total').textContent = fmt3(j.gas.total);
+      document.getElementById('g_month').textContent = fmt3(j.gas.monthly);
+      document.getElementById('g_bill').textContent  = fmtR(j.gas.bill);
+    }
+    // Электро
+    document.getElementById('e_total').textContent = j.energy.total.toFixed(2) + ' кВт·ч';
+    document.getElementById('e_month').textContent = j.energy.monthly.toFixed(2) + ' кВт·ч';
+    document.getElementById('e_bill').textContent  = fmtR(j.energy.bill);
+    document.getElementById('e_sub').textContent   = j.energy.meter_on ? 'опрос разрешён' : 'опрос выкл';
+    // Фильтр
+    document.getElementById('f_used').textContent =
+      Math.round(j.filter.used_l) + ' л / ' + Math.round(j.filter.limit_l) + ' л';
+    const fb = document.getElementById('f_badge');
+    if (j.filter.warning) { fb.textContent = 'ЗАМЕНИТЬ'; fb.className = 'badge b-err';
+      document.getElementById('card_filter').classList.add('crit'); }
+    else { fb.textContent = 'в норме'; fb.className = 'badge b-ok';
+      document.getElementById('card_filter').classList.remove('crit'); }
+    // Питание
+    document.getElementById('p_src').textContent =
+      j.pwr.ac ? 'Сеть 220В (AC)' : '⚠ АКБ ИБП (резерв)';
+    document.getElementById('p_batt').textContent =
+      j.pwr.batt_v.toFixed(2) + ' В · ' + ['отсутствует','РАЗРЯЖЕН','OK'][j.pwr.batt_state];
+    document.getElementById('card_pwr').classList.toggle('crit', !j.pwr.ac);
+    document.getElementById('ver').textContent = j.ver;
+    document.getElementById('upd').textContent =
+      'обновлено ' + new Date().toLocaleTimeString('ru-RU');
+  } catch(e) { /* сеть молчит — следующий цикл */ }
+}
+
+async function loadCounters() {   // диагностика CounterService
+  try {
+    const j = await (await fetch('/api/dev/counters')).json();
+    document.getElementById('p_flush').textContent = j.flush + ' / ' + j.dropped;
+    document.getElementById('p_bill').textContent = '—';
+  } catch(e) {}
+}
+
+async function loadChannels() {   // графики — только админ (паттерн smart_lock)
+  if (!T) return;
+  try {
+    const r = await fetch('/api/dev/dlog/channels', {headers:{'X-Auth-Token':T}});
+    if (!r.ok) return;
+    const j = await r.json();
+    for (const c of j.channels) {
+      if (c.id === 'sc_wf')  chWaterId = c.i;
+      if (c.id === 'sc_bat') chBattId  = c.i;
+    }
+    if (chWaterId >= 0) chW = makeChart('ch_water', 'л/ч', '#2196f3');
+    if (chBattId  >= 0) chB = makeChart('ch_batt',  'В',   '#4caf50');
+    loadCharts();
+  } catch(e) {}
+}
+
+function makeChart(boxId, label, color) {
+  const box = document.getElementById(boxId);
+  return new uPlot({
+    width: box.clientWidth - 12, height: 140,
+    scales: { x: { time: true } },
+    axes: [ {stroke:'#86868b', grid:{stroke:'#2c2c2e'}},
+            {stroke:'#86868b', grid:{stroke:'#2c2c2e'}, size:44} ],
+    series: [ {}, { label, stroke: color, width: 2,
+                    points: { show: false } } ],
+    cursor: { show: true }, legend: { show: false }
+  }, [[],[]], box);
+}
+
+async function loadCharts() {
+  const load = async (id, chart) => {
+    if (id < 0 || !chart) return;
+    const r = await fetch('/api/dev/dlog?ch=' + id + '&range=6h',
+                          {headers:{'X-Auth-Token':T}});
+    if (!r.ok) return;
+    const j = await r.json();
+    const xs = j.pts.map(p => p[0]), ys = j.pts.map(p => p[1]);
+    chart.setData([xs, ys]);
+  };
+  await load(chWaterId, chW);
+  await load(chBattId,  chB);
+}
+
+loadState(); loadCounters(); loadChannels();
+setInterval(loadState, 3000);
+setInterval(loadCounters, 30000);
+setInterval(loadCharts, 60000);
+</script>
+</body>
+</html>
