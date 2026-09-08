@@ -13,6 +13,12 @@
 // ============================================================================
 #pragma once
 
+// 5.8.8: единственный источник версии профиля (метка в .bin + getVersion).
+// Шкала профиля отвязана от ядра (как у замка 08.09.2026): ведущий 0 =
+// «это версия ПРОФИЛЯ». Двухполевая метка MICROOS|ядро|профиль|END.
+#define MICROOS_PROFILE_VER 0.5.6
+
+#include <core/Version.h>
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
 #include <drivers/WeatherCore.h>
@@ -50,7 +56,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return "0.5.4"; } // edgesDroppedTotal: в Радио темп потерь фронтов (+Δ за окно, N/мин) вместо пугающего абсолюта; всего — вторично (дорожная карта 05.09)
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.6: двухполевая версия OTA (ядро 5.8.8, профиль отвязан от шкалы ядра); 0.5.5: фикс remote.update_available
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки

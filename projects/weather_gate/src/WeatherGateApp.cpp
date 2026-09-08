@@ -571,6 +571,13 @@ void WeatherGateApp::registerExtensions() {
 
 void WeatherGateApp::init() {
     _initialized = true;   // ресурсов у модуля нет; железо — у драйверов
+    UpdateService::getInstance().setProfileVersion(getVersion());   // 5.8.8: двухполевая сверка OTA (ядро+профиль)
+#ifdef MICROOS_PROFILE_VER
+    // used не спасает от --gc-sections: живая ссылка нужна на внешний вызов
+    // (printf), чтобы адрес метки «утёк» и линкер её оставил (урок 5.8.8,
+    // эталон SmartLockApp::init).
+    log(LogLevel::Info, "bin tag: %s", MICROOS_BIN_TAG_FULL);
+#endif
     log(LogLevel::Info, "init: profile weather_gate, stage W3");
 }
 
