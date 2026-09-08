@@ -107,6 +107,22 @@ private:
 static WgSensorCheck s_sensorCheck;
 static WgRadioCheck  s_radioCheck;
 
+// W5: шторм-флаг Замбретти — резкий спад давления > 4 гПа/3ч. WARNING
+// (не критикал: это погода, не неисправность); дополнение владельца
+// 08.09 — «здоровье» видно на вкладке ПАЗ. Спад -> Ok (переходы
+// сглаживает ядерный paz.confirm_* с 5.8.7).
+class WgStormCheck : public IHealthCheck {
+public:
+    const char* checkName() const override { return "wg.storm"; }
+    uint32_t intervalMs() const override { return 60000; }
+    HealthResult run() override {
+        if (WeatherGateApp::getInstance().stormActive())
+            return HealthResult::warning("STORM_PRESSURE_DROP");
+        return HealthResult::ok();
+    }
+};
+static WgStormCheck s_stormCheck;
+
 // ============================================================================
 // UI-ПРОВАЙДЕР
 // ============================================================================
@@ -470,6 +486,7 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
 // МОДУЛЬ
 // ============================================================================
 volatile bool WeatherGateApp::s_altTaskRunning = false;
+volatile bool WeatherGateApp::s_omTaskRunning = false;   // W5: Open-Meteo
 
 WeatherGateApp& WeatherGateApp::getInstance() {
     static WeatherGateApp instance;
@@ -565,6 +582,7 @@ void WeatherGateApp::registerExtensions() {
     // ПАЗ-проверки домена (механизм — HealthMonitor, содержимое — профиль)
     HealthMonitor::getInstance().registerCheck(&s_sensorCheck);
     HealthMonitor::getInstance().registerCheck(&s_radioCheck);
+    HealthMonitor::getInstance().registerCheck(&s_stormCheck);   // W5
 
     HttpService::getInstance().setUiProvider(&WeatherGateUi::getInstance());
 }
@@ -697,6 +715,17 @@ void WeatherGateApp::tick() {
         xTaskCreate(&WeatherGateApp::altitudeTask, "wg_alt", 8192,
                     nullptr, 1, nullptr);
     }
+
+    // W5: Open-Meteo — периодический fetch (60 мин успех / 30 мин сбой),
+    // только FULL-сеть и заданные координаты; молчаливая деградация.
+    if (!s_omTaskRunning && now >= _omNextMs &&
+        cfgGetFloat("wx.lat", 0.0f) != 0.0f &&
+        cfgGetFloat("wx.lon", 0.0f) != 0.0f &&
+        NetworkService::getInstance().degradationLevel() ==
+            DegradationLevel::Full) {
+        xTaskCreate(&WeatherGateApp::forecastTask, "wg_om", 8192,
+                    nullptr, 1, nullptr);
+    }
 }
 
 // ============================================================================
@@ -792,6 +821,23 @@ void WeatherGateApp::refreshStats24() {
                 if (a[i].ts <= unix - 10800UL) { refP = a[i].avg; break; }
             }
             _trend = wxc::baroTrend3h(nowP - refP);
+            // W5: Замбретти по свежей точке. Дельта — для шторм-флага
+            // (сырая, без дискретизации тренда). Смена прогноза — событие
+            // (стартовое появление из FC_NONE — не событие: иначе шум
+            // при каждой загрузке).
+            _deltaP3h = nowP - refP;
+            _storm = wxz::stormAlarm(_deltaP3h);
+            uint8_t fc = wxz::forecastIdx(
+                Bme280Driver::getInstance().pressureSeaHpa(), _trend);
+            if (fc != _fcIdx) {
+                if (_fcIdx != wxz::FC_NONE)
+                    EventBus::getInstance().post(wg_ev::forecastChanged());
+                _fcIdx = fc;
+                log(LogLevel::Info, "forecast: %s (p=%.1f trend=%d dP=%.2f%s)",
+                    wxz::forecastText(_fcIdx),
+                    (double)Bme280Driver::getInstance().pressureSeaHpa(),
+                    (int)_trend, (double)_deltaP3h, _storm ? " STORM" : "");
+            }
         }
     }
     _statsValid = any;
@@ -864,6 +910,16 @@ size_t WeatherGateApp::weatherJsonFull(char* buf, size_t bufSize) const {
             "\"pmax24\":%.1f,\"wmax24\":%.1f,\"trend\":%d",
             (double)_mnT24, (double)_mxT24, (double)_mnP24,
             (double)_mxP24, (double)_mxW24, (int)_trend);
+    }
+    // W5: Замбретти (fc — индекс таблицы wxz, текст — на клиенте;
+    // бюджет MQTT не тратим) + Open-Meteo (om — WMO weather_code,
+    // om_age — минут с последнего успеха; −1/0 — не было).
+    if (n > 0 && (size_t)n < bufSize) {
+        n += snprintf(buf + n, bufSize - (size_t)n,
+            ",\"fc\":%u,\"storm\":%u,\"om\":%d,\"om_age\":%lu",
+            (unsigned)_fcIdx, _storm ? 1u : 0u, (int)_omCode,
+            _omFetchedMs ? (unsigned long)((millis() - _omFetchedMs) / 60000UL)
+                         : 0UL);
     }
     if (n > 0 && (size_t)n < bufSize)
         n += snprintf(buf + n, bufSize - (size_t)n, "}");
@@ -1106,6 +1162,55 @@ void WeatherGateApp::altitudeTask(void*) {
         self.log(LogLevel::Warning, "auto-altitude: fetch failed, retry in 1h");
     }
     s_altTaskRunning = false;
+    vTaskDelete(nullptr);
+}
+
+// ============================================================================
+// OPEN-METEO (W5, 0.6.0): текущий WMO weather_code по координатам.
+// Образец — altitudeTask: отдельная задача (loop не блокируем), HTTP GET,
+// парсинг strstr'ом, без String. Успех — раз в 60 мин, сбой — повтор через
+// 30 мин; сети нет — планировщик в tick даже не запускает (молчаливая
+// деградация: Замбретти локальный и автономен).
+// ============================================================================
+void WeatherGateApp::forecastTask(void*) {
+    s_omTaskRunning = true;
+    WeatherGateApp& self = WeatherGateApp::getInstance();
+    float lat = cfgGetFloat("wx.lat", 0.0f);
+    float lon = cfgGetFloat("wx.lon", 0.0f);
+    char url[176];
+    snprintf(url, sizeof(url),
+             "http://api.open-meteo.com/v1/forecast"
+             "?latitude=%.4f&longitude=%.4f&current=weather_code",
+             (double)lat, (double)lon);
+
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(5000);
+    bool ok = false;
+    if (http.begin(client, url)) {
+        if (http.GET() == 200) {
+            // Тело ~300 байт; ищем "weather_code":NN внутри "current".
+            char body[512];
+            size_t got = http.getStream().readBytes(body, sizeof(body) - 1);
+            body[got] = '\0';
+            const char* pc = strstr(body, "\"weather_code\":");
+            if (pc != nullptr) {
+                int code = atoi(pc + 15);
+                if (code >= 0 && code <= 99) {
+                    self._omCode = (int8_t)code;
+                    self._omFetchedMs = millis();
+                    ok = true;
+                    self.log(LogLevel::Info,
+                             "open-meteo: weather_code=%d", code);
+                }
+            }
+        }
+        http.end();
+    }
+    self._omNextMs = millis() + (ok ? 3600000UL : 1800000UL);
+    if (!ok)
+        self.log(LogLevel::Warning, "open-meteo: fetch failed, retry in 30min");
+    s_omTaskRunning = false;
     vTaskDelete(nullptr);
 }
 

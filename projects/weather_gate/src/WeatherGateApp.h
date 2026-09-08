@@ -16,13 +16,14 @@
 // 5.8.8: единственный источник версии профиля (метка в .bin + getVersion).
 // Шкала профиля отвязана от ядра (как у замка 08.09.2026): ведущий 0 =
 // «это версия ПРОФИЛЯ». Двухполевая метка MICROOS|ядро|профиль|END.
-#define MICROOS_PROFILE_VER 0.5.6
+#define MICROOS_PROFILE_VER 0.6.0
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
 #include <services/IUiProvider.h>
 #include <drivers/WeatherCore.h>
 #include "WgScanCore.h"   // W3.3: чистая логика сканера частоты (0.5.0)
+#include "WgZambretti.h"  // W5: прогноз Замбретти (чистая логика, 0.6.0)
 
 // ============================================================================
 // UI-ПРОВАЙДЕР ПРОФИЛЯ
@@ -56,7 +57,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.6: двухполевая версия OTA (ядро 5.8.8, профиль отвязан от шкалы ядра); 0.5.5: фикс remote.update_available
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.6.0: W5 — Замбретти (WgZambretti.h, 12 веток монолита 1:1) + шторм-флаг в ПАЗ (wg.storm) + Open-Meteo weather_code (FULL-сеть); 0.5.6: двухполевая OTA
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
@@ -112,6 +113,12 @@ public:
     // метрики pkt/RSSI/шум. Применение результата — только оператором.
     // receive-only: перестройка = FREQ-регистры + вход в RX (STX нет).
     bool scanActive() const { return _scan.active; }
+
+    // W5: Замбретти + Open-Meteo (чтение — из weatherJson/UI, wg.storm)
+    bool    stormActive() const { return _storm; }
+    uint8_t forecastIdx() const { return _fcIdx; }
+    int8_t  omCode() const { return _omCode; }
+    uint32_t omFetchedMs() const { return _omFetchedMs; }
     /// Старт прогона. stepX100: 2|5 (0.02|0.05 МГц), dwellS: 30..120.
     /// false + err — отказ (уже идёт / драйвер нездоров / параметры).
     bool   scanStart(uint16_t stepX100, uint16_t dwellS, char* err, size_t errSize);
@@ -134,7 +141,8 @@ private:
 
     // --- АВТО-ВЫСОТА (wx.lat/wx.lon -> wx.altitude_m, разово) ---------------
     void maybeRequestAltitude();      // условия + постановка флага
-    static void altitudeTask(void*);  // одноразовая задача: HTTP GET,
+    static void altitudeTask(void*);
+    static void forecastTask(void*);   // W5: Open-Meteo, периодический  // одноразовая задача: HTTP GET,
                                       // парсинг, ConfigService::set
 
     Outdoor          _out;
@@ -147,8 +155,16 @@ private:
     // Статистика 24 ч (кэш; пишется ТОЛЬКО из tick — читатели без гонок)
     float    _mnT24 = 0, _mxT24 = 0, _mnP24 = 0, _mxP24 = 0, _mxW24 = 0;
     int8_t   _trend = 0;            // wxc::baroTrend3h
+    float    _deltaP3h = 0;         // сырая дельта гПа/3ч (шторм-флаг, W5)
+    uint8_t  _fcIdx = 0;            // wxz::forecastIdx (0 = нет данных)
+    bool     _storm = false;        // wxz::stormAlarm(_deltaP3h)
     bool     _statsValid = false;
     uint32_t _lastStatsMs = 0;
+
+    // W5: Open-Meteo (только FULL-сеть; молчаливая деградация).
+    int8_t   _omCode = -1;          // WMO weather_code (−1 — не было)
+    uint32_t _omFetchedMs = 0;      // millis() последнего успеха
+    uint32_t _omNextMs = 0;         // планировщик (60 мин успех / 30 мин сбой)
 
     // Каналы DataLog (-1 — не зарегистрирован)
     int8_t _chOutT = -1, _chOutH = -1, _chPress = -1, _chWind = -1, _chRain = -1;
@@ -173,4 +189,5 @@ private:
     bool _altDone       = false;      // успешно записана (больше не лезем)
     uint32_t _altNextRetryMs = 0;     // неудача -> повтор не раньше часа
     static volatile bool s_altTaskRunning;
+    static volatile bool s_omTaskRunning;   // W5
 };
