@@ -1,8 +1,10 @@
 {
-  "version": "5.8.3",
-  "fw_md5": "293bdb7e767ec615d2a62e65988a2a16",
-  "fs_md5": "6e73cf5cd787ee6feaa4aeb75d4e6946",
+  "version": "5.8.8",
+  "fw_md5": "05ad4017a6abffff2dcd932e54051087",
+  "fs_md5": "d4d5f84794cc575f4efcdd7810f166eb",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
-  "fs_url": "littlefs.bin"
+  "fs_url": "littlefs.bin",
+  "host": "home_master",
+  "profile_version": "0.6.10"
 }
