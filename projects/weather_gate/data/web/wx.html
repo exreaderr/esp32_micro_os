@@ -140,7 +140,6 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
 .nav-chips .chip.active {
   background: var(--tile, var(--field)); border-color: var(--tile, var(--field)); color: #fff;
 }
-#navChips .chip[data-tab="charts"] { --tile: #a06b1e; }
 #navChips .chip[data-tab="radio"]  { --tile: #3d7a99; }
 #navChips .chip[data-tab="net"]    { --tile: #4a7d9a; }
 #navChips .chip[data-tab="paz"]    { --tile: #b2512f; }
@@ -255,13 +254,32 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     </div>
   </div>
 
+  <!-- ГРАФИКИ (0.6.1): вынесены в ОТКРЫТУЮ часть — погодная история,
+       секретов нет (dlog GET публичен в прошивке). Свёрнута по умолчанию,
+       чтобы не занимала место; данные грузятся при первом раскрытии. -->
+  <details class="card" id="chartsCard" ontoggle="chartsToggled()">
+    <summary style="cursor:pointer"><b>📈 Графики</b> <span class="hint">— история измерений</span></summary>
+    <div style="margin-top:8px">
+      <div class="chips" id="chartChannels"></div>
+      <div class="chips">
+        <button class="chip chart-range active" data-range="6h" onclick="setChartRange('6h')">6 ч</button>
+        <button class="chip chart-range" data-range="24h" onclick="setChartRange('24h')">24 ч</button>
+        <button class="chip chart-range" data-range="7d" onclick="setChartRange('7d')">7 д</button>
+        <button class="chip chart-range" data-range="30d" onclick="setChartRange('30d')">30 д</button>
+        <button class="chip chart-range" data-range="1y" onclick="setChartRange('1y')">Год</button>
+      </div>
+      <div id="chartBox"></div>
+      <div class="hint" id="chartHint"></div>
+    </div>
+  </details>
+
   <!-- ВХОД АДМИНИСТРАТОРА: модалка, открывается 5 тапами по нижней плашке
        (паттерн smart_lock — публичная страница чистая, без поля пароля) -->
   <div class="modal hidden" id="loginModal">
     <div class="modal-card">
       <div class="modal-title">🔐 Администратор
         <span class="modal-x" onclick="closeLogin()">✕</span></div>
-      <div class="hint" style="margin-top:6px">Сеть, ПАЗ, система, графики и радио.</div>
+      <div class="hint" style="margin-top:6px">Сеть, ПАЗ, система и радио.</div>
       <input type="password" id="passInput" placeholder="Пароль администратора" autocomplete="current-password">
       <div class="err" id="authErr"></div>
       <button class="btn" style="width:100%" onclick="doLogin()">Войти</button>
@@ -278,22 +296,7 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
       <button class="chip" data-tab="paz" onclick="showTab('paz')">🛡️ ПАЗ</button>
       <button class="chip" data-tab="sys" onclick="showTab('sys')">🩺 Система</button>
       <button class="chip" data-tab="adm" onclick="showTab('adm')">👑 Админ</button>
-      <button class="chip" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
       <button class="chip" data-tab="radio" onclick="showTab('radio')">📻 Радио</button>
-    </div>
-
-    <!-- ГРАФИКИ (даталоггер) -->
-    <div id="tab-charts" class="tab-pane hidden">
-      <div class="chips" id="chartChannels"></div>
-      <div class="chips">
-        <button class="chip chart-range active" data-range="6h" onclick="setChartRange('6h')">6 ч</button>
-        <button class="chip chart-range" data-range="24h" onclick="setChartRange('24h')">24 ч</button>
-        <button class="chip chart-range" data-range="7d" onclick="setChartRange('7d')">7 д</button>
-        <button class="chip chart-range" data-range="30d" onclick="setChartRange('30d')">30 д</button>
-        <button class="chip chart-range" data-range="1y" onclick="setChartRange('1y')">Год</button>
-      </div>
-      <div id="chartBox"></div>
-      <div class="hint" id="chartHint"></div>
     </div>
 
     <!-- РАДИО (приёмник CC1101): статус + профильные настройки (0.4.0) -->
@@ -1029,8 +1032,7 @@ function showTab(t){
   for(var i=0;i<cs.length;i++) cs[i].classList.toggle('active', cs[i].dataset.tab===t);
   var ps=document.querySelectorAll('.tab-pane');
   for(var j=0;j<ps.length;j++) ps[j].classList.toggle('hidden', ps[j].id!=='tab-'+t);
-  if(t==='charts') loadCharts();
-  else if(t==='radio'){ renderRadio(); ensureConfig(); scanStatusOnce(); }
+  if(t==='radio'){ renderRadio(); ensureConfig(); scanStatusOnce(); }
   else if(t==='net'){ renderNet(); ensureConfig(); }
   else if(t==='paz'){ renderPaz(); ensureConfig(); }
   else if(t==='sys') renderOta();
@@ -1040,7 +1042,13 @@ function showTab(t){
 // ============================================================================
 // ГРАФИКИ (даталоггер, uPlot — встроен офлайн, /web/uplot.js)
 // ============================================================================
-var chartInst=null, chartCh=0, chartRange='6h', chartChannels=[];
+var chartInst=null, chartCh=0, chartRange='6h', chartChannels=[], chartLoaded=false;
+// 0.6.1: карточка в открытой части, свёрнута — грузим при первом раскрытии.
+function chartsToggled(){
+  if(!$('chartsCard').open || chartLoaded) return;
+  chartLoaded=true;
+  loadCharts();
+}
 async function loadCharts(){
   var r=await api('/api/dev/dlog/channels');
   if(!r.ok){
@@ -1192,6 +1200,12 @@ async function renderNet(){
 // ============================================================================
 // ПАЗ: здоровье системы (/api/health, админский)
 // ============================================================================
+// Правило 23-а (панельный уровень): человеческие имена проверок по образцу
+// мастера (CHK_NAME). checkName в прошивке НЕ меняются.
+var CHK_NAME={'wg.bme280':'Датчик давления и температуры (BME280)',
+  'wg.radio':'Радиоканал уличного блока (CC1101)',
+  'wg.storm':'Штормовой прогноз (спад давления)',
+  'heap':'Свободная память (heap)','cpu_temp':'Температура кристалла'};
 async function renderPaz(){
   var r=await api('/api/health');
   if(!r.ok){
@@ -1213,7 +1227,7 @@ async function renderPaz(){
     rows+='<div class="hint" style="margin:8px 0 2px"><b>Проверки</b></div>';
     for(var i=0;i<h.checks.length;i++){
       var c=h.checks[i];
-      rows+='<div class="srow"><span>'+esc(c.name)+'</span>'+
+      rows+='<div class="srow"><span>'+esc(CHK_NAME[c.name]||c.name)+'</span>'+
             '<span>'+(stB[c.st]||c.st)+(c.msg?' '+esc(c.msg):'')+'</span></div>';
     }
   }

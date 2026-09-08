@@ -67,7 +67,7 @@ void SmartCounterApp::registerExtensions() {
     ok = cfg.addFields("Вода (ХВС)", {
         { "sc.water.enabled",     ConfigType::BOOL,  "true", 0, 0, CFG_CRITICAL,
           "Вода (ХВС)", "Канал ХВС разрешён" },
-        { "sc.water.imp_per_l",   ConfigType::FLOAT, "1", 0.01, 100, CFG_NONE,
+        { "sc.water.imp_per_l",   ConfigType::FLOAT, "1", 1, 100, CFG_NONE,
           "Вода (ХВС)", "Импульсов на литр" },
         { "sc.water.debounce_ms", ConfigType::UINT,  "200", 10, 2000, CFG_NONE,
           "Вода (ХВС)", "Антидребезг, мс" },
@@ -81,7 +81,7 @@ void SmartCounterApp::registerExtensions() {
     ok = cfg.addFields("Газ", {
         { "sc.gas.enabled",     ConfigType::BOOL,  "false", 0, 0, CFG_CRITICAL,
           "Газ", "Канал газа разрешён" },
-        { "sc.gas.imp_per_m3",  ConfigType::FLOAT, "0.01", 0.001, 1, CFG_NONE,
+        { "sc.gas.imp_per_m3",  ConfigType::FLOAT, "100", 1, 100000, CFG_NONE,
           "Газ", "Импульсов на м3" },
         { "sc.gas.debounce_ms", ConfigType::UINT,  "200", 10, 2000, CFG_NONE,
           "Газ", "Антидребезг, мс" },
@@ -131,12 +131,12 @@ void SmartCounterApp::registerExtensions() {
     if (!ok) log(LogLevel::Error, "addFields 'Фильтр' failed");
 
     ok = cfg.addFields("АКБ ИБП", {
-        { "sc.bat.coeff",     ConfigType::FLOAT, "2.1", 0.5, 10, CFG_NONE,
+        { "sc.bat.coeff",     ConfigType::FLOAT, "2.1", 1, 10, CFG_NONE,
           "АКБ ИБП", "Коэффициент делителя АЦП" },
-        { "sc.bat.low_v",     ConfigType::FLOAT, "3.4", 2.5, 4.0, CFG_NONE,
+        { "sc.bat.low_v",     ConfigType::FLOAT, "3.4", 2, 4, CFG_NONE,
           "АКБ ИБП", "Порог разряда, В" },
         // Поле 32 — поправка рецензии ядра §3.2 (концепт-нота C0):
-        { "sc.bat.ema_alpha", ConfigType::FLOAT, "0.15", 0.01, 1.0, CFG_NONE,
+        { "sc.bat.ema_alpha", ConfigType::FLOAT, "0.15", 0, 1, CFG_NONE,
           "АКБ ИБП", "Alpha EMA-фильтра напряжения" },
     });
     if (!ok) log(LogLevel::Error, "addFields 'АКБ' failed");
@@ -443,7 +443,7 @@ float SmartCounterApp::waterTotalM3() const {
 }
 float SmartCounterApp::gasTotalM3() const {
     return cfgGetFloat("sc.gas.total_m3", 0.0f)
-         + (float)gasPulses() * cfgGetFloat("sc.gas.imp_per_m3", 0.01f);
+         + scp::gasPulsesToM3(gasPulses(), cfgGetFloat("sc.gas.imp_per_m3", 100.0f));
 }
 
 // ============================================================================

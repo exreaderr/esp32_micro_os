@@ -1,10 +1,10 @@
 {
   "version": "5.8.8",
-  "fw_md5": "c87cb8a7326b149577ad6287b7f03aa3",
-  "fs_md5": "3d20d7db60f9d3d231758f32833846ca",
-  "changelog": "Periodic production build update",
-  "fw_url": "firmware.bin",
-  "fs_url": "littlefs.bin",
-  "profile_version": "0.6.0",
-  "host": "weather_gate"
+  "profile_version": "0.6.1",
+  "host": "weather_gate",
+  "fw_md5": "5764be838c4d4c7cced2785f202ffae4",
+  "fs_md5": "42c6790563f9b7f696d9b900ee6fafce",
+  "changelog": "0.6.1: графики вынесены в открытую часть панели (свёрнуты по умолчанию; dlog GET публичен, read-only); человеческие имена проверок ПАЗ (панельный маппинг CHK_NAME).",
+  "fw_url": "",
+  "fs_url": ""
 }

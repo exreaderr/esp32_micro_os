@@ -69,6 +69,14 @@ inline float pulsesToM3(uint32_t pulses, float impPerLitre) {
     return (float)pulses / impPerLitre / 1000.0f;
 }
 
+/// Газ: импульсы -> м3 по размерности «импульсов на м3» (шильдик счётчика).
+/// Симметрично водяному каналу: делитель, а не множитель — точность
+/// определяется счётчиком, а не грубой ценой импульса.
+inline float gasPulsesToM3(uint32_t pulses, float impPerM3) {
+    if (impPerM3 <= 0.0f) return 0.0f;
+    return (float)pulses / impPerM3;
+}
+
 /// Мгновенный расход окном, л/ч: дельта импульсов за windowS секунд.
 inline float flowLitresPerHour(uint32_t pulsesDelta, uint32_t windowS, float impPerLitre) {
     if (windowS == 0 || impPerLitre <= 0.0f) return 0.0f;

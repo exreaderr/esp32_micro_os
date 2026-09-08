@@ -16,7 +16,7 @@
 // 5.8.8: единственный источник версии профиля (метка в .bin + getVersion).
 // Шкала профиля отвязана от ядра (как у замка 08.09.2026): ведущий 0 =
 // «это версия ПРОФИЛЯ». Двухполевая метка MICROOS|ядро|профиль|END.
-#define MICROOS_PROFILE_VER 0.6.0
+#define MICROOS_PROFILE_VER 0.6.1
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -57,7 +57,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.6.0: W5 — Замбретти (WgZambretti.h, 12 веток монолита 1:1) + шторм-флаг в ПАЗ (wg.storm) + Open-Meteo weather_code (FULL-сеть); 0.5.6: двухполевая OTA
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.6.1: графики в открытой части панели (dlog GET публичен) + человеческие имена проверок ПАЗ (CHK_NAME); 0.6.0: W5 — Замбретти + шторм-флаг + Open-Meteo; 0.5.6: двухполевая OTA
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки

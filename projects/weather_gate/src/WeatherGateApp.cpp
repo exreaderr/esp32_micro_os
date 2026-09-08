@@ -459,16 +459,10 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         statusCode = 200;
         return true;
     }
-    // Дальше — только админ (графики = история, паттерн smart_lock)
-    if (!HttpService::getInstance().isAdminToken(req.token)) {
-        if (strncmp(pathTail, "dlog", 4) == 0)   // W3.2-diag1
-            s_diagLog("api '%s': tok=%s admin=NO -> false",
-                      pathTail, (req.token != nullptr && req.token[0] != '\0')
-                                ? "есть" : "НЕТ");
-        return false;   // 404 ядра: не раскрываем существование путей
-    }
-    if (strncmp(pathTail, "dlog", 4) == 0)       // W3.2-diag1
-        s_diagLog("api '%s': admin=ok", pathTail);
+    // 0.6.1: графики публичны. Каналы даталоггера — история ПОГОДНЫХ
+    // измерений (секретов нет); обработчики строго read-only (GET).
+    // Отличие от замка осознанное: там dlog — системная телеметрия
+    // (t° кристалла, heap) и остаётся за админ-гейтом, здесь — погода.
     if (strcmp(pathTail, "dlog/channels") == 0) {
         statusCode = 200;
         return wgApiDlogChannels(responseBuf, bufSize);
@@ -477,6 +471,9 @@ bool WeatherGateUi::handleApi(const char* pathTail, const ShUiRequest& req,
         statusCode = 200;
         return wgApiDlog(req, responseBuf, bufSize, statusCode);
     }
+    // Дальше — только админ
+    if (!HttpService::getInstance().isAdminToken(req.token))
+        return false;   // 404 ядра: не раскрываем существование путей
     // W3.2-diag5: сюда попадает и МУСОРНЫЙ tail (висячий указатель ядра)
     s_diagLog("api miss: tail='%.*s' -> false (404 ядра)", 40, pathTail);
     return false;   // неизвестный профильный путь -> 404 ядра

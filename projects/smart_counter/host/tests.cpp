@@ -211,6 +211,11 @@ static void testPulseCore() {
     // Пересчёт импульсов (только для показа; учёт — в импульсах)
     CHECK(feq(scp::pulsesToM3(12345, 1.0f), 12.345f));
     CHECK(feq(scp::pulsesToM3(100, 0.0f), 0.0f));          // защита от деления
+    // Газ: «импульсов на м3» (делитель, симметрия с водой)
+    CHECK(feq(scp::gasPulsesToM3(12345, 100.0f), 123.45f));  // 100 имп/м3 (1 имп = 0.01 м3)
+    CHECK(feq(scp::gasPulsesToM3(1000, 1.0f), 1000.0f));     // грубый счётчик 1 имп/м3
+    CHECK(feq(scp::gasPulsesToM3(500, 0.0f), 0.0f));         // защита от деления
+    CHECK(feq(scp::gasPulsesToM3(500, -5.0f), 0.0f));        // отрицательный делитель
     CHECK(feq(scp::flowLitresPerHour(5, 3600, 1.0f), 5.0f));
 
     // Детектор протечки: 6 мокрых часов со средним >= порога -> LEAK,
