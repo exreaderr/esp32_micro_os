@@ -63,6 +63,13 @@ void SmartLockApp::registerExtensions() {
 // ЖИЗНЕННЫЙ ЦИКЛ
 // ============================================================================
 void SmartLockApp::init() {
+    UpdateService::getInstance().setProfileVersion(getVersion());   // 5.8.8: двухполевая сверка OTA
+#ifdef MICROOS_PROFILE_VER
+    // used не спасает от --gc-sections: живая ссылка нужна на внешний вызов
+    // (printf), чтобы адрес метки «утёк» и линкер её оставил (урок 5.8.8).
+    log(LogLevel::Info, "bin tag: %s", MICROOS_BIN_TAG_FULL);
+#endif
+
     _mode = LockMode::NORMAL;
     if (LockControl::getInstance().isLocalJumperSet()) {
         log(LogLevel::Warning,

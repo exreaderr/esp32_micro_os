@@ -102,6 +102,11 @@ public:
     /// НЕ для различения версий МикроОС (он одинаков у всех сборок).
     const char* firmwareBuild() const { return _fwBuild; }
 
+    /// Версия профиля (5.8.8, двухполевая версия). Профиль передаёт её
+    /// через setProfileVersion() из макроса MICROOS_PROFILE_VER (App.h).
+    const char* profileVersion() const { return _profileVersion; }
+    void setProfileVersion(const char* v);
+
     // --- ОПЕРАЦИИ ------------------------------------------------------------
     /// Принудительный откат на предыдущий раздел + ребут
     /// (админская команда / ПАЗ при критической деградации свежей прошивки).
@@ -185,6 +190,7 @@ private:
     uint32_t _bootMs = 0;              // отсчёт стабильной работы
     char _fwVersion[32] = "unknown";   // версия МикроОС (core/Version.h)
     char _fwBuild[16] = "?";           // git-хэш ядра из esp_app_desc_t
+    char _profileVersion[24] = "";     // версия профиля (5.8.8, может быть пустой)
 
     // Приём образа из панели
     OtaRxState _rxState = OtaRxState::Idle;
@@ -205,6 +211,7 @@ private:
     // Манифест обновлений
     bool     _updateAvailable = false;
     char     _remoteVersion[24] = "";
+    char     _remoteProfVer[24] = "";  // profile_version из манифеста (5.8.8)
     char     _remoteNotes[48] = "";    // changelog из манифеста
     char     _remoteFwUrl[72] = "";    // fw_url (Phase 4: загрузка силами устр-ва)
     char     _remoteFsUrl[72] = "";    // fs_url

@@ -1887,13 +1887,14 @@ async function renderOta(){
   function orow(n,v,cls){
     rows+='<div class="health-row"><span class="health-name">'+n+'</span><span class="'+(cls||'')+'">'+v+'</span></div>';
   }
-  orow('Текущая прошивка', esc(o.fw)+(o.build?' · сборка '+esc(o.build):'')+
+  // 5.8.8: версия двухполевая — ядро + профиль (o.fw / o.profile).
+  orow('Текущая прошивка', esc(o.fw)+(o.profile?' · профиль '+esc(o.profile):'')+(o.build?' · сборка '+esc(o.build):'')+
        (o.pending_verify===1?' · ⏳ идёт валидация':''),
        o.pending_verify===1?'health-warn':'health-ok');
   if(o.remote.checked===1){
-    orow('Прошивка на сервере HA', o.remote.version?esc(o.remote.version):'манифест недоступен',
+    orow('Прошивка на сервере HA', o.remote.version?esc(o.remote.version)+(o.remote.profile_version?' · профиль '+esc(o.remote.profile_version):''):'манифест недоступен',
          (o.remote||{}).update_available===1?'health-warn':'health-ok');
-    if((o.remote||{}).update_available===1) orow('Статус','⬆️ Доступно обновление!','health-warn');
+    if((o.remote||{}).update_available===1) orow('Статус',o.remote.version!==o.fw?'⬆️ Доступно обновление ядра!':'⬆️ Доступно обновление профиля!','health-warn');
     if(o.remote.notes) rows+='<div class="health-row"><span class="health-name">Changelog</span>'+
         '<span class="health-msg">'+esc(o.remote.notes)+'</span></div>';
   } else {
@@ -2020,8 +2021,11 @@ async function otaCheck(){
   toast('Запрашиваю манифест у HA (до 4 с)…','ok');
   var r=await apiPost('/api/ota/check');
   if(r.ok && r.data){
-    if((r.data.remote||{}).update_available===1) toast('Доступна прошивка '+r.data.remote.version+'!','ok');
-    else if(r.data.remote.version) toast('Обновлений нет (сервер: '+r.data.remote.version+')','ok');
+    if((r.data.remote||{}).update_available===1){
+      var rm=r.data.remote;
+      toast((rm.version!==r.data.fw?'Доступно ядро '+rm.version:'Доступен профиль '+(rm.profile_version||'?'))+'!','ok');
+    }
+    else if(r.data.remote.version) toast('Обновлений нет (сервер: '+r.data.remote.version+(r.data.remote.profile_version?' · профиль '+r.data.remote.profile_version:'')+')','ok');
     else toast('Манифест не получен (нет сети или HA)','err');
     renderOta();
   } else toast('Ошибка запроса','err');

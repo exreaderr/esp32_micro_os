@@ -8,6 +8,13 @@
 // ============================================================================
 #pragma once
 
+// 5.8.8: ЕДИНСТВЕННЫЙ источник версии профиля. Макрос объявлен ДО включения
+// ядра — Version.h зашивает полную метку «MICROOS|ядро|профиль|END» в .bin,
+// getVersion() отдаёт ту же версию строкой. Расходиться не могут по
+// построению.
+#define MICROOS_PROFILE_VER 0.6.10
+
+#include <core/Version.h>
 #include <core/ModuleBase.h>
 
 /// Режим работы мастера (концепция §3). Значения конфига master.mode.
@@ -23,7 +30,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return "0.6.9"; }         // 0.6.9: ядро 5.8.7 — ConfirmState демонтирован, подтверждения в HealthMonitor; 0.6.8: hm.fleet + гистерезис (вариант Б); 0.6.7: ручная загрузка троек + otam.src; 0.6.6: broker.pass → NVS, hostname; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.6.10: двухполевая версия OTA (ядро 5.8.8); 0.6.9: ConfirmState → ядро;         // 0.6.9: ядро 5.8.7 — ConfirmState демонтирован, подтверждения в HealthMonitor; 0.6.8: hm.fleet + гистерезис (вариант Б); 0.6.7: ручная загрузка троек + otam.src; 0.6.6: broker.pass → NVS, hostname; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

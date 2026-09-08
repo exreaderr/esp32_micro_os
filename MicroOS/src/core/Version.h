@@ -16,10 +16,23 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.8.7"   // 5.8.7: подтверждение переходов проверок ПАЗ (paz.confirm_bad/ok) + свёртка TICK_OVERRUN в всплески с логом; 5.8.6: KERNEL_MAX_MODULES 24→32; 5.8.5: export/import
+#define MICROOS_VERSION_STR "5.8.8"   // 5.8.8: двухполевая версия OTA (ядро+профиль, метка с 4-м полем, profile_version в манифесте); 5.8.7: подтверждение переходов ПАЗ + свёртка TICK_OVERRUN; 5.8.6: KERNEL_MAX_MODULES 24→32; 5.8.5: export/import
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 
 // used — иначе --gc-sections выбросит «ненужную» строку из rodata.
 __attribute__((used)) constexpr const char MICROOS_BIN_TAG[] =
     "MICROOS|" MICROOS_VERSION_STR "|END";
+
+// 5.8.8: двухполевая версия (обсуждение с владельцем 07.09.2026: версия
+// ядра меняется реже профильных — сверка OTA только по ядру делала
+// профильные выдачи невидимыми). Если профиль объявил
+// MICROOS_PROFILE_VER ДО включения ядра (см. App.h профиля), в .bin
+// добавляется ПОЛНАЯ метка «MICROOS|ядро|профиль|END» рядом с ядерной.
+// Парсеры обязаны предпочитать 4-полевую, 3-полевая — совместимость.
+#define MICROOS_STR2(x) #x
+#define MICROOS_STR(x) MICROOS_STR2(x)
+#ifdef MICROOS_PROFILE_VER
+__attribute__((used)) constexpr char MICROOS_BIN_TAG_FULL[] =
+    "MICROOS|" MICROOS_VERSION_STR "|" MICROOS_STR(MICROOS_PROFILE_VER) "|END";
+#endif

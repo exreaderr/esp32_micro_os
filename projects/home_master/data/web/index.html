@@ -883,10 +883,11 @@ async function renderOta(){
     const o=await r.json();
     let rows='';
     const orow=(n,v)=>{rows+='<div class="row"><span class="k">'+n+'</span><span style="text-align:right">'+v+'</span></div>';};
-    orow('Текущая прошивка','<b>'+esc(o.fw)+'</b>'+(o.build?' · сборка '+esc(o.build):'')+(o.pending_verify===1?' · ⏳ идёт валидация':''));
+    // 5.8.8: версия двухполевая — ядро + профиль (o.fw / o.profile).
+    orow('Текущая прошивка','<b>'+esc(o.fw)+'</b>'+(o.profile?' · профиль <b>'+esc(o.profile)+'</b>':'')+(o.build?' · сборка '+esc(o.build):'')+(o.pending_verify===1?' · ⏳ идёт валидация':''));
     if(o.remote&&o.remote.checked===1){
-      orow('Прошивка на сервере HA',o.remote.version?esc(o.remote.version):'манифест недоступен');
-      if((o.remote||{}).update_available===1)orow('Статус','<b style="color:var(--success)">⬆️ Доступно обновление!</b>');
+      orow('Прошивка на сервере HA',o.remote.version?esc(o.remote.version)+(o.remote.profile_version?' · профиль <b>'+esc(o.remote.profile_version)+'</b>':''):'манифест недоступен');
+      if((o.remote||{}).update_available===1)orow('Статус','<b style="color:var(--success)">⬆️ '+(o.remote.version!==o.fw?'Доступно обновление ядра!':'Доступно обновление профиля!')+'</b>');
       if(o.remote.notes)orow('Changelog',esc(o.remote.notes));
     }else orow('Прошивка на сервере HA','ещё не проверялась');
     orow('Манифест','<small>'+esc((o.remote&&o.remote.url)||'')+'</small>');
@@ -912,8 +913,10 @@ async function otaCheck(){
     const j=await r.json().catch(()=>({}));
     // Урок 07.09.2026: update_available живёт ВНУТРИ remote (otaInfoJson
     // ядра), не в корне — чтение из корня вечно давало «Обновлений нет».
-    if((j.remote||{}).update_available===1)otaMsg('Доступна прошивка '+j.remote.version+'!','var(--success)');
-    else if(j.remote&&j.remote.version)otaMsg('Обновлений нет (сервер: '+j.remote.version+').');
+    if((j.remote||{}).update_available===1){
+      otaMsg((j.remote.version!==j.fw?'Доступно ядро ':'Доступен профиль ')+(j.remote.version!==j.fw?j.remote.version:(j.remote.profile_version||''))+'!','var(--success)');
+    }
+    else if(j.remote&&j.remote.version)otaMsg('Обновлений нет (сервер: '+j.remote.version+(j.remote.profile_version?' · профиль '+j.remote.profile_version:'')+').');
     else otaMsg('Манифест не получен (нет сети или HA).','var(--error)');
     renderOta();
   }catch(e){otaMsg('Ошибка запроса.','var(--error)');}
@@ -1111,6 +1114,7 @@ async function omUpload(){
     if(verdict.startsWith('ok:'))txt='ПРИНЯТО: версия '+verdict.slice(3)+' принята в строй (старая — в archive)';
     else if(verdict.startsWith('reject:wrong_host:'))txt='ОТКЛОНЕНО: комплект для «'+verdict.slice(18)+'», а выбрано «'+host+'»';
     else if(verdict.startsWith('reject:fw_ver:'))txt='ОТКЛОНЕНО: в прошивке зашита версия '+verdict.slice(14)+', в манифесте — другая';
+    else if(verdict.startsWith('reject:fw_prof:'))txt='ОТКЛОНЕНО: в прошивке зашит профиль '+verdict.slice(15)+', в манифесте — другой';
     else txt=verdict;
   }
   m.innerHTML=(verdict.startsWith('ok:')?'<span class="badge ok">':'<span class="badge err">')+txt+'</span>';

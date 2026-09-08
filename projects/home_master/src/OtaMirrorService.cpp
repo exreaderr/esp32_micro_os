@@ -698,38 +698,48 @@ bool OtaMirrorService::fileMd5Hex(const char* path, char* out, size_t cap) {
 }
 
 bool OtaMirrorService::binTagVersion(const char* path, char* out, size_t cap) {
-    // Ищем тег MICROOS|x.y.z|END (зашит в .bin, урок «застрявшего слота»).
+    // Ищем тег MICROOS|...|END (зашит в .bin, урок «застрявшего слота»).
     // Читаем кусками с нахлёстом — тег может попасть на границу.
+    // 5.8.8: тегов в образе может быть ДВА — ядерный «MICROOS|ядро|END» и
+    // полный «MICROOS|ядро|профиль|END» (порядок в файле не гарантирован).
+    // Сканируем ВСЕ вхождения: полная метка (с '|' внутри) выигрывает
+    // сразу, ядерная запоминается как запасная (совместимость).
     fs::FS* sd = SdService::getInstance().fs();
     if (sd == nullptr) return false;
     File f = sd->open(path, FILE_READ);
     if (!f) return false;
     static char win[1088];   // 1024 + нахлёст 64 (static, не стек)
     size_t carry = 0;
+    bool kernelFound = false;
     while (f.available()) {
         int r = f.read((uint8_t*)win + carry, 1024);
         if (r <= 0) break;
         size_t total = carry + (size_t)r;
-        char* tag = (char*)memmem(win, total, "MICROOS|", 8);
-        if (tag != nullptr) {
-            char* end = (char*)memmem(tag + 8, total - (size_t)(tag - win) - 8,
-                                      "|END", 4);
-            if (end != nullptr) {
-                size_t n = (size_t)(end - (tag + 8));
-                if (n > 0 && n < cap) {
-                    memcpy(out, tag + 8, n);
-                    out[n] = '\0';
-                    f.close();
-                    return true;
-                }
+        char* cur = win;
+        char* winEnd = win + total;
+        while (cur < winEnd) {
+            char* tag = (char*)memmem(cur, (size_t)(winEnd - cur),
+                                      "MICROOS|", 8);
+            if (tag == nullptr) break;
+            size_t avail = (size_t)(winEnd - tag) - 8;
+            char* end = (char*)memmem(tag + 8, avail, "|END", 4);
+            if (end == nullptr) break;   // тег уехал за границу окна — нахлёст доберёт
+            size_t n = (size_t)(end - (tag + 8));
+            if (n > 0 && n < cap) {
+                bool full = (memchr(tag + 8, '|', n) != nullptr);
+                memcpy(out, tag + 8, n);
+                out[n] = '\0';
+                if (full) { f.close(); return true; }   // 4-полевая — лучшая
+                kernelFound = true;                     // 3-полевая — запасная
             }
+            cur = end + 4;
         }
         // нахлёст: последние 63 байта — в начало окна
         carry = total < 63 ? total : 63;
         memmove(win, win + total - carry, carry);
     }
     f.close();
-    return false;
+    return kernelFound;
 }
 
 bool OtaMirrorService::tryFinalize(const char* host, char* msg, size_t cap) {
@@ -781,10 +791,29 @@ bool OtaMirrorService::tryFinalize(const char* host, char* msg, size_t cap) {
         wipeStage(); snprintf(msg, cap, "reject:fs_md5"); return false;
     }
     // Проверка 3: версия из бин-тега прошивки == version манифеста.
-    char tag[20] = "";
-    if (binTagVersion(pFw, tag, sizeof(tag)) && strcmp(tag, ver) != 0) {
-        wipeStage(); snprintf(msg, cap, "reject:fw_ver:%s", tag);
-        return false;
+    // 5.8.8: тег может быть полным «ядро|профиль» — тогда сверяем ОБА поля:
+    // ядро с version, профиль с profile_version манифеста (если конвейер
+    // его записал). Манифест без profile_version (старый конвейер) —
+    // сверка только по ядру, совместимость.
+    char tag[32] = "";
+    if (binTagVersion(pFw, tag, sizeof(tag))) {
+        char* bar = strchr(tag, '|');
+        const char* profTag = nullptr;
+        if (bar != nullptr) { *bar = '\0'; profTag = bar + 1; }
+        if (strcmp(tag, ver) != 0) {
+            wipeStage(); snprintf(msg, cap, "reject:fw_ver:%s", tag);
+            return false;
+        }
+        char mprof[24] = "";
+        omJsonStr(js, "\"profile_version\"", mprof, sizeof(mprof));
+        if (mprof[0] != '\0') {
+            if (profTag == nullptr || strcmp(profTag, mprof) != 0) {
+                wipeStage();
+                snprintf(msg, cap, "reject:fw_prof:%s",
+                         profTag ? profTag : "none");
+                return false;
+            }
+        }
     }
 
     // КОММИТ: старая тройка — в archive/, новая — на место (rename).

@@ -46,6 +46,11 @@ void UpdateService::registerExtensions() {
 // ============================================================================
 // INIT: определить состояние текущего раздела
 // ============================================================================
+// 5.8.8: профиль сообщает свою версию (вызывается из init() App профиля).
+void UpdateService::setProfileVersion(const char* v) {
+    safeStrCopy(_profileVersion, sizeof(_profileVersion), v ? v : "");
+}
+
 void UpdateService::init() {
     _bootMs = millis();
 
@@ -643,6 +648,7 @@ bool UpdateService::checkRemote() {
     _lastCheckMs = millis();
     _updateAvailable = false;
     _remoteVersion[0] = '\0';
+    _remoteProfVer[0] = '\0';
 
     if (!NetworkService::getInstance().isConnected()) {
         log(LogLevel::Warning, "OTA check: no network");
@@ -692,14 +698,28 @@ bool UpdateService::checkRemote() {
     }
     otaJsonStr(js, "\"fs_md5\"", _remoteFsMd5, sizeof(_remoteFsMd5));
     otaJsonStr(js, "\"min_fs_version\"", _remoteMinFs, sizeof(_remoteMinFs));
+    // 5.8.8: версия профиля (поле конвейера 5.8.8+; в старых манифестах
+    // нет — тогда сверка только по ядру).
+    otaJsonStr(js, "\"profile_version\"", _remoteProfVer,
+               sizeof(_remoteProfVer));
 
     // Направление важно (урок 5.0.14): обновление — только если сервер
     // СТРОГО новее. strcmp-различие ловило и ДАУНГРЕЙД: после отката
     // панель предлагала «обновиться» на более старую версию с сервера.
-    _updateAvailable = (semverCmp(_remoteVersion, _fwVersion) > 0);
-    log(LogLevel::Info, "OTA check: local %s, remote %s -> %s",
-        _fwVersion, _remoteVersion,
-        _updateAvailable ? "UPDATE AVAILABLE" : "up to date");
+    // 5.8.8: двухполевая сверка — ядро новее ИЛИ (ядро то же И профиль
+    // новее). Поля профиля пусты (старый манифест/профиль) — как раньше,
+    // только по ядру. Даунгрейд по ЛЮБОМУ полю не предлагаем.
+    int kcmp = semverCmp(_remoteVersion, _fwVersion);
+    bool profNewer = false;
+    if (kcmp == 0 && _remoteProfVer[0] != '\0' && _profileVersion[0] != '\0') {
+        profNewer = (semverCmp(_remoteProfVer, _profileVersion) > 0);
+    }
+    _updateAvailable = (kcmp > 0) || profNewer;
+    log(LogLevel::Info, "OTA check: local %s/%s, remote %s/%s -> %s",
+        _fwVersion, _profileVersion[0] ? _profileVersion : "-",
+        _remoteVersion, _remoteProfVer[0] ? _remoteProfVer : "-",
+        _updateAvailable ? (profNewer ? "PROFILE UPDATE" : "UPDATE AVAILABLE")
+                         : "up to date");
     return true;
 }
 
@@ -911,17 +931,17 @@ size_t UpdateService::otaInfoJson(char* buf, size_t n) const {
                            : (_dlState == DlState::Failed)  ? "failed"
                                                             : "idle";
     int w = snprintf(buf, n,
-        "{\"fw\":\"%s\",\"build\":\"%s\",\"pending_verify\":%d,"
+        "{\"fw\":\"%s\",\"profile\":\"%s\",\"build\":\"%s\",\"pending_verify\":%d,"
         "\"rx\":{\"state\":\"%s\",\"bytes\":%u,\"err\":\"%s\",\"ver\":\"%s\"},"
         "\"remote\":{\"checked\":%d,\"update_available\":%d,"
-        "\"version\":\"%s\",\"notes\":\"%s\",\"fw_url\":\"%s\","
+        "\"version\":\"%s\",\"profile_version\":\"%s\",\"notes\":\"%s\",\"fw_url\":\"%s\","
         "\"fs_url\":\"%s\",\"url\":\"%s\",\"md5\":%d},"
         "\"dl\":{\"state\":\"%s\",\"bytes\":%lu,\"total\":%ld,"
         "\"err\":\"%s\"},\"history\":[",
-        _fwVersion, _fwBuild, _pendingValidation ? 1 : 0,
+        _fwVersion, _profileVersion, _fwBuild, _pendingValidation ? 1 : 0,
         rxState, (unsigned)_rxBytes, _rxError, _rxVersion,
         _lastCheckMs != 0 ? 1 : 0, _updateAvailable ? 1 : 0,
-        _remoteVersion, _remoteNotes, _remoteFwUrl, _remoteFsUrl, url,
+        _remoteVersion, _remoteProfVer, _remoteNotes, _remoteFwUrl, _remoteFsUrl, url,
         (_remoteMd5[0] || _remoteFsMd5[0]) ? 1 : 0,
         dlStateStr, (unsigned long)_dlBytes, (long)_dlTotal, _dlErr);
     // История — новые первыми
