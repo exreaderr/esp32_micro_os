@@ -19,6 +19,12 @@ class HomeMasterUi : public IUiProvider {
 public:
     const char* uiTitle() const override { return "home_master"; }
 
+    // 5.9.0/0.8.0: единая инфо-карточка флота — человеческое имя по
+    // умолчанию (перебивается sys.name из конфига) и профильные строки.
+    const char* uiDisplayName() const override { return "Домашний мастер"; }
+    uint8_t infoCardExtras(char labels[][24], char values[][32],
+                           uint8_t maxLines) override;
+
     /// Фрагмент публичной страницы "/" (статус-строки мастера).
     size_t renderPublicHtml(char* buf, size_t bufSize) override;
 

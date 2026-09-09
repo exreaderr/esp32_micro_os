@@ -12,8 +12,10 @@
 #include "StorageService.h"
 #include "UpdateService.h"
 #include "HealthMonitor.h"
+#include "MqttTransport.h"   // 5.9.0: статус MQTT для /api/info_card
 #include "../core/Events.h"
 #include "../core/Kernel.h"
+#include "../core/Version.h"   // 5.9.0: MICROOS_VERSION для /api/info_card
 #include <esp_random.h>
 #include <new>          // placement nothrow: heap-буфер JSON в init()
 #include <Update.h>   // U_FLASH / U_SPIFFS для OTA-приёма (залежь №3)
@@ -94,6 +96,7 @@ void HttpService::registerRoutes() {
     // Публичная часть
     _server.on("/",               HTTP_GET,  [this]() { handleRoot(); });
     _server.on("/api/system",     HTTP_GET,  [this]() { handleApiSystem(); });
+    _server.on("/api/info_card",  HTTP_GET,  [this]() { handleApiInfoCard(); }); // 5.9.0
     _server.on("/api/auth",       HTTP_POST, [this]() { handleApiAuth(); });
     _server.on("/api/setup",      HTTP_POST, [this]() { handleApiSetup(); });
     // Админская часть (каждый обработчик начинается с requireAdmin)
@@ -300,6 +303,75 @@ void HttpService::handleRoot() {
         profile);
 
     _server.send(200, "text/html; charset=utf-8", _pageBuf);
+}
+
+// 5.9.0: санитизация строки для JSON карточки (имя из конфига — ввод
+// пользователя: кавычки/обратные слэши/управляющие вырезаем).
+static void icSanitize(const char* in, char* out, size_t n) {
+    size_t w = 0;
+    if (in) {
+        for (const char* p = in; *p && w + 1 < n; ++p) {
+            char c = *p;
+            if (c == '"' || c == '\\' || (unsigned char)c < 0x20) c = ' ';
+            out[w++] = c;
+        }
+    }
+    out[w] = '\0';
+}
+
+// 5.9.0: ЕДИНАЯ ИНФО-КАРТОЧКА ФЛОТА (обсуждение с владельцем 09.09.2026).
+// ПУБЛИЧНЫЙ endpoint (карточка живёт и на welcome-странице замка, до
+// входа по ПИНу) — потому состав жёстко открытый: имя, версии, статус
+// MQTT, аптайм, время, до 2 профильных строк. IP/hostname НЕ отдаём
+// (решение владельца: сетевые реквизиты остаются в закрытой зоне).
+void HttpService::handleApiInfoCard() {
+    // Имя: sys.name из конфига, иначе дефолт профиля, иначе uiTitle.
+    char name[CFG_VALUE_LEN];
+    cfgGetStr("sys.name", name, sizeof(name), "");
+    if (name[0] == '\0' && _ui) {
+        icSanitize(_ui->uiDisplayName(), name, sizeof(name));
+    }
+    if (name[0] == '\0') {
+        safeStrCopy(name, sizeof(name), "МикроОС 5.0");
+    }
+
+    char prof[24];
+    icSanitize(UpdateService::getInstance().profileVersion(),
+               prof, sizeof(prof));
+    if (prof[0] == '\0') safeStrCopy(prof, sizeof(prof), "—");
+
+    // Текущее время (локальное, из RTC/NTP; нет валидного — пусто).
+    char timeStr[24] = "";
+    struct tm tmNow;
+    if (TimeService::getInstance().getLocalTime(tmNow)) {
+        strftime(timeStr, sizeof(timeStr), "%d.%m.%Y %H:%M:%S", &tmNow);
+    }
+
+    // Профильные строки (до 2).
+    char labels[2][24] = {{0}};
+    char values[2][32] = {{0}};
+    uint8_t n = (_ui) ? _ui->infoCardExtras(labels, values, 2) : 0;
+    if (n > 2) n = 2;
+
+    char* p = jsonBuf();
+    size_t cap = jsonBufSize();
+    int off = snprintf(p, cap,
+        "{\"name\":\"%s\",\"fw\":\"%s\",\"profile\":\"%s\","
+        "\"mqtt\":%d,\"uptime\":%lu,\"time\":\"%s\",\"extras\":[",
+        name, MICROOS_VERSION, prof,
+        MqttTransport::getInstance().isConnected() ? 1 : 0,
+        (unsigned long)(millis() / 1000), timeStr);
+    for (uint8_t i = 0; i < n && off > 0 && (size_t)off < cap; ++i) {
+        char l[24], v[32];
+        icSanitize(labels[i], l, sizeof(l));
+        icSanitize(values[i], v, sizeof(v));
+        off += snprintf(p + off, cap - off, "%s{\"l\":\"%s\",\"v\":\"%s\"}",
+                        i ? "," : "", l, v);
+    }
+    if (off > 0 && (size_t)off < cap) {
+        snprintf(p + off, cap - off, "]}");
+    }
+    sendJson(200, jsonBuf());
 }
 
 void HttpService::handleApiSystem() {

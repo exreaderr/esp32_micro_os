@@ -107,6 +107,7 @@ private:
     void handleRoot();                 // публичная страница
     void handleAdmin();                // админская (PROGMEM)
     void handleApiSystem();            // публичный статус (кратко)
+    void handleApiInfoCard();          // 5.9.0: единая инфо-карточка флота
     void handleApiAuth();              // POST pin -> token (rate-limited)
     void handleApiSetup();             // POST pin (C1, только не provisioned)
     void handleApiLogout();

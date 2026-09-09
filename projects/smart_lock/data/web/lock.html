@@ -492,7 +492,7 @@ body.skin-term ::selection { background: var(--text); color: var(--bg); }
 <!-- ==================== ВХОД ==================== -->
 <div class="modal" id="authModal">
   <div class="modal-card">
-    <h2>🔐 Умный замок</h2>
+    <h2>🔐 <span id="pinTitle">Умный замок</span></h2>
     <div class="modal-sub" id="authSub">МикроОС 5.0 · СКУД</div>
     <div class="auth-tabs" id="authTabs">
       <button class="chip active" id="tabResident" onclick="authTab('resident')">🏠 Жилец</button>
@@ -547,11 +547,15 @@ body.skin-term ::selection { background: var(--text); color: var(--bg); }
     <span class="weather-temp" id="weatherTemp"></span>
   </div>
 
+  <!-- Единая инфо-карточка флота (ядро 5.9.0): имя устройства — заголовок,
+       далее ядро/профиль, MQTT, время работы, профильная строка, время -->
   <div class="m-card footer-card">
-    <div class="card-label">ℹ️ Системная информация · <span id="uVer">5.0.16</span></div>
+    <div class="card-label">ℹ️ <span id="uName">Умный замок</span></div>
     <div class="footer-grid">
+      <div class="footer-item"><span>Системная информация</span><b>МикроОС <span id="uVer">5.0.16</span></b></div>
+      <div class="footer-item"><span>Профиль</span><b id="uProf">—</b></div>
       <div class="footer-item"><span>MQTT</span><b id="uMqtt">—</b></div>
-      <div class="footer-item"><span>Аптайм</span><b id="uUptime">—</b></div>
+      <div class="footer-item"><span>Время работы</span><b id="uUptime">—</b></div>
       <div class="footer-item"><span>🔧 Циклов замка</span><b id="uCycles">0</b></div>
       <div class="footer-item"><span id="uTime">—</span><b></b></div>
     </div>
@@ -816,10 +820,10 @@ body.skin-term ::selection { background: var(--text); color: var(--bg); }
   </div>
 
   <div class="m-card footer-card">
-    <div class="card-label">ℹ️ Системная информация · МикроОС <span id="aVer">5.0.16</span></div>
+    <div class="card-label">ℹ️ <span id="aName">Системная информация</span> · МикроОС <span id="aVer">5.0.16</span> · профиль <span id="aProf">—</span></div>
     <div class="footer-grid">
       <div class="footer-item"><span>MQTT</span><b id="aMqtt">—</b></div>
-      <div class="footer-item"><span>Аптайм</span><b id="aUptime">—</b></div>
+      <div class="footer-item"><span>Время работы</span><b id="aUptime">—</b></div>
       <div class="footer-item"><span>Мастер-ключ</span><b id="aMaster">—</b></div>
       <div class="footer-item"><span>Кнопка выхода</span><b id="aExit">—</b></div>
       <div class="footer-item"><span>Тихий режим</span><b id="aQuiet">—</b></div>
@@ -1248,6 +1252,22 @@ async function loadSystem(){
   var r=await api('/api/system').catch(function(){ return null; });
   if(r && r.ok) S.sys=r.data;
 }
+// Единая инфо-карточка флота (ядро 5.9.0): имя (sys.name) и версия
+// профиля — публичный endpoint, доступен и на welcome до входа по ПИНу.
+async function loadInfoCard(){
+  try{
+    var r=await fetch('/api/info_card');
+    if(!r.ok) return;
+    var ic=await r.json();
+    if(ic.name){ if($('uName')) $('uName').textContent=ic.name;
+                 if($('aName')) $('aName').textContent=ic.name;
+                 if($('pinTitle')) $('pinTitle').textContent=ic.name;
+                 document.title=ic.name+' — МикроОС 5.0'; }
+    if(ic.profile){ if($('uProf')) $('uProf').textContent=ic.profile;
+                    if($('aProf')) $('aProf').textContent=ic.profile; }
+  }catch(e){/* карточка не критична */}
+}
+loadInfoCard(); setInterval(loadInfoCard,30000);
 </script>
 
 <script>

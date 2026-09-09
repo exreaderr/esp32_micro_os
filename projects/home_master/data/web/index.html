@@ -378,10 +378,19 @@ footer b{color:var(--text)}
 
   </div><!-- /pages -->
 
-  <!-- ================= ПОДВАЛ: обобщающая информация ================= -->
+  <!-- ================= ПОДВАЛ: единая инфо-карточка флота (5.9.0) ================= -->
   <footer>
-    <b>home_master</b> · <span id="footFw">МикроОС</span> · <span id="footBoard"></span><br>
-    панель v2 · концепт «браузерные вкладки» · тема — основной скин (мягкая пастель)
+    <div class="card" style="text-align:left;margin-top:10px">
+      <h2 style="text-align:center"><span id="icName">…</span></h2>
+      <div class="row"><span class="k">Системная информация</span><span>МикроОС <b id="icFw">…</b></span></div>
+      <div class="row"><span class="k">Профиль</span><span id="icProf">…</span></div>
+      <div class="row"><span class="k">MQTT</span><span id="icMqtt">…</span></div>
+      <div class="row"><span class="k">Время работы</span><span id="icUp">…</span></div>
+      <div class="row" id="icEx0" style="display:none"><span class="k" id="icEx0l"></span><span id="icEx0v"></span></div>
+      <div class="row" id="icEx1" style="display:none"><span class="k" id="icEx1l"></span><span id="icEx1v"></span></div>
+      <div class="row"><span class="k">Текущее время</span><span id="icTime">…</span></div>
+    </div>
+    <div style="margin-top:6px"><span id="footFw"></span> · панель v2 · концепт «браузерные вкладки»</div>
   </footer>
 </div>
 
@@ -648,6 +657,25 @@ async function jrnDownload(){
   }catch(e){if(e.message!=='401')$('jrnInfo').textContent='Ошибка скачивания: '+e.message;}
 }
 
+// ---------- единая инфо-карточка флота (5.9.0, /api/info_card) ----------
+async function loadInfoCard(){
+  try{
+    const ic=await(await fetch('/api/info_card')).json();
+    $('icName').textContent=ic.name||'—';
+    $('icFw').textContent=ic.fw||'—';
+    $('icProf').textContent=ic.profile||'—';
+    $('icMqtt').innerHTML=ic.mqtt?badge('подключён','ok'):badge('нет связи','warn');
+    $('icUp').textContent=fmtUp(ic.uptime);
+    $('icTime').textContent=ic.time||'— не синхронизировано —';
+    const ex=ic.extras||[];
+    for(let i=0;i<2;i++){
+      const row=$('icEx'+i);
+      if(i<ex.length){row.style.display='';$('icEx'+i+'l').textContent=ex[i].l;$('icEx'+i+'v').textContent=ex[i].v;}
+      else row.style.display='none';
+    }
+  }catch(e){/* карточка не критична — оставляем «…» */}
+}
+
 // ---------- статус + живая шапка (публичные данные, 5 с всегда) ----------
 async function loadStatus(){
   try{
@@ -657,7 +685,6 @@ async function loadStatus(){
     $('board').textContent=hm.board;
     $('fw').textContent=hm.fw+' · профиль '+hm.profile_ver;
     $('footFw').textContent='МикроОС '+hm.fw+' · профиль '+hm.profile_ver;
-    $('footBoard').textContent=hm.board;
     $('mode').textContent=hm.mode;
     $('uptime').textContent=fmtUp(hm.uptime_s);
     $('hUp').textContent=fmtUp(hm.uptime_s);
@@ -1143,7 +1170,7 @@ async function changePw(){
 }
 
 // ---------- старт: живая шапка всегда (5 с), вкладка по умолчанию ----------
-loadStatus();setInterval(loadStatus,5000);
+loadStatus();loadInfoCard();setInterval(loadStatus,5000);setInterval(loadInfoCard,15000);
 showTab('status');
 </script>
 </body>

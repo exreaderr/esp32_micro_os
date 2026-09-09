@@ -23,6 +23,13 @@ class SmartLockUi : public IUiProvider {
 public:
     const char* uiTitle() const override { return "smart_lock"; }
 
+    // 5.9.0/0.5.16: единая инфо-карточка флота — имя по умолчанию
+    // (перебивается sys.name из конфига) и профильная строка «Циклов
+    // замка» (существующий открытый счётчик, решение владельца 09.09.2026).
+    const char* uiDisplayName() const override { return "Умный замок"; }
+    uint8_t infoCardExtras(char labels[][24], char values[][32],
+                           uint8_t maxLines) override;
+
     /// Фрагмент панели жильца (бюджет ~2 КБ буфера публичной страницы).
     size_t renderPublicHtml(char* buf, size_t bufSize) override;
 

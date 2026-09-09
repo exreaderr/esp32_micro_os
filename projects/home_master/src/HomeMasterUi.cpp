@@ -20,6 +20,32 @@
 #include <cstring>
 
 // ============================================================================
+// ИНФО-КАРТОЧКА ФЛОТА (5.9.0/0.8.0): профильные строки.
+// Открытые данные: режим работы (мост/соло/выкл) и число MQTT-клиентов.
+// ============================================================================
+uint8_t HomeMasterUi::infoCardExtras(char labels[][24], char values[][32],
+                                     uint8_t maxLines) {
+    if (maxLines == 0) return 0;
+    BrokerService& br = BrokerService::getInstance();
+    BridgeService& bg = BridgeService::getInstance();
+
+    snprintf(labels[0], 24, "%s", "Режим");
+    if (bg.active()) {
+        snprintf(values[0], 32, "%s", "мост ↔ HA");
+    } else if (br.running()) {
+        snprintf(values[0], 32, "%s", "соло");
+    } else {
+        snprintf(values[0], 32, "%s", "брокер выкл");
+    }
+    if (maxLines > 1) {
+        snprintf(labels[1], 24, "%s", "Клиентов MQTT");
+        snprintf(values[1], 32, "%u", br.clients());
+        return 2;
+    }
+    return 1;
+}
+
+// ============================================================================
 // ПУБЛИЧНАЯ СТРАНИЦА "/" (фрагмент, бюджет ~2 КБ)
 // ============================================================================
 size_t HomeMasterUi::renderPublicHtml(char* buf, size_t bufSize) {
