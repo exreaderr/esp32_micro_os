@@ -1,7 +1,7 @@
 {
-  "version": "5.8.8",
-  "fw_md5": "acb315d7c6b72a89adf16c4b26899361",
-  "fs_md5": "16559ca0b464616e3ff1a03069260b35",
+  "version": "5.9.0",
+  "fw_md5": "e38fd08e6a012912db9a0f9b2aae436f",
+  "fs_md5": "074a072861b2c93699b7eb3969c6105f",
   "changelog": "Periodic production build update",
   "host": "smart_counter",
   "profile_version": "0.1.2",

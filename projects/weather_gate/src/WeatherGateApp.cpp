@@ -126,6 +126,29 @@ static WgStormCheck s_stormCheck;
 // ============================================================================
 // UI-ПРОВАЙДЕР
 // ============================================================================
+// 5.9.0 (0.6.3): единая инфо-карточка флота — extras ТОЛЬКО открытые
+// (предложение владельца: RSSI уличного блока, возраст последнего пакета).
+uint8_t WeatherGateUi::infoCardExtras(char labels[][24], char values[][32],
+                                      uint8_t maxLines) {
+    if (maxLines == 0) return 0;
+    uint8_t n = 0;
+    const WeatherGateApp::Outdoor& o = WeatherGateApp::getInstance().outdoor();
+    snprintf(labels[n], 24, "%s", "Уличный блок");
+    if (o.valid)
+        snprintf(values[n], 32, "RSSI %d дБм",
+                 (int)Cc1101Driver::getInstance().rssiDbm());
+    else
+        snprintf(values[n], 32, "%s", "пакетов не было");
+    ++n;
+    if (n < maxLines && o.valid) {
+        snprintf(labels[n], 24, "%s", "Последний пакет");
+        snprintf(values[n], 32, "%lu с назад",
+                 (unsigned long)((millis() - o.rxMs) / 1000));
+        ++n;
+    }
+    return n;
+}
+
 size_t WeatherGateUi::renderPublicHtml(char* buf, size_t bufSize) {
     // Бюджет публичной секции ~2 КБ (правило ядра). Улица + давление + эфир.
     const WeatherGateApp& app = WeatherGateApp::getInstance();
@@ -575,6 +598,25 @@ void WeatherGateApp::registerExtensions() {
          "AGCCTRL2 raw (дефолт 27=0x1B: LNA −7,4 дБ; 0=не писать)"},
     });
     if (!ok) log(LogLevel::Error, "addFields 'Телеметрия и сторожа' failed");
+
+    // W6 (0.7.0): статус-LED WS2812 — порт эталона мастера (M5, 5.8.9).
+    // Поля CFG_CRITICAL (смена пинов/маппинга — через ребут). КОНЕЦ СХЕМЫ.
+    ok = ConfigService::getInstance().addFields("Статус-LED", {
+        {"led.enabled",        ConfigType::BOOL, "false", 0, 0,
+         CFG_CRITICAL, "Статус-LED", "Лента WS2812 на шлюзе (ребут)"},
+        // 0.7.1: GPIO2 — одиночный LED не распаян, нога свободна (решение
+        // владельца 09.09); GPIO5 на гребёнке нет (эррата IO5/IO35 закрыта:
+        // это GPIO35, input-only). Страппинг: при UART-прошивке ленту снять.
+        {"led.pin",            ConfigType::UINT, "2", 0, 48,
+         CFG_CRITICAL, "Статус-LED", "GPIO data (GPIO2; на время UART-прошивки ленту отключать)"},
+        {"led.count",          ConfigType::UINT, "3", 1, 8,
+         CFG_CRITICAL, "Статус-LED", "Пикселей в ленте"},
+        {"led.bright",         ConfigType::UINT, "15", 1, 100,
+         CFG_CRITICAL, "Статус-LED", "Яркость, % (статус, не гирлянда)"},
+        {"led.map",            ConfigType::STRING, "wg.radio,wg.bme280,wg.storm", 0, 0,
+         CFG_CRITICAL, "Статус-LED", "Проверка i-го пикселя через запятую (пусто = погашен)"},
+    });
+    if (!ok) log(LogLevel::Error, "addFields 'Статус-LED' failed");
 
     // ПАЗ-проверки домена (механизм — HealthMonitor, содержимое — профиль)
     HealthMonitor::getInstance().registerCheck(&s_sensorCheck);

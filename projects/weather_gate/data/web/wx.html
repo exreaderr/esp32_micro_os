@@ -422,8 +422,18 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     </div>
   </div>
 
-  <!-- Плашка-пасхалка: 5 тапов → вход администратора (как на smart_lock) -->
-  <div class="card hint" id="footTap" onclick="footTap()">weather_gate · МикроОС 5.0</div>
+  <!-- Единая инфо-карточка флота (ядро 5.9.0, /api/info_card; эталон master 0.8.0).
+       Карточка же — плашка-пасхалка: 5 тапов → вход администратора. -->
+  <div class="card hint" id="footTap" onclick="footTap()" style="cursor:pointer">
+    <div style="text-align:center"><b id="icName">weather_gate</b></div>
+    <div class="srow"><span>Системная информация</span><span>МикроОС <b id="icFw">…</b></span></div>
+    <div class="srow"><span>Профиль</span><span id="icProf">…</span></div>
+    <div class="srow"><span>MQTT</span><span id="icMqtt">…</span></div>
+    <div class="srow"><span>Время работы</span><span id="icUp">…</span></div>
+    <div class="srow" id="icEx0" style="display:none"><span id="icEx0l"></span><span id="icEx0v"></span></div>
+    <div class="srow" id="icEx1" style="display:none"><span id="icEx1l"></span><span id="icEx1v"></span></div>
+    <div class="srow"><span>Текущее время</span><span id="icTime">…</span></div>
+  </div>
 
 </div>
 <div id="toast"></div>
@@ -1191,7 +1201,7 @@ async function renderNet(){
   rr('Устройство', esc(d.id));
   rr('Имя хоста', esc(d.host));
   rr('IP (Ethernet)', esc(d.ip));
-  rr('Аптайм', fmtUp(d.uptime));
+  rr('Время работы', fmtUp(d.uptime));
   rr('Уровень деградации', d.level===0?'нет (0)':d.level, d.level===0?'ok':'warn');
   rr('Защищённый режим', d.safe?'ДА':'нет', d.safe?'bad':'ok');
   $('netRows').innerHTML=rows;
@@ -1222,7 +1232,7 @@ async function renderPaz(){
   rows+='<div class="srow"><span>Предупреждения / критические</span><span>'+h.warnings+' / '+h.criticals+'</span></div>';
   rows+='<div class="srow"><span>Свободная куча</span><span>'+Math.round(h.heap_free/1024)+' КБ</span></div>';
   rows+='<div class="srow"><span>Сторожевой таймер</span><span class="'+(h.wdt?'ok':'warn')+'">'+(h.wdt?'взведён':'выключен')+'</span></div>';
-  rows+='<div class="srow"><span>Аптайм</span><span>'+fmtUp(h.uptime_s)+'</span></div>';
+  rows+='<div class="srow"><span>Время работы</span><span>'+fmtUp(h.uptime_s)+'</span></div>';
   if(h.checks && h.checks.length){
     rows+='<div class="hint" style="margin:8px 0 2px"><b>Проверки</b></div>';
     for(var i=0;i<h.checks.length;i++){
@@ -1451,12 +1461,37 @@ async function rebootDevice(){
 }
 
 // ============================================================================
+// Единая инфо-карточка флота (ядро 5.9.0, /api/info_card; эталон master 0.8.0)
+// ============================================================================
+async function loadInfoCard(){
+  try{
+    var res=await fetch('/api/info_card',{cache:'no-store'});
+    if(!res.ok) return;
+    var ic=await res.json();
+    $('icName').textContent=ic.name||'weather_gate';
+    $('icFw').textContent=ic.fw||'—';
+    $('icProf').textContent=ic.profile||'—';
+    $('icMqtt').innerHTML=ic.mqtt?'<span class="ok">подключён</span>':'<span class="warn">нет связи</span>';
+    $('icUp').textContent=fmtUp(ic.uptime||0);
+    $('icTime').textContent=ic.time||'— не синхронизировано —';
+    var ex=ic.extras||[];
+    for(var i=0;i<2;i++){
+      var row=$('icEx'+i);
+      if(i<ex.length){ row.style.display=''; $('icEx'+i+'l').textContent=ex[i].l; $('icEx'+i+'v').textContent=ex[i].v; }
+      else row.style.display='none';
+    }
+  }catch(e){/* карточка не критична — оставляем «…» */}
+}
+
+// ============================================================================
 // СТАРТ
 // ============================================================================
 applyTheme();
 initCompass();
 refreshNow();
+loadInfoCard();
 setInterval(refreshNow, 30000);
+setInterval(loadInfoCard, 15000);
 $('passInput').addEventListener('keydown', function(e){ if(e.key==='Enter') doLogin(); });
 document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLogin(); });
 $('loginModal').addEventListener('click', function(e){ if(e.target===this) closeLogin(); });

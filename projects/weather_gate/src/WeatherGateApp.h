@@ -16,7 +16,7 @@
 // 5.8.8: единственный источник версии профиля (метка в .bin + getVersion).
 // Шкала профиля отвязана от ядра (как у замка 08.09.2026): ведущий 0 =
 // «это версия ПРОФИЛЯ». Двухполевая метка MICROOS|ядро|профиль|END.
-#define MICROOS_PROFILE_VER 0.6.2
+#define MICROOS_PROFILE_VER 0.7.1
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -36,6 +36,11 @@ public:
     }
 
     const char* uiTitle() const override { return "weather_gate"; }
+
+    // 5.9.0 (0.6.3): единая инфо-карточка флота
+    const char* uiDisplayName() const override { return "Погодный шлюз"; }
+    uint8_t infoCardExtras(char labels[][24], char values[][32],
+                           uint8_t maxLines) override;
 
     /// Публичная карточка на "/" (бюджет ~2 КБ): улица + давление + эфир.
     size_t renderPublicHtml(char* buf, size_t bufSize) override;
@@ -57,7 +62,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.6.2: формулировка «Прогноз из сети: … (N мин назад)» в карточке тренда; 0.6.1: графики в открытой части панели (dlog GET публичен) + CHK_NAME в ПАЗ; 0.6.0: W5 — Замбретти + шторм-флаг + Open-Meteo
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.7.1: led.pin дефолт GPIO2 (GPIO5 на гребёнке нет — эррата IO5/IO35 закрыта: это GPIO35; решение владельца 09.09); 0.7.0: W6 — статус-LED WS2812 (WgStatusLedModule, порт эталона мастера); 0.6.3: инфо-карточка флота (ядро 5.9.0); 0.6.2: «Прогноз из сети»; 0.6.1: графики в открытой части + CHK_NAME; 0.6.0: W5
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки

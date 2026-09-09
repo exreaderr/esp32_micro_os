@@ -4,6 +4,7 @@
 #include "WeatherGateProfile.h"
 #include "WeatherGateEvents.h"
 #include "WeatherGateApp.h"
+#include "WgStatusLedModule.h"   // W6 (0.7.0)
 #include <drivers/Bme280Driver.h>
 #include <drivers/Cc1101Driver.h>
 #include <core/DriverRegistry.h>
@@ -60,4 +61,7 @@ void WeatherGateProfile::registerModules(Kernel& k) {
     // Единственный прикладной модуль (W1). Приоритет 9 — в профильной
     // зоне, после ядерных сервисов (образец: SmartLockApp).
     k.registerModule(&WeatherGateApp::getInstance(), 9, 0);
+    // W6 (0.7.0): статус-LED WS2812. Модуль сам решает, есть ли лента
+    // (led.enabled=0 → init() тихо выходит; закон самодостаточности).
+    k.registerModule(&WgStatusLedModule::getInstance(), 9, 1);
 }
