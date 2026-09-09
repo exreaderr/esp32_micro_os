@@ -102,6 +102,16 @@ public:
     uint8_t warningCount() const { return _warningCount; }
     uint8_t criticalCount() const { return _criticalCount; }
 
+    // --- СНИМОК ПРОВЕРОК ДЛЯ ВНЕШНИХ ИНДИКАТОРОВ (5.8.9, M5) -----------------
+    // Только чтение: status-LED/OLED мастера и подобные потребители
+    // отображают ПАЗ, не вмешиваясь в механизм. i >= checkCount() —
+    // безопасные пустые значения.
+    uint8_t checkCount() const { return _checkCount; }
+    const char* checkNameAt(uint8_t i) const;
+    HealthResult::Status checkStatusAt(uint8_t i) const;
+    const char* checkMsgAt(uint8_t i) const;
+    uint32_t checkLastRunAt(uint8_t i) const;   // millis последнего прогона (0 — ещё не бежала)
+
 private:
     HealthMonitor() = default;
 

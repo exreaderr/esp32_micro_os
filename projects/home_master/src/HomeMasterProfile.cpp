@@ -10,6 +10,8 @@
 #include "BackupService.h"
 #include "OtaMirrorService.h"
 #include "WeatherMirror.h"
+#include "StatusLedModule.h"
+#include "PanelDisplayModule.h"
 #include "HomeMasterApp.h"
 #include <core/ResourceManager.h>
 #include <core/Kernel.h>
@@ -60,5 +62,10 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     k.registerModule(&BackupService::getInstance(),  9, 2);
     // 0.6.1: OTA-зеркало — опрос HA + раздача :8123 с SD.
     k.registerModule(&OtaMirrorService::getInstance(), 9, 3);
+    // M5: лицо ПАЗ на железе — статус-LED и экран по требованию.
+    // Оба по умолчанию выключены (led.enabled/oled.enabled=0): нет железа —
+    // молчат, мастер работает полной программой.
+    k.registerModule(&StatusLedModule::getInstance(),  9, 4);
+    k.registerModule(&PanelDisplayModule::getInstance(), 9, 5);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }

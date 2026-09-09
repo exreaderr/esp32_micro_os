@@ -128,4 +128,40 @@ void registerHomeMasterConfig() {
         { "otam.src", ConfigType::STRING, "", 0, 0, CFG_NONE,
           "OTA-зеркало", "Источник-переопределение (пусто = HA; напр. http://192.168.1.10:8123)" },
     });
+
+    // === ГРУППА: Статус-LED (M5, 08.09.2026) ==========================
+    // 4 пикселя WS2812 = лицо ПАЗ на железе. По умолчанию ВЫКЛЮЧЕНО:
+    // нет ленты — модуль молчит. Распиновка утверждена владельцем
+    // 08.09.2026 (GPIO21, питание 3.3V, ~470 Ом на data).
+    cfg.addFields("Статус-LED", {
+        { "led.enabled", ConfigType::BOOL, "false", 0, 0, CFG_CRITICAL,
+          "Статус-LED", "Лента WS2812 на мастере (ребут)" },
+        { "led.pin", ConfigType::UINT, "21", 0, 48, CFG_CRITICAL,
+          "Статус-LED", "GPIO data (21 — свободен, см. дорожную карту M5)" },
+        { "led.count", ConfigType::UINT, "4", 1, 8, CFG_CRITICAL,
+          "Статус-LED", "Пикселей в ленте" },
+        { "led.bright", ConfigType::UINT, "15", 1, 100, CFG_CRITICAL,
+          "Статус-LED", "Яркость, % (статус, не гирлянда)" },
+        { "led.map", ConfigType::STRING, "hm.sd,hm.bk,hm.ota,hm.fleet", 0, 0, CFG_CRITICAL,
+          "Статус-LED", "Проверка i-го пикселя через запятую (пусто = погашен)" },
+    });
+
+    // === ГРУППА: Экран (M5, 08.09.2026) ===============================
+    // OLED SSD1306 на I2C-шине платы (16/17, та же шина, что DS3231) +
+    // 3 кнопки. Экран всегда погашен, будит любая кнопка. По умолчанию
+    // ВЫКЛЮЧЕНО: нет дисплея — модуль молчит.
+    cfg.addFields("Экран", {
+        { "oled.enabled", ConfigType::BOOL, "false", 0, 0, CFG_CRITICAL,
+          "Экран", "OLED SSD1306 128x64 на мастере (ребут)" },
+        { "oled.addr", ConfigType::UINT, "60", 3, 119, CFG_CRITICAL,
+          "Экран", "I2C-адрес (60 = 0x3C)" },
+        { "oled.timeout", ConfigType::UINT, "30", 5, 300, CFG_CRITICAL,
+          "Экран", "Гашение после последнего нажатия, с" },
+        { "btn.plus", ConfigType::UINT, "15", 0, 48, CFG_CRITICAL,
+          "Экран", "GPIO кнопки «+»" },
+        { "btn.minus", ConfigType::UINT, "18", 0, 48, CFG_CRITICAL,
+          "Экран", "GPIO кнопки «−»" },
+        { "btn.ok", ConfigType::UINT, "2", 0, 48, CFG_CRITICAL,
+          "Экран", "GPIO кнопки «ОК»" },
+    });
 }

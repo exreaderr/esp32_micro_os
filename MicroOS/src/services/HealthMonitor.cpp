@@ -426,6 +426,29 @@ static bool jGetStr(const char* line, const char* key, char* out, size_t n) {
     return true;
 }
 
+// ============================================================================
+// СНИМОК ПРОВЕРОК ДЛЯ ВНЕШНИХ ИНДИКАТОРОВ (5.8.9, M5)
+// ============================================================================
+const char* HealthMonitor::checkNameAt(uint8_t i) const {
+    if (i >= _checkCount || _checks[i].check == nullptr) return "";
+    return _checks[i].check->checkName();
+}
+
+HealthResult::Status HealthMonitor::checkStatusAt(uint8_t i) const {
+    if (i >= _checkCount) return HealthResult::Status::Ok;
+    return _checks[i].lastStatus;
+}
+
+const char* HealthMonitor::checkMsgAt(uint8_t i) const {
+    if (i >= _checkCount) return "";
+    return _checks[i].lastMsg;
+}
+
+uint32_t HealthMonitor::checkLastRunAt(uint8_t i) const {
+    if (i >= _checkCount) return 0;
+    return _checks[i].lastRunMs;
+}
+
 void HealthMonitor::journalAdd(const char* src, const char* msg) {
     if (!_journalLoaded) loadJournal();   // лениво: порядок модулей не важен
 
