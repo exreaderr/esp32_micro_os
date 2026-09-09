@@ -940,7 +940,7 @@ async function refreshNow(){
             80:'ливень',81:'ливень',82:'сильный ливень',85:'снегопад',86:'снегопад',
             95:'гроза',96:'гроза с градом',99:'гроза с градом'};
     if(w.om!==undefined && w.om>=0 && OM[w.om]!==undefined){
-      $('mTrendSub').textContent+=' · Сеть: '+OM[w.om]+' ('+w.om_age+' мин)';
+      $('mTrendSub').textContent+=' · Прогноз из сети: '+OM[w.om]+' ('+w.om_age+' мин назад)';
     }
   }
   // Статус датчика и шлюза
