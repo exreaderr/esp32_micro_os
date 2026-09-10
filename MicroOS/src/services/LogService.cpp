@@ -61,6 +61,25 @@ void LogService::stop()   { _started = false; }
 void LogService::onLog(LogLevel level, const char* tag, const char* body) {
     portENTER_CRITICAL(&s_ringMux);
 
+    // 5.9.1, СВЁРТКА ПОВТОРОВ (просьба владельца 10.09; инцидент шлюза:
+    // «ping session create failed» спамил каждые 500 мс ЧАСАМИ и вымывал
+    // из кольца всё содержательное). Идентичная предыдущей строка
+    // (уровень+тег+тело) новой записью НЕ плодится — растится счётчик
+    // reps последней записи, в выдаче видно «×N». Файл получает первое
+    // вхождение (оно ушло до начала серии) — хронология не ломается.
+    if (_total > 0) {
+        uint8_t prev = (uint8_t)((_head + LOG_RING_SIZE - 1) % LOG_RING_SIZE);
+        Entry& pe = _ring[prev];
+        if (pe.level == (uint8_t)level && pe.reps < 0xFFFF &&
+            strncmp(pe.tag, tag, LOG_TAG_LEN) == 0 &&
+            strncmp(pe.body, body, LOG_BODY_LEN) == 0) {
+            pe.reps++;
+            _total++;
+            portEXIT_CRITICAL(&s_ringMux);
+            return;
+        }
+    }
+
     // Кольцо переполнено относительно точки flush — файл не успевает.
     // Теряем САМУЮ СТАРУЮ не сброшенную запись (flushPos догоняет) + счётчик.
     uint8_t next = (uint8_t)((_head + 1) % LOG_RING_SIZE);
@@ -165,10 +184,19 @@ size_t LogService::tail(char* buf, size_t bufSize, uint8_t maxLines) const {
                                 % LOG_RING_SIZE);
         Entry e = _ring[idx];   // короткое чтение без лока: строка может
                                 // устареть под нами — для просмотра допустимо
-        char line[LOG_TAG_LEN + LOG_BODY_LEN + 24];
-        int n = snprintf(line, sizeof(line), "[%08lu] [%c] [%s] %s\n",
+        char line[LOG_TAG_LEN + LOG_BODY_LEN + 36];
+        int n;
+        if (e.reps > 0) {
+            // 5.9.1: свёрнутая серия показывается суффиксом ×N
+            n = snprintf(line, sizeof(line), "[%08lu] [%c] [%s] %s (×%u)\n",
+                         (unsigned long)e.ms,
+                         LVL[e.level <= 4 ? e.level : 1], e.tag, e.body,
+                         (unsigned)(e.reps + 1));
+        } else {
+            n = snprintf(line, sizeof(line), "[%08lu] [%c] [%s] %s\n",
                          (unsigned long)e.ms,
                          LVL[e.level <= 4 ? e.level : 1], e.tag, e.body);
+        }
         if (used + (size_t)n >= bufSize) break;
         memcpy(buf + used, line, (size_t)n);
         used += (size_t)n;

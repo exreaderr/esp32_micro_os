@@ -16,7 +16,7 @@
 // ============================================================================
 #pragma once
 
-#define MICROOS_VERSION_STR "5.9.0"   // 5.9.0: единая инфо-карточка флота (/api/info_card, sys.name, uiDisplayName/infoCardExtras в IUiProvider); 5.8.9: читальный снимок проверок ПАЗ (checkNameAt/StatusAt/MsgAt/LastRunAt) для внешних индикаторов (M5); 5.8.8: двухполевая версия OTA (ядро+профиль, метка с 4-м полем, profile_version в манифесте); 5.8.7: подтверждение переходов ПАЗ + свёртка TICK_OVERRUN; 5.8.6: KERNEL_MAX_MODULES 24→32; 5.8.5: export/import
+#define MICROOS_VERSION_STR "5.9.1"   // 5.9.1: сторож мёртвой сети (net.dead_reboot/net.dead_min, NET_DEAD) + backoff на сбой создания ping-сессии + свёртка однотипных логов (×N) + аудит +hp + CC1101 hard-reset SRES и MarcState-сторож (запрос ветки weather_gate 10.09); 5.9.0: единая инфо-карточка флота (/api/info_card, sys.name, uiDisplayName/infoCardExtras в IUiProvider); 5.8.9: читальный снимок проверок ПАЗ (checkNameAt/StatusAt/MsgAt/LastRunAt) для внешних индикаторов (M5); 5.8.8: двухполевая версия OTA (ядро+профиль, метка с 4-м полем, profile_version в манифесте); 5.8.7: подтверждение переходов ПАЗ + свёртка TICK_OVERRUN; 5.8.6: KERNEL_MAX_MODULES 24→32; 5.8.5: export/import
 
 constexpr const char* MICROOS_VERSION = MICROOS_VERSION_STR;
 

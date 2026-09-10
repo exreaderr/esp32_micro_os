@@ -177,6 +177,28 @@ void Cc1101Driver::poll() {
         ++_rxReenters;
     }
 
+    // 5.9.1, СТОРОЖ АВТОМАТА (инцидент шлюза 09.09): после тёплого
+    // ребута readback проходил, но автомат застрял ВНЕ RX — эфир молчал
+    // до снятия питания. Раз в минуту сверяем MarcState: не RX (0x0D)
+    // и не RXFIFO_OVERFLOW (0x11, лечится SFRX ниже) — полная
+    // переустановка приёмника без ребута контроллера. Факт — в Serial
+    // (драйвер не ModuleBase) и счётчик _rfStateFixes для ПАЗ/панели.
+    if ((uint32_t)(nowMs - _lastMarcChkMs) > 60000) {
+        _lastMarcChkMs = nowMs;
+        uint8_t ms = readStatus(cc1101::REG_MARCSTATE) & 0x1F;
+        if (ms != 0x0D && ms != 0x11) {
+            Serial.printf("[%08lu] [W] [cc1101] сторож: MarcState=0x%02X "
+                          "(!=RX) — переустановка приёмника\n",
+                          (unsigned long)nowMs, ms);
+            xferReg(cc1101::STROBE_SIDLE, 0);
+            xferReg(cc1101::STROBE_SFRX, 0);
+            writeRxTable();
+            xferReg(cc1101::STROBE_SRX, 0);
+            _lastRxEnterMs = nowMs;
+            ++_rfStateFixes;
+        }
+    }
+
     fo::WeatherPacket pkt;
     while (_rTail != _wHead) {
         const Edge e = _ring[_rTail];
@@ -226,14 +248,61 @@ uint8_t Cc1101Driver::readStatus(uint8_t addr) {
 }
 
 bool Cc1101Driver::detectChip() {
-    // Сброс, затем идентификация. 0x00/0xFF в VERSION = «чип молчит»
-    // (обрыв SPI, нет питания модуля, чужой чип).
-    xferReg(cc1101::STROBE_SRES, 0);
+    // 5.9.1 (инцидент шлюза 09.09: тёплый ребут ESP НЕ сбрасывает чип —
+    // у CC1101 нет проводного RESET; эфир молчал до снятия питания).
+    // Ручная последовательность сброса по SWRS061 (19.1.2 / 11.3):
+    // разворот CS выводит из «висючей» транзакции, SRES подаём медленно,
+    // готовность кристалла ждём по CHIP_RDYn (SO==LOW). Только потом —
+    // идентификация с readback: несходство — честный FAIL в Serial,
+    // а не молчаливый «ok».
+    auto waitChipRdy = [&](uint32_t timeoutMs) -> bool {
+        digitalWrite(_pins.cs, LOW);
+        uint32_t t0 = millis();
+        while (digitalRead(_pins.miso) == HIGH) {   // CHIP_RDYn: SO высок = занят
+            if ((uint32_t)(millis() - t0) > timeoutMs) {
+                digitalWrite(_pins.cs, HIGH);
+                return false;
+            }
+        }
+        return true;   // CS остаётся LOW внутри транзакции
+    };
+
+    digitalWrite(_pins.cs, HIGH); delayMicroseconds(100);
+    digitalWrite(_pins.cs, LOW);  delayMicroseconds(100);
+    digitalWrite(_pins.cs, HIGH); delayMicroseconds(100);
+
+    // SRES медленно (1 МГц) — зависший автомат может не успевать за 4 МГц.
+    _spi->beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
+    if (!waitChipRdy(20)) {
+        _spi->endTransaction();
+        Serial.printf("[%08lu] [E] [cc1101] init FAIL: CHIP_RDYn до SRES\n",
+                      (unsigned long)millis());
+        return false;
+    }
+    _spi->transfer(cc1101::STROBE_SRES);
+    digitalWrite(_pins.cs, HIGH);
+    _spi->endTransaction();
+
+    delay(1);
+    if (!waitChipRdy(50)) {   // кристалл после сброса — до ~50 мс
+        Serial.printf("[%08lu] [E] [cc1101] init FAIL: CHIP_RDYn после SRES\n",
+                      (unsigned long)millis());
+        return false;
+    }
+    digitalWrite(_pins.cs, HIGH);
     delay(5);
+
     uint8_t pn  = readStatus(cc1101::REG_PARTNUM);
     uint8_t ver = readStatus(cc1101::REG_VERSION);
-    return pn == cc1101::PARTNUM_EXPECT &&
-           (ver == cc1101::VERSION_EXPECT || ver == cc1101::VERSION_LEGACY);
+    bool ok = pn == cc1101::PARTNUM_EXPECT &&
+              (ver == cc1101::VERSION_EXPECT || ver == cc1101::VERSION_LEGACY);
+    if (!ok) {
+        Serial.printf("[%08lu] [E] [cc1101] init FAIL: PARTNUM=%02X "
+                      "VERSION=%02X (ждали %02X/%02X)\n",
+                      (unsigned long)millis(), pn, ver,
+                      cc1101::PARTNUM_EXPECT, cc1101::VERSION_EXPECT);
+    }
+    return ok;
 }
 
 void Cc1101Driver::writeRxTable() {

@@ -44,6 +44,7 @@ const char* AuditService::eventName(int32_t eventId) {
         case HEALTH_EVENT_WDT_REBOOT:    return "WDT_REBOOT";
         // Сеть и хранилище — внешние условия инцидентов
         case NET_EVENT_CONNECTED:        return "NET_UP";
+        case NET_EVENT_DEAD:             return "NET_DEAD";   // 5.9.1 сторож
         case NET_EVENT_DISCONNECTED:     return "NET_DOWN";
         case NET_EVENT_DISABLED:         return "NET_DISABLED";
         case STORAGE_EVENT_LOW_SPACE:    return "STORAGE_LOW";
@@ -182,13 +183,20 @@ void AuditService::onEvent(int32_t eventId, const ShEventData* data) {
     }
     info[i] = '\0';
 
+    // 5.9.1 (просьба владельца 10.09, инцидент шлюза): + поле "hp" —
+    // свободный heap на момент события. Ночной клинч сокетов прошёл
+    // МИМО аудита (ping-сессии не создавались => DEGRADED не рождался);
+    // картина heap у событий вокруг инцидента — минимальная зацепка
+    // «утечка или нет» по одному файлу. Бюджет строки: +12 Б, влезает.
     char line[AUDIT_LINE_LEN];
     snprintf(line, sizeof(line),
-             "{\"ts\":%lu,\"up\":%lu,\"ev\":\"%s\",\"code\":%ld,\"info\":\"%s\"}\n",
+             "{\"ts\":%lu,\"up\":%lu,\"ev\":\"%s\",\"code\":%ld,\"hp\":%lu,"
+             "\"info\":\"%s\"}\n",
              (unsigned long)unix,
              (unsigned long)(data ? data->timestampMs : millis()),
              name,
              (long)(data ? data->code : 0),
+             (unsigned long)(ESP.getFreeHeap() / 1024),
              info);
     enqueue(line);
 }

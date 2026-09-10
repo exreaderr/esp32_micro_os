@@ -64,6 +64,10 @@ public:
     /// а с 5.8.4 прерывание GDO0 при закрытой шторке вообще замаскировано).
     uint32_t edgesDropped() const { return _edgesDropped; }
     uint32_t lastPacketMs() const { return _lastPktMs; }
+
+    /// 5.9.1: сколько раз сторож MarcState переустанавливал приёмник
+    /// (рост без пакетов = чип деградирует; для ПАЗ/панели профиля).
+    uint32_t rfStateFixes() const { return _rfStateFixes; }
     float    freqMHz()      const { return _freqMHz; }
     /// RSSI последнего принятого пакета, дБм.
     int16_t  rssiDbm()      const { return _rssiDbm; }
@@ -122,6 +126,8 @@ private:
     uint32_t _edgesDropped = 0;
     uint32_t _lastPktMs    = 0;
     uint32_t _lastRxEnterMs = 0;             // последний вход в RX (RSSI-латч)
+    uint32_t _lastMarcChkMs  = 0;            // 5.9.1: последняя сверка MarcState
+    uint32_t _rfStateFixes   = 0;            // 5.9.1: переустановок по сторожу
     uint32_t _rxReenters  = 0;               // счётчик перевходов (бенч)
     uint32_t _lastEdgesRaw = 0;              // последний сырой uint32 (дельты)
     uint64_t _edgesTotal   = 0;              // оберточно-стойкий накопитель

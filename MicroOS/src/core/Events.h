@@ -127,6 +127,7 @@ enum ShNetEvents : int32_t {
     NET_EVENT_GATEWAY_LOST      = 0x0203,  // шлюз не пингуется
     NET_EVENT_GATEWAY_RESTORED  = 0x0204,  // шлюз снова доступен
     NET_EVENT_DISABLED          = 0x0205,  // сеть отключена (джампер/локальный режим)
+    NET_EVENT_DEAD              = 0x0206,  // 5.9.1: линк+IP живы, но N мин без ping/MQTT (сторож)
 
     // MqttTransport (0x0210–0x021F)
     SH_EVENT_MQTT_CONNECTED        = 0x0210,  // подключились к брокеру

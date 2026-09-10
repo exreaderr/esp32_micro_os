@@ -115,6 +115,10 @@ private:
     uint8_t  _gwFailStreak = 0;       // подряд неудачных сессий ping
     uint32_t _gwRttMs      = 0;       // RTT последнего успешного пакета
     uint32_t _lastPingMs   = 0;       // когда стартовала последняя сессия
+    // --- 5.9.1: сторож мёртвой сети + диагностика пула сокетов -----------
+    uint8_t  _pingCreateFailStreak = 0; // подряд провалов esp_ping_new_session
+    uint32_t _lastNetGoodMs = 0;      // последний ЖИВОЙ факт сети (ping ok / MQTT)
+    bool     _deadNotified = false;   // NET_DEAD уже крикнут (антиспам)
 
     // Safe Mode статический fallback (5.5.5, закрытие бэклога сетевой
     // политики владельца): ТОЛЬКО в Safe Mode при net.dhcp=true — если за

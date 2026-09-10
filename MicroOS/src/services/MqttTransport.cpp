@@ -99,6 +99,7 @@ void MqttTransport::start() {
         AUTH_EVENT_LOGIN, AUTH_EVENT_LOCKED_OUT,
         SH_EVENT_DEGRADED_LEVEL, SH_EVENT_SAFE_MODE_ENTERED,
         SH_EVENT_BOOTLOOP_DETECTED,
+        NET_EVENT_DEAD,   // 5.9.1: сторож мёртвой сети — наверх и в журнал
         OTA_EVENT_STARTED, OTA_EVENT_SUCCESS, OTA_EVENT_FAILED,
         OTA_EVENT_ROLLBACK,
         DRV_EVENT_TEMP_CRITICAL, HEALTH_EVENT_CRITICAL,
@@ -524,6 +525,7 @@ const char* MqttTransport::mirrorName(int32_t eventId) {
         case AUTH_EVENT_LOGIN:           return "AUTH_LOGIN";
         case AUTH_EVENT_LOCKED_OUT:      return "AUTH_LOCKOUT";
         case SH_EVENT_DEGRADED_LEVEL:    return "DEGRADED";
+        case NET_EVENT_DEAD:             return "NET_DEAD";   // 5.9.1
         case SH_EVENT_SAFE_MODE_ENTERED: return "SAFE_MODE";
         case SH_EVENT_BOOTLOOP_DETECTED: return "BOOTLOOP";
         case OTA_EVENT_STARTED:          return "OTA_START";

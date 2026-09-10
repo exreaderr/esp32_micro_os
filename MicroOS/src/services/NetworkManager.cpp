@@ -3,6 +3,7 @@
 // ============================================================================
 #include "NetworkManager.h"
 #include "ConfigService.h"
+#include "MqttTransport.h"         // 5.9.1: сторож мёртвой сети (isConnected)
 #include "../core/Events.h"
 #include "../core/Kernel.h"        // isSafeMode — fallback 5.5.5
 
@@ -128,6 +129,16 @@ void NetworkService::registerExtensions() {
         // Пусто = дефолт профиля (IUiProvider::uiDisplayName).
         { "sys.name",      ConfigType::STRING, "", 0, 0, CFG_NONE,
           "Сеть", "Отображаемое имя (пусто = из профиля)" },
+        // 5.9.1: сторож мёртвой сети (инцидент шлюза 10.09 — клинч пула
+        // сокетов lwIP, самовосстановления не было). «Мертва» = линк и IP
+        // есть, но net.dead_min минут нет ни одного успешного ping И нет
+        // MQTT-сессии. При обнаружении — событие NET_DEAD + запись в ПАЗ;
+        // ребут — только при dead_reboot=true (решение владельца 10.09:
+        // осторожный путь, по умолчанию ВЫКЛ).
+        { "net.dead_reboot", ConfigType::BOOL, "false", 0, 0, CFG_NONE,
+          "Сеть", "Ребут при мёртвой сети (иначе — только крик в ПАЗ)" },
+        { "net.dead_min",  ConfigType::UINT, "10", 3, 120, CFG_NONE,
+          "Сеть", "Минут молчания сети до вердикта «мертва»" },
     });
 }
 
@@ -277,6 +288,7 @@ void NetworkService::tick() {
     if (ip != prevIp) {
         prevIp = ip;
         if (ip) {
+            _lastNetGoodMs = millis();   // 5.9.1: благодать сторожу на подъём сети
             _ip = ETH.localIP();
             ShEventData d; d.clear();
             ipString(d.payload, sizeof(d.payload));
@@ -304,6 +316,48 @@ void NetworkService::tick() {
 
     // --- A3: пересчёт уровня деградации ------------------------------------
     evaluateDegradation();
+
+    // --- 5.9.1: СТОРОЖ МЁРТВОЙ СЕТИ -----------------------------------------
+    // Инцидент шлюза 09→10.09: после ночного провала связи пул сокетов
+    // lwIP заклинило — линк/IP живы, панель отвечает, а НИ ОДНО исходящее
+    // соединение (ping/MQTT/HTTPS) не создаётся; ping-сессии не
+    // стартуют => DEGRADED не генерируется => клинч НЕВИДИМ для аудита
+    // (подтверждено пустым audit-файлом за 08:40–10:56).
+    // «Мертва» = линк+IP есть, но dead_min минут нет ни одного успешного
+    // ping (finishGatewayPing) и ни одной живой MQTT-сессии. Вердикт:
+    // событие NET_DEAD + крик в ПАЗ; ребут — только при dead_reboot=true.
+    if (_netEnabled && _linkUp && _hasIp && cfgGetBool("net.ping_gw", true)) {
+        if (MqttTransport::getInstance().isConnected()) {
+            _lastNetGoodMs = millis();
+        }
+        uint32_t deadMs = cfgGetUInt("net.dead_min", 10) * 60000UL;
+        if (millis() - _lastNetGoodMs <= deadMs) {
+            _deadNotified = false;   // сеть ожила — следующий клинч крикнем снова
+        } else {
+            if (!_deadNotified) {
+                _deadNotified = true;
+                log(LogLevel::Error,
+                    "NETWORK DEAD: link+IP живы, но %lu мин без ping/MQTT "
+                    "(ping create fails x%u, heap %lu)",
+                    (unsigned long)(deadMs / 60000), _pingCreateFailStreak,
+                    (unsigned long)ESP.getFreeHeap());
+                publishError("NET_DEAD");
+                ShEventData d; d.clear();
+                d.code = (int32_t)(deadMs / 60000);
+                snprintf(d.payload, sizeof(d.payload), "ping+mqtt silent");
+                postEvent(NET_EVENT_DEAD, &d);
+            }
+            if (cfgGetBool("net.dead_reboot", false)) {
+                log(LogLevel::Critical,
+                    "NET_DEAD: программная перезагрузка (net.dead_reboot=1)");
+                delay(500);   // строкам уйти в Serial/кольцо
+                ESP.restart();
+            }
+        }
+    } else {
+        _lastNetGoodMs = millis();   // сеть выключена/без IP — благодать
+        _deadNotified = false;
+    }
 }
 
 // ============================================================================
@@ -450,13 +504,28 @@ void NetworkService::startGatewayPing() {
     _pingEnded   = false;
     esp_ping_handle_t hdl = nullptr;
     if (esp_ping_new_session(&cfg, &cbs, &hdl) != ESP_OK) {
-        log(LogLevel::Warning, "ping session create failed");
+        // 5.9.1 (инцидент шлюза 10.09): при клинче пула сокетов lwIP
+        // create фейлится постоянно, а без отметки _lastPingMs ретрай шёл
+        // КАЖДЫЙ ТИК (~500 мс) — часы спама в Serial и вечный шум.
+        // Бэкофф: повтор не раньше следующего периода net.gw_period.
+        _lastPingMs = millis();
+        if (_pingCreateFailStreak < 255) _pingCreateFailStreak++;
+        // Диагностика исчерпания (просьба ветки): первая и каждая 20-я
+        // подряд — с картиной heap. Клинч сокетов виден по серии ×N.
+        if (_pingCreateFailStreak == 1 || _pingCreateFailStreak % 20 == 0) {
+            log(LogLevel::Warning,
+                "ping session create failed x%u (heap %lu, min %lu) — пул сокетов lwIP?",
+                _pingCreateFailStreak,
+                (unsigned long)ESP.getFreeHeap(),
+                (unsigned long)ESP.getMinFreeHeap());
+        }
         return;
     }
     if (esp_ping_start(hdl) != ESP_OK) {
         // Старт не удался — сессию удаляем сами, иначе _pingActive
         // зависнет навсегда и контроль шлюза молча умрёт.
         esp_ping_delete_session(hdl);
+        _lastPingMs = millis();   // 5.9.1: тот же бэкофф
         log(LogLevel::Warning, "ping start failed");
         return;
     }
@@ -476,6 +545,8 @@ void NetworkService::finishGatewayPing() {
     if (ok) {
         _gwRttMs = _pingLastRtt;
         _gwFailStreak = 0;
+        _pingCreateFailStreak = 0;     // 5.9.1: пул сокетов ожил
+        _lastNetGoodMs = millis();     // 5.9.1: живой факт для сторожа
         if (!_gwOk) {
             _gwOk = true;
             ShEventData d; d.clear();

@@ -72,6 +72,7 @@ private:
         uint8_t  level;               // LogLevel
         char     tag[LOG_TAG_LEN];
         char     body[LOG_BODY_LEN];
+        uint16_t reps = 0;            // 5.9.1: свёртка — подряд идущих копий
     };
 
     Entry    _ring[LOG_RING_SIZE];
