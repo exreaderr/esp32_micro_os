@@ -67,6 +67,9 @@ public:
     void onEvent(int32_t, const ShEventData*) override {}
     bool canHandleEvent(int32_t) const override { return false; }
 
+    // 5.9.2: метка живости HTTP (последний обслуженный запрос, 0 = ни одного)
+    uint32_t lastServedMs() const { return _lastServedMs; }
+
     // --- ИНЖЕКЦИЯ UI ПРОФИЛЯ (из registerExtensions профиля) --------------
     void setUiProvider(IUiProvider* provider) { _ui = provider; }
 
@@ -142,6 +145,10 @@ private:
     WebServer _server{80};
     bool     _serverUp = false;
     uint32_t _netUpSinceMs = 0;   // 0 = сети нет (HTTP-гард, см. выше)
+    // 5.9.2: последний ОБСЛУЖЕННЫЙ запрос (все точки _server.send/send_P).
+    // Диагностика клинча пула lwIP: «HTTP мёртв, MQTT жив» (эпизод
+    // шлюза 11.09) — в вердикте NET_DEAD печатаем «http idle N с».
+    uint32_t _lastServedMs = 0;
     IUiProvider* _ui = nullptr;
 
     // Сессии (RAM-only)

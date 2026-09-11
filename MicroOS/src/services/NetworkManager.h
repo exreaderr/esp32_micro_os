@@ -119,6 +119,9 @@ private:
     uint8_t  _pingCreateFailStreak = 0; // подряд провалов esp_ping_new_session
     uint32_t _lastNetGoodMs = 0;      // последний ЖИВОЙ факт сети (ping ok / MQTT)
     bool     _deadNotified = false;   // NET_DEAD уже крикнут (антиспам)
+    // 5.9.2: срез счётчиков PCB lwIP в лог (где подозреваем клинч пула);
+    // если сборка без LWIP_STATS — одна строка «недоступны», дальше тихо.
+    void logLwipStats(const char* context);
 
     // Safe Mode статический fallback (5.5.5, закрытие бэклога сетевой
     // политики владельца): ТОЛЬКО в Safe Mode при net.dhcp=true — если за

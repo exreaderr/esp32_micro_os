@@ -4,6 +4,7 @@
 #include "NetworkManager.h"
 #include "ConfigService.h"
 #include "MqttTransport.h"         // 5.9.1: сторож мёртвой сети (isConnected)
+#include "HttpService.h"           // 5.9.2: lastServedMs — живость HTTP в вердикте
 #include "../core/Events.h"
 #include "../core/Kernel.h"        // isSafeMode — fallback 5.5.5
 
@@ -12,6 +13,7 @@
 #include <esp_mac.h>              // esp_read_mac (идентичность, E1)
 #include <lwip/ip_addr.h>         // ipaddr_aton
 #include <ping/ping_sock.h>       // esp_ping_* (контроль шлюза, ex-ПАЗ)
+#include <lwip/stats.h>           // 5.9.2: срез пула PCB (если собрано)
 
 // ============================================================================
 // ТРАМПЛИНЫ КОЛБЭКОВ (C-ABI -> экземпляр)
@@ -139,6 +141,13 @@ void NetworkService::registerExtensions() {
           "Сеть", "Ребут при мёртвой сети (иначе — только крик в ПАЗ)" },
         { "net.dead_min",  ConfigType::UINT, "10", 3, 120, CFG_NONE,
           "Сеть", "Минут молчания сети до вердикта «мертва»" },
+        // 5.9.2 (дополнение ветки weather_gate 11.09): ПРЯМОЙ критерий —
+        // пул сокетов lwIP исчерпан = N подряд провалов создания
+        // ping-сессии при живом линке. Это «сеть мертва» независимо от
+        // MQTT: боевой эпизод 11.09 (HTTP мёртв/ERR_CONNECTION_RESET,
+        // MQTT жив) критерий «нет ping И нет MQTT» не ловил.
+        { "net.dead_pingfails", ConfigType::UINT, "10", 3, 240, CFG_NONE,
+          "Сеть", "Подряд провалов создания сокета = сеть мертва" },
     });
 }
 
@@ -331,20 +340,34 @@ void NetworkService::tick() {
             _lastNetGoodMs = millis();
         }
         uint32_t deadMs = cfgGetUInt("net.dead_min", 10) * 60000UL;
-        if (millis() - _lastNetGoodMs <= deadMs) {
+        // 5.9.2: прямой критерий клинча пула сокетов — N подряд провалов
+        // esp_ping_new_session при живом линке. Боевой эпизод 11.09:
+        // HTTP мёртв, MQTT ЖИВ — «тихий» критерий такое не ловит.
+        const bool sockStarved =
+            _pingCreateFailStreak >= cfgGetUInt("net.dead_pingfails", 10);
+        const bool silent = (millis() - _lastNetGoodMs > deadMs);
+        if (!silent && !sockStarved) {
             _deadNotified = false;   // сеть ожила — следующий клинч крикнем снова
         } else {
             if (!_deadNotified) {
                 _deadNotified = true;
+                const char* reason = sockStarved ? "socket pool starved"
+                                                 : "ping+mqtt silent";
+                // 5.9.2: как давно HTTP реально обслуживал запросы —
+                // сценарий эпизода 11.09 «HTTP мёртв, MQTT жив» виден
+                // прямо в вердикте (idle в секундах, -1 = ни одного).
+                const uint32_t hs = HttpService::getInstance().lastServedMs();
                 log(LogLevel::Error,
-                    "NETWORK DEAD: link+IP живы, но %lu мин без ping/MQTT "
-                    "(ping create fails x%u, heap %lu)",
-                    (unsigned long)(deadMs / 60000), _pingCreateFailStreak,
-                    (unsigned long)ESP.getFreeHeap());
+                    "NETWORK DEAD: %s — link+IP живы, молчание %lu мин, "
+                    "ping create fails x%u, heap %lu, http idle %ld с",
+                    reason, (unsigned long)(deadMs / 60000),
+                    _pingCreateFailStreak, (unsigned long)ESP.getFreeHeap(),
+                    hs == 0 ? -1L : (long)((millis() - hs) / 1000));
+                logLwipStats("NET_DEAD");   // 5.9.2: срез пула PCB
                 publishError("NET_DEAD");
                 ShEventData d; d.clear();
                 d.code = (int32_t)(deadMs / 60000);
-                snprintf(d.payload, sizeof(d.payload), "ping+mqtt silent");
+                snprintf(d.payload, sizeof(d.payload), "%s", reason);
                 postEvent(NET_EVENT_DEAD, &d);
             }
             if (cfgGetBool("net.dead_reboot", false)) {
@@ -458,6 +481,36 @@ void NetworkService::applySafeStaticFallback() {
 // ============================================================================
 // КОНТРОЛЬ ШЛЮЗА (ex-ПАЗ): esp_ping, одна сессия за раз
 // ============================================================================
+// 5.9.2 (дополнение ветки weather_gate 11.09): срез счётчиков PCB lwIP —
+// иначе утечку пула видно только по следствию (create socket failed).
+// Если ядро собрано без LWIP_STATS — одна строка «недоступны» и молчим.
+void NetworkService::logLwipStats(const char* context) {
+#if defined(LWIP_STATS) && LWIP_STATS && defined(MEMP_STATS) && MEMP_STATS
+    log(LogLevel::Warning,
+        "lwip pool (%s): tcp_pcb %u/%u (err %u), udp_pcb %u/%u, "
+        "raw_pcb %u/%u, netconn %u/%u (err %u)",
+        context ? context : "?",
+        (unsigned)lwip_stats.memp[MEMP_TCP_PCB].used,
+        (unsigned)lwip_stats.memp[MEMP_TCP_PCB].max,
+        (unsigned)lwip_stats.memp[MEMP_TCP_PCB].err,
+        (unsigned)lwip_stats.memp[MEMP_UDP_PCB].used,
+        (unsigned)lwip_stats.memp[MEMP_UDP_PCB].max,
+        (unsigned)lwip_stats.memp[MEMP_RAW_PCB].used,
+        (unsigned)lwip_stats.memp[MEMP_RAW_PCB].max,
+        (unsigned)lwip_stats.memp[MEMP_NUM_NETCONN].used,
+        (unsigned)lwip_stats.memp[MEMP_NUM_NETCONN].max,
+        (unsigned)lwip_stats.memp[MEMP_NUM_NETCONN].err);
+#else
+    static bool noted = false;
+    if (!noted) {
+        noted = true;
+        log(LogLevel::Info,
+            "lwip pool stats (%s): недоступны (ядро без LWIP_STATS)",
+            context ? context : "?");
+    }
+#endif
+}
+
 void NetworkService::startGatewayPing() {
     char gw[CFG_VALUE_LEN];
     // Цель probe — по ФАКТИЧЕСКИМ настройкам (решение владельца 08.08):
@@ -518,6 +571,7 @@ void NetworkService::startGatewayPing() {
                 _pingCreateFailStreak,
                 (unsigned long)ESP.getFreeHeap(),
                 (unsigned long)ESP.getMinFreeHeap());
+            logLwipStats("ping-create-fail");   // 5.9.2: срез пула PCB
         }
         return;
     }

@@ -212,6 +212,7 @@ void HttpService::sendJson(int code, const char* json) {
     // WebServer и сам шлёт Connection: close; дублируем на случай ядер
     // с keep-alive: сокет — ~4 КБ lwIP, урок просадки heap 14.08).
     _server.sendHeader("Connection", "close");
+    _lastServedMs = millis();   // 5.9.2: метка живости HTTP
     _server.send(code, "application/json; charset=utf-8", json);
 }
 
@@ -302,6 +303,7 @@ void HttpService::handleRoot() {
         (unsigned long)(millis() / 1000),
         profile);
 
+    _lastServedMs = millis();   // 5.9.2: метка живости HTTP
     _server.send(200, "text/html; charset=utf-8", _pageBuf);
 }
 
@@ -552,6 +554,7 @@ void HttpService::handleApiConfigImport() {
 void HttpService::handleApiLogs() {
     if (!requireAdmin()) return;
     LogService::getInstance().tail(jsonBuf(), jsonBufSize(), 40);
+    _lastServedMs = millis();   // 5.9.2: метка живости HTTP
     _server.send(200, "text/plain; charset=utf-8", jsonBuf());
 }
 
@@ -1006,5 +1009,6 @@ boot();
 // ============================================================================
 void HttpService::handleAdmin() {
     // Статика из PROGMEM; врата — на стороне API (токен), см. комментарий выше.
+    _lastServedMs = millis();   // 5.9.2: метка живости HTTP
     _server.send_P(200, "text/html; charset=utf-8", ADMIN_PAGE);
 }
