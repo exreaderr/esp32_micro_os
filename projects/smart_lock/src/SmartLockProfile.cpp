@@ -6,6 +6,7 @@
 #include "CardStore.h"
 #include "LockControl.h"
 #include "SmartLockApp.h"
+#include "SmartLockStatusLed.h"   // 0.5.17: статус-лента WS2812
 #include <catalog/wiegand/WiegandDriver.h>
 #include <drivers/DfPlayerDriver.h>
 #include <core/DriverRegistry.h>

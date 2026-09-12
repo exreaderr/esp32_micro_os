@@ -17,7 +17,7 @@
 // нумерация была наследием времён, когда версия профиля совпадала с версией
 // ядра. Ведущий 0 = «это версия ПРОФИЛЯ», хвост 5.15 сохранён — профиль
 // прошёл путь и его история видна (решение владельца 08.09.2026).
-#define MICROOS_PROFILE_VER 0.5.16
+#define MICROOS_PROFILE_VER 0.5.17
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -36,7 +36,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "SmartLockApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.16: единая инфо-карточка флота (uiDisplayName «Умный замок», extras «Циклов замка»; ядро 5.9.0); 0.5.15: шкала профиля отвязана от ядра (была 5.5.15), двухполевая версия OTA (ядро 5.8.8); 5.5.14: правило 23, зеркало blocked/expiry     // 5.5.14: правило 23 — порядок вкладок (Сеть, ПАЗ, Система, Админ → профильные), «Служебные» не отображаются (web); правило зеркала — веб-доступ чтит blocked/expiry как карта (репорт 03.09)
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.17: статус-лента WS2812 (SlStatusLed, 3 LED: замок/кнопка/ПАЗ, поля led.* — решение владельца 11.09); 0.5.16: единая инфо-карточка флота (uiDisplayName «Умный замок», extras «Циклов замка»; ядро 5.9.0); 0.5.15: шкала профиля отвязана от ядра (была 5.5.15), двухполевая версия OTA (ядро 5.8.8); 5.5.14: правило 23, зеркало blocked/expiry     // 5.5.14: правило 23 — порядок вкладок (Сеть, ПАЗ, Система, Админ → профильные), «Служебные» не отображаются (web); правило зеркала — веб-доступ чтит blocked/expiry как карта (репорт 03.09)
     ModuleId getModuleId() const override { return 0x1002; }   // профиль
 
     void registerExtensions() override;   // конфиг lock.*, SoundPack

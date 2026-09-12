@@ -93,6 +93,9 @@ public:
     void onNetLostIp();
     void onPingPacket(bool ok, uint32_t rttMs);
     void onPingSessionEnd();
+    // 5.9.3: учёт парности esp_ping new/delete (см. _pingLive)
+    void notePingCreated() { if (_pingLive < 255) _pingLive++; }
+    void notePingDeleted() { if (_pingLive > 0)   _pingLive--; }
 
 private:
     NetworkService() = default;
@@ -119,6 +122,13 @@ private:
     uint8_t  _pingCreateFailStreak = 0; // подряд провалов esp_ping_new_session
     uint32_t _lastNetGoodMs = 0;      // последний ЖИВОЙ факт сети (ping ok / MQTT)
     bool     _deadNotified = false;   // NET_DEAD уже крикнут (антиспам)
+    // 5.9.3: счётчик ЖИВЫХ ping-сессий (new++ / delete-- во всех точках)
+    // и сокет-пробник — ответ на дополнение 2 ветки weather_gate 13.09:
+    // парность new/delete теперь ДОКАЗУЕМА цифрой в логе, а пробник
+    // (raw-ICMP и tcp socket create/close + errno) заменяет LWIP_STATS:
+    // «мёртв только RAW» vs «мёртвы все сокеты» виден сразу.
+    uint8_t  _pingLive = 0;           // живых сессий esp_ping (0 = парность чиста)
+    void probeSockets(const char* context);
     // 5.9.2: срез счётчиков PCB lwIP в лог (где подозреваем клинч пула);
     // если сборка без LWIP_STATS — одна строка «недоступны», дальше тихо.
     void logLwipStats(const char* context);

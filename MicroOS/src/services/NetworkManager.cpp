@@ -14,6 +14,8 @@
 #include <lwip/ip_addr.h>         // ipaddr_aton
 #include <ping/ping_sock.h>       // esp_ping_* (контроль шлюза, ex-ПАЗ)
 #include <lwip/stats.h>           // 5.9.2: срез пула PCB (если собрано)
+#include <lwip/sockets.h>         // 5.9.3: сокет-пробник (socket/close/errno)
+#include <cerrno>                 // errno пробника
 
 // ============================================================================
 // ТРАМПЛИНЫ КОЛБЭКОВ (C-ABI -> экземпляр)
@@ -58,7 +60,10 @@ static void nmPingEndTrampoline(esp_ping_handle_t hdl, void* args) {
     // в NetworkService не хранится), вердикт tick() вынесет по флагу.
     esp_ping_delete_session(hdl);
     auto* self = static_cast<NetworkService*>(args);
-    if (self) self->onPingSessionEnd();
+    if (self) {
+        self->notePingDeleted();     // 5.9.3: парность доказуема цифрой
+        self->onPingSessionEnd();
+    }
 }
 
 NetworkService& NetworkService::getInstance() {
@@ -364,6 +369,7 @@ void NetworkService::tick() {
                     _pingCreateFailStreak, (unsigned long)ESP.getFreeHeap(),
                     hs == 0 ? -1L : (long)((millis() - hs) / 1000));
                 logLwipStats("NET_DEAD");   // 5.9.2: срез пула PCB
+                probeSockets("NET_DEAD");   // 5.9.3: прямой замер ресурса
                 publishError("NET_DEAD");
                 ShEventData d; d.clear();
                 d.code = (int32_t)(deadMs / 60000);
@@ -511,6 +517,31 @@ void NetworkService::logLwipStats(const char* context) {
 #endif
 }
 
+// 5.9.3 (дополнение 2 ветки weather_gate 13.09): ПРЯМОЙ замер ресурса
+// вместо LWIP_STATS. Улика эпизода 13.09: через 5 с после провала
+// ping-сессии исходящий TCP (open-meteo) ОТРАБОТАЛ — гипотеза «мёртв
+// только RAW». Пробник создаёт/закрывает два сокета и логирует errno:
+//   raw=FAIL + tcp=OK  -> исчерпан пул RAW PCB (улица сужается к ping);
+//   raw=FAIL + tcp=FAIL -> пул сокетов целиком (искать владельца PCB);
+//   raw=OK             -> пул ожил/клинч внутри esp_ping (редкость).
+// create+close парны, ресурс не держим.
+void NetworkService::probeSockets(const char* context) {
+    errno = 0;
+    int sr = lwip_socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);   // как у ping
+    int er = errno;
+    if (sr >= 0) lwip_close(sr);
+    errno = 0;
+    int st = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); // как у HTTP/MQTT
+    int et = errno;
+    if (st >= 0) lwip_close(st);
+    log(LogLevel::Warning,
+        "socket probe (%s): raw=%s(errno %d) tcp=%s(errno %d), ping_live %u",
+        context ? context : "?",
+        sr >= 0 ? "OK" : "FAIL", sr >= 0 ? 0 : er,
+        st >= 0 ? "OK" : "FAIL", st >= 0 ? 0 : et,
+        _pingLive);
+}
+
 void NetworkService::startGatewayPing() {
     char gw[CFG_VALUE_LEN];
     // Цель probe — по ФАКТИЧЕСКИМ настройкам (решение владельца 08.08):
@@ -567,18 +598,22 @@ void NetworkService::startGatewayPing() {
         // подряд — с картиной heap. Клинч сокетов виден по серии ×N.
         if (_pingCreateFailStreak == 1 || _pingCreateFailStreak % 20 == 0) {
             log(LogLevel::Warning,
-                "ping session create failed x%u (heap %lu, min %lu) — пул сокетов lwIP?",
+                "ping session create failed x%u (heap %lu, min %lu, ping_live %u) — пул сокетов lwIP?",
                 _pingCreateFailStreak,
                 (unsigned long)ESP.getFreeHeap(),
-                (unsigned long)ESP.getMinFreeHeap());
+                (unsigned long)ESP.getMinFreeHeap(),
+                _pingLive);
             logLwipStats("ping-create-fail");   // 5.9.2: срез пула PCB
+            probeSockets("ping-create-fail");   // 5.9.3: прямой замер
         }
         return;
     }
+    notePingCreated();   // 5.9.3: сессия жива до delete в end-колбэке
     if (esp_ping_start(hdl) != ESP_OK) {
         // Старт не удался — сессию удаляем сами, иначе _pingActive
         // зависнет навсегда и контроль шлюза молча умрёт.
         esp_ping_delete_session(hdl);
+        notePingDeleted();           // 5.9.3: парность
         _lastPingMs = millis();   // 5.9.1: тот же бэкофф
         log(LogLevel::Warning, "ping start failed");
         return;
