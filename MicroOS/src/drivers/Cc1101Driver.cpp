@@ -199,6 +199,35 @@ void Cc1101Driver::poll() {
         }
     }
 
+    // 5.9.5, СТОРОЖ «RX, НО ТИШИНА» (доп.4 ветки weather_gate, 14.09):
+    // зафиксирован класс отказа, где MarcState=RX (сторож выше молчит),
+    // но валидных пакетов нет ~2 ч при периоде станции ~48 с — приёмник
+    // «жив», декодер глух. Критерий: хотя бы один пакет за аптайм был
+    // (_pktSeq != 0 — иначе сторож не вооружён, холодный старт без
+    // станции не наказываем) и тишина дольше rf.silence_min минут
+    // (по умолчанию 15; 0 = сторож выключен). Лечение — та же полная
+    // переустановка приёмника, что у MarcState-сторожа. Перевооружение
+    // не чаще порога (штурм переустановок исключён), факт — в Serial
+    // и счётчик _rfSilenceFixes для ПАЗ/панели профиля.
+    {
+        int32_t silMin = cfgGetInt("rf.silence_min", 15);
+        if (silMin > 0 && _pktSeq != 0 &&
+            (uint32_t)(nowMs - _lastPktMs) > (uint32_t)silMin * 60000UL &&
+            (uint32_t)(nowMs - _lastSilenceFixMs) > (uint32_t)silMin * 60000UL) {
+            _lastSilenceFixMs = nowMs;
+            Serial.printf("[%08lu] [W] [cc1101] сторож тишины: пакетов нет "
+                          "%lu мин при MarcState=RX — переустановка приёмника\n",
+                          (unsigned long)nowMs,
+                          (unsigned long)((nowMs - _lastPktMs) / 60000UL));
+            xferReg(cc1101::STROBE_SIDLE, 0);
+            xferReg(cc1101::STROBE_SFRX, 0);
+            writeRxTable();
+            xferReg(cc1101::STROBE_SRX, 0);
+            _lastRxEnterMs = nowMs;
+            ++_rfSilenceFixes;
+        }
+    }
+
     fo::WeatherPacket pkt;
     while (_rTail != _wHead) {
         const Edge e = _ring[_rTail];

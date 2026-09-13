@@ -257,8 +257,14 @@ void HealthMonitor::checkHeap() {
             d.code = (int32_t)(minFree / 1024);
             safeStrCopy(d.payload, sizeof(d.payload), "HEAP_MIN");
             postEvent(HEALTH_EVENT_WARNING, &d);
-            log(LogLevel::Info, "HEAP new min: %lu bytes",
-                (unsigned long)minFree);
+            // 5.9.5: рядом с минимумом — крупнейший свободный блок.
+            // Различие «фрагментация vs расход»: minFree низкий при
+            // ЗДОРОВОМ maxAlloc = память съедена/зажата; maxAlloc просел
+            // вместе с minFree = куча фрагментирована, крупные
+            // выделения (графики, JSON) начнут падать раньше лимита.
+            log(LogLevel::Info, "HEAP new min: %lu bytes, max block %lu",
+                (unsigned long)minFree,
+                (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
             char msg[64];
             snprintf(msg, sizeof(msg), "heap новый минимум %lu байт",
                      (unsigned long)minFree);

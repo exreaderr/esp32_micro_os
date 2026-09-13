@@ -400,9 +400,13 @@ void NetworkService::tick() {
     if (_netEnabled && _hasIp &&
         (_lastSockReportMs == 0 || millis() - _lastSockReportMs >= 3600000UL)) {
         _lastSockReportMs = millis();
+        // 5.9.5: + крупнейший свободный блок — различие «фрагментация
+        // vs расход» кучи (пара к «HEAP new min» из HealthMonitor).
         log(LogLevel::Info,
-            "net health: sock_free %u, heap %lu, http accepts %lu, up %lu ч",
+            "net health: sock_free %u, heap %lu, max block %lu, "
+            "http accepts %lu, up %lu ч",
             socketsInUse(), (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)ESP.getMaxAllocHeap(),
             (unsigned long)HttpService::getInstance().httpAccepts(),
             (unsigned long)(millis() / 3600000UL));
     }

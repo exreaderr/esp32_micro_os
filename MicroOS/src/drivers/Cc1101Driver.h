@@ -68,6 +68,9 @@ public:
     /// 5.9.1: сколько раз сторож MarcState переустанавливал приёмник
     /// (рост без пакетов = чип деградирует; для ПАЗ/панели профиля).
     uint32_t rfStateFixes() const { return _rfStateFixes; }
+    /// 5.9.5: сколько раз сторож «RX, но тишина» переустанавливал
+    /// приёмник (MarcState=RX, пакетов нет rf.silence_min минут).
+    uint32_t rfSilenceFixes() const { return _rfSilenceFixes; }
     float    freqMHz()      const { return _freqMHz; }
     /// RSSI последнего принятого пакета, дБм.
     int16_t  rssiDbm()      const { return _rssiDbm; }
@@ -128,6 +131,8 @@ private:
     uint32_t _lastRxEnterMs = 0;             // последний вход в RX (RSSI-латч)
     uint32_t _lastMarcChkMs  = 0;            // 5.9.1: последняя сверка MarcState
     uint32_t _rfStateFixes   = 0;            // 5.9.1: переустановок по сторожу
+    uint32_t _rfSilenceFixes = 0;            // 5.9.5: переустановок по тишине
+    uint32_t _lastSilenceFixMs = 0;          // 5.9.5: перевооружение сторожа
     uint32_t _rxReenters  = 0;               // счётчик перевходов (бенч)
     uint32_t _lastEdgesRaw = 0;              // последний сырой uint32 (дельты)
     uint64_t _edgesTotal   = 0;              // оберточно-стойкий накопитель
