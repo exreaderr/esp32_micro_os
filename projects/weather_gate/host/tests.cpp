@@ -25,6 +25,8 @@
 #include "../../../MicroOS/src/drivers/FineOffsetCore.h"
 #include "../../../MicroOS/src/drivers/Cc1101Core.h"
 #include "../../../MicroOS/src/drivers/WeatherCore.h"
+#include "../src/WgScanCore.h"
+#include "../src/WgZambretti.h"
 #include "../src/WxTrend.h"
 #include "../../../MicroOS/src/services/TimeInterval.h"
 #include "../../../MicroOS/src/services/AudioQueue.h"
@@ -1761,6 +1763,119 @@ static void testWeatherCore() {
 }
 
 // ============================================================================
+// WgZambretti (W5): таблица Замбретти (12 веток), шторм-флаг, границы
+// ============================================================================
+static void testZambretti() {
+    printf("== WgZambretti ==\n");
+
+    // Все 12 веток таблицы (монолит v5.2, 1:1)
+    CHECK(wxz::forecastIdx(1031.0f,  1) == 1);   // >1030, рост
+    CHECK(wxz::forecastIdx(1031.0f,  0) == 2);   // >1030 без роста -> ясная
+    CHECK(wxz::forecastIdx(1026.0f, -1) == 2);
+    CHECK(wxz::forecastIdx(1022.0f, -1) == 3);   // >1020, спад
+    CHECK(wxz::forecastIdx(1022.0f,  0) == 4);
+    CHECK(wxz::forecastIdx(1017.0f,  1) == 5);
+    CHECK(wxz::forecastIdx(1017.0f,  0) == 6);
+    CHECK(wxz::forecastIdx(1017.0f, -1) == 6);   // >1015 спад БЕЗ ветки <0
+    CHECK(wxz::forecastIdx(1012.0f, -1) == 7);
+    CHECK(wxz::forecastIdx(1012.0f,  0) == 8);
+    CHECK(wxz::forecastIdx(1007.0f, -1) == 9);
+    CHECK(wxz::forecastIdx(1007.0f,  0) == 10);
+    CHECK(wxz::forecastIdx(1002.0f,  0) == 11);
+    CHECK(wxz::forecastIdx(1002.0f, -1) == 11);  // >1000 — дожди при любом
+    CHECK(wxz::forecastIdx( 995.0f,  0) == 12);  // <=1000 — шторм
+
+    // Границы (ровно на пороге — ветка не срабатывает, строгое >)
+    CHECK(wxz::forecastIdx(1030.0f,  1) == 2);
+    CHECK(wxz::forecastIdx(1020.0f, -1) == 6);
+    CHECK(wxz::forecastIdx(1000.0f,  0) == 12);
+    CHECK(wxz::forecastIdx(1005.0f,  0) == 11);
+
+    // Невалидный вход: NaN и вне диапазона -> FC_NONE
+    CHECK(wxz::forecastIdx(NAN, 0) == wxz::FC_NONE);
+    CHECK(wxz::forecastIdx(899.9f, 0) == wxz::FC_NONE);
+    CHECK(wxz::forecastIdx(1100.1f, 0) == wxz::FC_NONE);
+    CHECK(wxz::pressValid(1013.25f) && !wxz::pressValid(0.0f));
+
+    // Шторм-флаг: спад > 4 гПа/3ч; граница ровно -4 — НЕ шторм
+    CHECK(wxz::stormAlarm(-4.1f));
+    CHECK(!wxz::stormAlarm(-4.0f));
+    CHECK(!wxz::stormAlarm(2.0f));
+    CHECK(!wxz::stormAlarm(NAN));
+
+    // Тексты: все индексы ненулевые, 0 — «ожидание»
+    for (uint8_t i = 0; i <= 12; ++i)
+        CHECK(wxz::forecastText(i) != nullptr);
+    CHECK(wxz::forecastText(13) != nullptr);     // вне диапазона -> дефолт
+}
+
+// ============================================================================
+// WgScanCore (W3.3): сетка сканера, агрегация точек, рекомендация
+// ============================================================================
+static void testScanCore() {
+    printf("== WgScanCore ==\n");
+    uint32_t freqs[wgs::SCAN_MAX_POINTS];
+
+    // Сетка вокруг 915.00 шагом 0.02: 21 точка, 914.80..915.20, возрастание
+    uint8_t n = wgs::scanGrid(91500, 2, freqs, wgs::SCAN_MAX_POINTS);
+    CHECK(n == 21);
+    CHECK(freqs[0] == 91480);
+    CHECK(freqs[20] == 91520);
+    CHECK(freqs[10] == 91500);   // домашняя — ровно в центре
+    for (uint8_t i = 1; i < n; i++) CHECK(freqs[i] > freqs[i-1]);
+
+    // Шаг 0.05: 9 точек
+    n = wgs::scanGrid(91500, 5, freqs, wgs::SCAN_MAX_POINTS);
+    CHECK(n == 9);
+    CHECK(freqs[0] == 91480);
+    CHECK(freqs[8] == 91520);
+
+    // Шаг вне допуска клампится (0.01 -> 0.02; 0.10 -> 0.05)
+    CHECK(wgs::scanGrid(91500, 1, freqs, wgs::SCAN_MAX_POINTS) == 21);
+    CHECK(wgs::scanGrid(91500, 10, freqs, wgs::SCAN_MAX_POINTS) == 9);
+
+    // Кламп к границам схемы у края диапазона: home 914.05
+    n = wgs::scanGrid(91405, 2, freqs, wgs::SCAN_MAX_POINTS);
+    CHECK(freqs[0] == 91400);                 // левый край прижат к схеме
+    CHECK(freqs[n-1] == 91425);               // 914.05+0.20
+    for (uint8_t i = 1; i < n; i++) CHECK(freqs[i] > freqs[i-1]);  // без дублей
+    // home 915.96: правый край прижат к 916.00
+    n = wgs::scanGrid(91596, 2, freqs, wgs::SCAN_MAX_POINTS);
+    CHECK(freqs[n-1] == 91600);
+    for (uint8_t i = 1; i < n; i++) CHECK(freqs[i] > freqs[i-1]);
+
+    // Агрегация точки: пакеты и шум
+    wgs::ScanPoint p;
+    wgs::scanPointOnPacket(p, 1, -88);
+    wgs::scanPointOnPacket(p, 1, -84);
+    wgs::scanPointOnNoise(p, -102);
+    wgs::scanPointOnNoise(p, -100);
+    CHECK(p.pkt == 2);
+    CHECK(p.rssiN == 2);
+    CHECK(p.rssiMax == -84);
+    CHECK(p.rssiAvg() == -86);
+    CHECK(p.noiseAvg() == -101);
+
+    // Рекомендация: максимум rssiMax среди точек с пакетами
+    wgs::ScanPoint pts[5] = {};
+    for (uint8_t i = 0; i < 5; i++) pts[i].freqX100 = (uint32_t)(91496 + i * 2);
+    wgs::scanPointOnPacket(pts[1], 1, -90);
+    wgs::scanPointOnPacket(pts[2], 1, -85);   // лучший сигнал
+    wgs::scanPointOnPacket(pts[3], 1, -91);
+    CHECK(wgs::scanRecommend(pts, 5, 91500) == 2);
+    // Ничья по rssiMax — ближайшая к домашней (915.00)
+    wgs::ScanPoint tie[3] = {};
+    tie[0].freqX100 = 91496; tie[1].freqX100 = 91500; tie[2].freqX100 = 91504;
+    wgs::scanPointOnPacket(tie[0], 1, -88);
+    wgs::scanPointOnPacket(tie[1], 1, -88);
+    wgs::scanPointOnPacket(tie[2], 1, -88);
+    CHECK(wgs::scanRecommend(tie, 3, 91500) == 1);
+    // Пакетов нет нигде — рекомендации нет
+    wgs::ScanPoint empty[2] = {};
+    CHECK(wgs::scanRecommend(empty, 2, 91500) == -1);
+}
+
+// ============================================================================
 int main() {
     printf("==== МикроОС 5.0 — host-тесты (D2) ====\n");
     testWiegand();
@@ -1781,6 +1896,8 @@ int main() {
     testFineOffset();
     testCc1101Core();
     testWeatherCore();
+    testScanCore();
+    testZambretti();
     printf("==== ИТОГ: %d PASS, %d FAIL ====\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
