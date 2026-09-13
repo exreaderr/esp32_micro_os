@@ -69,6 +69,8 @@ public:
 
     // 5.9.2: метка живости HTTP (последний обслуженный запрос, 0 = ни одного)
     uint32_t lastServedMs() const { return _lastServedMs; }
+    // 5.9.4: счётчик входящих accept'ов (leak-o-meter ветки weather_gate)
+    uint32_t httpAccepts() const { return _httpAccepts; }
 
     // --- ИНЖЕКЦИЯ UI ПРОФИЛЯ (из registerExtensions профиля) --------------
     void setUiProvider(IUiProvider* provider) { _ui = provider; }
@@ -149,6 +151,9 @@ private:
     // Диагностика клинча пула lwIP: «HTTP мёртв, MQTT жив» (эпизод
     // шлюза 11.09) — в вердикте NET_DEAD печатаем «http idle N с».
     uint32_t _lastServedMs = 0;
+    // 5.9.4: accept-счётчик входящих соединений (сигнатура IP+порт)
+    uint32_t _httpAccepts  = 0;
+    uint32_t _lastClientSig = 0;
     IUiProvider* _ui = nullptr;
 
     // Сессии (RAM-only)

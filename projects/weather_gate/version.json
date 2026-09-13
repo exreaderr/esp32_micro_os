@@ -1,9 +1,9 @@
 {
-  "version": "5.9.2",
+  "version": "5.9.3",
   "profile_version": "0.7.1",
   "host": "weather_gate",
-  "fw_md5": "32aadf6fe05f2d9e0bacb36a4754d21e",
-  "fs_md5": "d6566591d9bcf4f9cac63d3972692452",
+  "fw_md5": "3d8c82eb3fd2814e5d25dcc83bfe1d04",
+  "fs_md5": "e7515df97b43521760f03b0735303bc4",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
   "fs_url": "littlefs.bin"

@@ -364,10 +364,13 @@ void NetworkService::tick() {
                 const uint32_t hs = HttpService::getInstance().lastServedMs();
                 log(LogLevel::Error,
                     "NETWORK DEAD: %s — link+IP живы, молчание %lu мин, "
-                    "ping create fails x%u, heap %lu, http idle %ld с",
+                    "ping create fails x%u, heap %lu, http idle %ld с, "
+                    "http accepts %lu, sock_free %u",
                     reason, (unsigned long)(deadMs / 60000),
                     _pingCreateFailStreak, (unsigned long)ESP.getFreeHeap(),
-                    hs == 0 ? -1L : (long)((millis() - hs) / 1000));
+                    hs == 0 ? -1L : (long)((millis() - hs) / 1000),
+                    (unsigned long)HttpService::getInstance().httpAccepts(),
+                    socketsInUse());
                 logLwipStats("NET_DEAD");   // 5.9.2: срез пула PCB
                 probeSockets("NET_DEAD");   // 5.9.3: прямой замер ресурса
                 publishError("NET_DEAD");
@@ -386,6 +389,22 @@ void NetworkService::tick() {
     } else {
         _lastNetGoodMs = millis();   // сеть выключена/без IP — благодать
         _deadNotified = false;
+    }
+
+    // --- 5.9.4: ЧАСОВОЙ ЗАМЕР СОКЕТОВ (тренд утечки) ----------------------
+    // Ветка weather_gate: окно клинча стабильно ~13 ч = утечка ~1 сокет/час.
+    // Одна строка в час: занятость сокетов + heap + счётчик входящих HTTP —
+    // пары «час → N» покажут скорость и КОРРЕЛЯЦИЮ с входящим вебом
+    // (accepts растут, sock_free падает пропорционально → входящий HTTP;
+    //  accepts молчит, sock_free падает → искать вне веба).
+    if (_netEnabled && _hasIp &&
+        (_lastSockReportMs == 0 || millis() - _lastSockReportMs >= 3600000UL)) {
+        _lastSockReportMs = millis();
+        log(LogLevel::Info,
+            "net health: sock_free %u, heap %lu, http accepts %lu, up %lu ч",
+            socketsInUse(), (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)HttpService::getInstance().httpAccepts(),
+            (unsigned long)(millis() / 3600000UL));
     }
 }
 
@@ -525,6 +544,35 @@ void NetworkService::logLwipStats(const char* context) {
 //   raw=FAIL + tcp=FAIL -> пул сокетов целиком (искать владельца PCB);
 //   raw=OK             -> пул ожил/клинч внутри esp_ping (редкость).
 // create+close парны, ресурс не держим.
+// 5.9.4: имя errno лаконично (ветка просила расшифровку в самом логе)
+static const char* nmErrnoName(int e) {
+    switch (e) {
+        case 0:   return "OK";
+        case 11:  return "EAGAIN";    // неблокирующий сокет: пока нет данных
+        case 12:  return "ENOMEM";    // нет памяти (heap/pbuf)
+        case 23:  return "ENFILE";    // НЕТ СВОБОДНЫХ СЛОТОВ сокетов lwIP
+        case 105: return "ENOBUFS";   // нет netconn/pbuf (MEMP_NUM_NETCONN)
+        default:  return "?";
+    }
+}
+
+// 5.9.4: занятые сокеты lwIP, замер из sketch (просьба ветки, п.4):
+// открываем UDP-сокеты до отказа — свободных столько, сколько открылось.
+// create/close парны, ресурс не держим; cap 24 — антизалипание.
+uint8_t NetworkService::socketsInUse() const {
+    int fds[24];
+    uint8_t opened = 0;
+    for (; opened < 24; opened++) {
+        int s = lwip_socket(AF_INET, SOCK_DGRAM, 0);
+        if (s < 0) break;
+        fds[opened] = s;
+    }
+    for (uint8_t i = 0; i < opened; i++) lwip_close(fds[i]);
+    // Открылись только СВОБОДНЫЕ слоты; занятых = лимит - свободные.
+    // Абсолютный лимит не знаем из sketch — печатаем оба числа.
+    return opened;   // = свободно; вызывающий решает, как печатать
+}
+
 void NetworkService::probeSockets(const char* context) {
     errno = 0;
     int sr = lwip_socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);   // как у ping
@@ -535,11 +583,11 @@ void NetworkService::probeSockets(const char* context) {
     int et = errno;
     if (st >= 0) lwip_close(st);
     log(LogLevel::Warning,
-        "socket probe (%s): raw=%s(errno %d) tcp=%s(errno %d), ping_live %u",
+        "socket probe (%s): raw=%s(%s) tcp=%s(%s), ping_live %u, sock_free %u",
         context ? context : "?",
-        sr >= 0 ? "OK" : "FAIL", sr >= 0 ? 0 : er,
-        st >= 0 ? "OK" : "FAIL", st >= 0 ? 0 : et,
-        _pingLive);
+        sr >= 0 ? "OK" : "FAIL", sr >= 0 ? "OK" : nmErrnoName(er),
+        st >= 0 ? "OK" : "FAIL", st >= 0 ? "OK" : nmErrnoName(et),
+        _pingLive, socketsInUse());
 }
 
 void NetworkService::startGatewayPing() {

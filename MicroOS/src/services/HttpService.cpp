@@ -2,6 +2,7 @@
 // HttpService.cpp — реализация веб-сервера и разделённого веб-UI
 // ============================================================================
 #include "HttpService.h"
+#include <WiFiClient.h>         // 5.9.4: accept-счётчик (remoteIP/remotePort)
 #include "ConfigService.h"
 #include "NetworkManager.h"
 #include "AuthService.h"
@@ -63,6 +64,18 @@ void HttpService::tick() {
     }
     if (_serverUp) {
         _server.handleClient();
+        // 5.9.4: счётчик входящих соединений (просьба ветки weather_gate —
+        // подозрение на сокеты, оборванные клиентом грубо). Сигнатура
+        // «IP+порт текущего клиента» сменилась → новый accept. Не идеал
+        // (редкий повтор пары не посчитается), но как leak-o-meter точен.
+        WiFiClient c = _server.client();
+        if (c) {
+            uint32_t sig = (uint32_t)c.remoteIP() ^ ((uint32_t)c.remotePort() << 16);
+            if (sig != _lastClientSig) {
+                _lastClientSig = sig;
+                if (_httpAccepts < 0xFFFFFFFFUL) _httpAccepts++;
+            }
+        }
     }
 
     // Отложенный reboot (ack уже отправлен клиенту)
