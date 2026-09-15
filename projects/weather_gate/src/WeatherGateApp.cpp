@@ -21,6 +21,7 @@
 #include "WxTrend.h"
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <WiFiClient.h>
+#include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
 #include <cstdarg>                   // s_diagLog (W3.2-diag1)
 
 // ============================================================================
@@ -1166,6 +1167,20 @@ void WeatherGateApp::maybeRequestAltitude() {
     _altRequested = true;
 }
 
+// 0.7.3: принудительный разрыв исходящей HTTP-сессии.
+// pcap (трасса к api.open-meteo.com): сервер иногда принимает GET и молчит —
+// ни ответа, ни FIN. close() уходит в FIN_WAIT_1, lwIP ретранслирует FIN
+// с растущим бэкоффом часами, сокетный слот не возвращается никогда
+// (утечка ровно 1 слот/час = один залипший прогон forecastTask в час,
+// ENFILE через ~13 ч). SO_LINGER {1,0} превращает close() в RST:
+// слот и буферы освобождаются немедленно независимо от молчания
+// сервера. Ответ уже прочитан до конца, RST безопасен.
+static void abortHttpSession(WiFiClient& c) {
+    if (c.fd() < 0) return;
+    struct linger lng = {1, 0};
+    setsockopt(c.fd(), SOL_SOCKET, SO_LINGER, &lng, sizeof(lng));
+}
+
 void WeatherGateApp::altitudeTask(void*) {
     s_altTaskRunning = true;
     WeatherGateApp& self = WeatherGateApp::getInstance();
@@ -1253,7 +1268,9 @@ void WeatherGateApp::forecastTask(void*) {
                 }
             }
         }
+        abortHttpSession(client);   // 0.7.3: RST вместо вечного FIN
         http.end();
+        client.stop();
     }
     self._omNextMs = millis() + (ok ? 3600000UL : 1800000UL);
     if (!ok)
