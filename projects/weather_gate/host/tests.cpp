@@ -27,6 +27,7 @@
 #include "../../../MicroOS/src/drivers/WeatherCore.h"
 #include "../src/WgScanCore.h"
 #include "../src/WgZambretti.h"
+#include "../src/WgWxCode.h"
 #include "../src/WxTrend.h"
 #include "../../../MicroOS/src/services/TimeInterval.h"
 #include "../../../MicroOS/src/services/AudioQueue.h"
@@ -1809,6 +1810,35 @@ static void testZambretti() {
     CHECK(wxz::forecastText(13) != nullptr);     // вне диапазона -> дефолт
 }
 
+
+// ============================================================================
+// WgWxCode (0.7.4): честный weather_code из cloud_cover/precipitation.
+// Урок №25: парсер годами читал units → «ясно»; здесь страхуем вывод кода.
+// ============================================================================
+static void testWxCode() {
+    printf("== WgWxCode ==\n");
+    // Осадки важнее облачности
+    CHECK(wgs::deriveWxCode(100, 5.0f, 0) == 65);   // ливень
+    CHECK(wgs::deriveWxCode(30, 2.5f, 0) == 63);    // дождь при ясном небе
+    CHECK(wgs::deriveWxCode(50, 0.3f, 0) == 61);    // слабый дождь
+    CHECK(wgs::deriveWxCode(100, 0.10f, 0) == 51);  // морось (случай 15.09!)
+    // Без осадков — решает облачность
+    CHECK(wgs::deriveWxCode(100, 0.0f, 0) == 3);    // пасмурно
+    CHECK(wgs::deriveWxCode(60, 0.0f, 0) == 2);     // переменная
+    CHECK(wgs::deriveWxCode(20, 0.0f, 0) == 1);     // в осн. ясно
+    CHECK(wgs::deriveWxCode(5, 0.0f, 0) == 0);      // ясно
+    // Границы
+    CHECK(wgs::deriveWxCode(85, 0.0f, 0) == 3);
+    CHECK(wgs::deriveWxCode(50, 0.0f, 0) == 2);
+    CHECK(wgs::deriveWxCode(10, 0.0f, 0) == 1);
+    // Нет сырых данных — fallback на модельный код
+    CHECK(wgs::deriveWxCode(-1, -1.0f, 51) == 51);
+    CHECK(wgs::deriveWxCode(-1, -1.0f, 0) == 0);
+    // Облачности нет, осадки есть (урезанный ответ) — осадки решают
+    CHECK(wgs::deriveWxCode(-1, 1.0f, 0) == 61);
+    CHECK(wgs::deriveWxCode(-1, 0.0f, 80) == 80);   // ни того ни другого
+}
+
 // ============================================================================
 // WgScanCore (W3.3): сетка сканера, агрегация точек, рекомендация
 // ============================================================================
@@ -1898,6 +1928,7 @@ int main() {
     testWeatherCore();
     testScanCore();
     testZambretti();
+    testWxCode();
     printf("==== ИТОГ: %d PASS, %d FAIL ====\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

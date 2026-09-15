@@ -1,10 +1,10 @@
 {
   "version": "5.9.5",
-  "profile_version": "0.7.3",
+  "profile_version": "0.7.4",
   "host": "weather_gate",
-  "fw_md5": "f08c0b35b1f303ea7351c0f23cb01c96",
-  "fs_md5": "da7df478a5c4971ceb1b088fe2c86079",
-  "changelog": "Periodic production build update",
-  "fw_url": "firmware.bin",
-  "fs_url": "littlefs.bin"
+  "fw_md5": "46f301da4eb33dbfec35b246ec5a0760",
+  "fs_md5": "c5b4e787bfe46e401e8e3c1827a21386",
+  "changelog": "Профиль 0.7.4: урок №25 — парсинг open-meteo годами читал \"weather_code\" из блока current_units (\":\"wmo code\"), atoi давал 0: вэб всегда показывал «ясно». Якорь \"\"current\":{\". Плюс честный вывод кода из cloud_cover+precipitation (WgWxCode, host-тесты 43872/0): модельный weather_code — сценарий модели, сырые переменные надёжнее. Ядро 5.9.5 без изменений.",
+  "fw_url": "",
+  "fs_url": ""
 }

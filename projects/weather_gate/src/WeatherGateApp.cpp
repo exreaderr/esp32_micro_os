@@ -19,6 +19,7 @@
 #include <drivers/Bme280Driver.h>
 #include <drivers/Cc1101Driver.h>
 #include "WxTrend.h"
+#include "WgWxCode.h"   // 0.7.4: честный weather_code из сырых переменных
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <WiFiClient.h>
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
@@ -1234,16 +1235,22 @@ void WeatherGateApp::altitudeTask(void*) {
 // парсинг strstr'ом, без String. Успех — раз в 60 мин, сбой — повтор через
 // 30 мин; сети нет — планировщик в tick даже не запускает (молчаливая
 // деградация: Замбретти локальный и автономен).
+// 0.7.4: ДВЕ правки. (1) Урок №25 — strstr без якоря нашёл "weather_code"
+// в current_units (":"wmo code"), atoi давал 0: годами показывали «ясно».
+// Якорь "\"current\":{" — секция данных, не единиц. (2) Код выводим сами
+// из cloud_cover+precipitation (wgs::deriveWxCode): модельный код —
+// сценарий модели, сырые переменные честнее (манифест самого open-meteo).
 // ============================================================================
 void WeatherGateApp::forecastTask(void*) {
     s_omTaskRunning = true;
     WeatherGateApp& self = WeatherGateApp::getInstance();
     float lat = cfgGetFloat("wx.lat", 0.0f);
     float lon = cfgGetFloat("wx.lon", 0.0f);
-    char url[176];
+    char url[192];
     snprintf(url, sizeof(url),
              "http://api.open-meteo.com/v1/forecast"
-             "?latitude=%.4f&longitude=%.4f&current=weather_code",
+             "?latitude=%.4f&longitude=%.4f"
+             "&current=weather_code,cloud_cover,precipitation",
              (double)lat, (double)lon);
 
     WiFiClient client;
@@ -1252,19 +1259,32 @@ void WeatherGateApp::forecastTask(void*) {
     bool ok = false;
     if (http.begin(client, url)) {
         if (http.GET() == 200) {
-            // Тело ~300 байт; ищем "weather_code":NN внутри "current".
-            char body[512];
+            // Тело ~450 байт (три поля); буфер, не String.
+            char body[768];
             size_t got = http.getStream().readBytes(body, sizeof(body) - 1);
             body[got] = '\0';
-            const char* pc = strstr(body, "\"weather_code\":");
+            // 0.7.4: ищем ТОЛЬКО внутри секции данных "current":{...} —
+            // в current_units те же имена в кавычках, atoi там даёт 0.
+            const char* cur = strstr(body, "\"current\":{");
+            const char* pc = cur ? strstr(cur, "\"weather_code\":") : nullptr;
             if (pc != nullptr) {
-                int code = atoi(pc + 15);
-                if (code >= 0 && code <= 99) {
-                    self._omCode = (int8_t)code;
+                int codeRaw = atoi(pc + 15);
+                int cloud = -1;
+                const char* pcc = strstr(cur, "\"cloud_cover\":");
+                if (pcc) cloud = atoi(pcc + 14);
+                float precip = -1.0f;
+                const char* pcp = strstr(cur, "\"precipitation\":");
+                if (pcp) precip = (float)atof(pcp + 16);
+                if (codeRaw >= 0 && codeRaw <= 99) {
+                    int8_t code = wgs::deriveWxCode(cloud, precip,
+                                                    (int8_t)codeRaw);
+                    self._omCode = code;
                     self._omFetchedMs = millis();
                     ok = true;
                     self.log(LogLevel::Info,
-                             "open-meteo: weather_code=%d", code);
+                             "open-meteo: code=%d (модель %d, облачность %d%%, "
+                             "осадки %.2f мм)", (int)code, codeRaw, cloud,
+                             (double)precip);
                 }
             }
         }
