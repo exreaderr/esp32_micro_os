@@ -23,6 +23,7 @@
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <WiFiClient.h>
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
+#include <esp_heap_caps.h>  // 0.7.5: dlogAdaptiveMaxN (largest_free_block)
 #include <cstdarg>                   // s_diagLog (W3.2-diag1)
 
 // ============================================================================
@@ -213,6 +214,20 @@ static void s_diagLog(const char* fmt, ...) {
     WeatherGateApp::getInstance().logDiag(body);
 }
 
+// 0.7.5: адаптивная децимация по рекомендации ядерной ветки (Issue #4).
+// Крупнейший свободный блок кучи < 32 КБ → точек в ответе вдвое меньше
+// (120), < 16 КБ → вчетверо (60): JSON короче, билд легче, провалы кучи
+// при просмотре графиков сглаживаются. Контракт ядра не нарушаем:
+// decimateRaw/decimateAggr сохраняют края и форму графика при любом maxN.
+// Пороги — из диагностики 5.9.5: «max block просел = крупные выделения
+// (графики, JSON) начнут падать раньше лимита».
+static uint16_t dlogAdaptiveMaxN() {
+    size_t lb = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (lb < 16 * 1024) return DLOG_JSON_POINTS / 4;   // 60
+    if (lb < 32 * 1024) return DLOG_JSON_POINTS / 2;   // 120
+    return DLOG_JSON_POINTS;                            // 240, норма
+}
+
 static bool wgApiDlogChannels(char* buf, size_t size) {
     DataLogService& dl = DataLogService::getInstance();
     size_t pos = 0;
@@ -300,7 +315,7 @@ static bool wgApiDlog(const ShUiRequest& req, char* buf, size_t size,
 
     uint16_t cnt = dl.getTier(ch, daily, s_dlogQ.aggr, 320, fromTs);
     cnt = dlog::decimateAggr(s_dlogQ.aggr, cnt, s_dlogQ.aggr,
-                             DLOG_JSON_POINTS);
+                             dlogAdaptiveMaxN());   // 0.7.5
     s_diagLog("dlog: tier ch=%u daily=%d n=%u dropped=%lu", (unsigned)ch,
               daily ? 1 : 0, (unsigned)cnt,
               (unsigned long)dl.droppedPoints(ch));

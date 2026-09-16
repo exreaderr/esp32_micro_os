@@ -1091,9 +1091,25 @@ function setChartRange(r){
   for(var i=0;i<btns.length;i++) btns[i].classList.toggle('active', btns[i].dataset.range===r);
   refreshChart();
 }
-async function refreshChart(){
+var _chartLastReq=0, _chartTimer=null;
+function refreshChart(){
+  // Подсветка активного канала — мгновенно, сеть — с троттлингом.
   var chs=document.querySelectorAll('.chart-chan');
   for(var i=0;i<chs.length;i++) chs[i].classList.toggle('active', i===chartCh);
+  // 0.7.5: не чаще раза в 5 с (рекомендация ядерной ветки, Issue #4):
+  // «штурм вкладок» схлопывается в один хвостовой запрос — провалы
+  // кучи на шлюзе при просмотре графиков сглаживаются.
+  var wait=5000-(Date.now()-_chartLastReq);
+  if(wait>0){
+    if(_chartTimer) return;
+    $('chartHint').textContent='Обновлю через '+Math.ceil(wait/1000)+' с…';
+    _chartTimer=setTimeout(function(){ _chartTimer=null; doRefreshChart(); }, wait);
+    return;
+  }
+  doRefreshChart();
+}
+async function doRefreshChart(){
+  _chartLastReq=Date.now();
   var r;
   try { r=await api('/api/dev/dlog?ch='+chartCh+'&range='+chartRange); }
   catch(e){

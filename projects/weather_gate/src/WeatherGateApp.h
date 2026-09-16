@@ -16,7 +16,7 @@
 // 5.8.8: единственный источник версии профиля (метка в .bin + getVersion).
 // Шкала профиля отвязана от ядра (как у замка 08.09.2026): ведущий 0 =
 // «это версия ПРОФИЛЯ». Двухполевая метка MICROOS|ядро|профиль|END.
-#define MICROOS_PROFILE_VER 0.7.4
+#define MICROOS_PROFILE_VER 0.7.5
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -62,7 +62,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "WeatherGateApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.7.4: урок №25 — парсинг open-meteo с якорем "\"current\":{" (годами читали units → вечное «ясно») + честный код из cloud_cover/precipitation (WgWxCode); 0.7.3: abort исходящих HTTP-сессий (SO_LINGER→RST, утечка сокетов open-meteo закрыта, диагноз по pcap); 0.7.2: поле rf.silence_min (сторож «RX, но тишина», ядро 5.9.5); 0.7.1: led.pin дефолт GPIO2 (GPIO5 на гребёнке нет — эррата IO5/IO35 закрыта: это GPIO35; решение владельца 09.09); 0.7.0: W6 — статус-LED WS2812 (WgStatusLedModule, порт эталона мастера); 0.6.3: инфо-карточка флота (ядро 5.9.0); 0.6.2: «Прогноз из сети»; 0.6.1: графики в открытой части + CHK_NAME; 0.6.0: W5
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.7.5: троттлинг dlog по Issue #4 (адаптивная децимация largest_free_block<32КБ→120/<16КБ→60 точек + опрос графиков не чаще 5 с на фронте); 0.7.4: урок №25 — парсинг open-meteo с якорем "\"current\":{" (годами читали units → вечное «ясно») + честный код из cloud_cover/precipitation (WgWxCode); 0.7.3: abort исходящих HTTP-сессий (SO_LINGER→RST, утечка сокетов open-meteo закрыта, диагноз по pcap); 0.7.2: поле rf.silence_min (сторож «RX, но тишина», ядро 5.9.5); 0.7.1: led.pin дефолт GPIO2 (GPIO5 на гребёнке нет — эррата IO5/IO35 закрыта: это GPIO35; решение владельца 09.09); 0.7.0: W6 — статус-LED WS2812 (WgStatusLedModule, порт эталона мастера); 0.6.3: инфо-карточка флота (ядро 5.9.0); 0.6.2: «Прогноз из сети»; 0.6.1: графики в открытой части + CHK_NAME; 0.6.0: W5
     ModuleId getModuleId() const override { return 0x1000; }      // приложения
 
     void registerExtensions() override;   // конфиг wx.*, UI, ПАЗ-проверки
