@@ -24,6 +24,7 @@
 #include <WiFiClient.h>
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
 #include <esp_heap_caps.h>  // 0.7.5: dlogAdaptiveMaxN (largest_free_block)
+#include <ctime>            // 0.8.0 (W5.1): gmtime_r — месяц для сезонной поправки Замбретти
 #include <cstdarg>                   // s_diagLog (W3.2-diag1)
 
 // ============================================================================
@@ -892,8 +893,19 @@ void WeatherGateApp::refreshStats24() {
             // при каждой загрузке).
             _deltaP3h = nowP - refP;
             _storm = wxz::stormAlarm(_deltaP3h);
+            // 0.8.0 (W5.1): канонический Замбретти — + ветер и сезон.
+            // Ветер только свежий (пакет валиден по возрасту в _out);
+            // месяц — из RTC/NTP (gmtime), 0 если время ещё не выставлено.
+            int windDeg = _out.valid ? (int)_out.dirDeg : -1;
+            int month = 0;
+            time_t ux = TimeService::getInstance().getUnixTime();
+            if (ux > 1767225600L) {   // > 01.01.2026 — время осмысленное
+                struct tm tmv;
+                if (gmtime_r(&ux, &tmv) != nullptr) month = tmv.tm_mon + 1;
+            }
             uint8_t fc = wxz::forecastIdx(
-                Bme280Driver::getInstance().pressureSeaHpa(), _trend);
+                Bme280Driver::getInstance().pressureSeaHpa(), _trend,
+                windDeg, month);
             if (fc != _fcIdx) {
                 if (_fcIdx != wxz::FC_NONE)
                     EventBus::getInstance().post(wg_ev::forecastChanged());
