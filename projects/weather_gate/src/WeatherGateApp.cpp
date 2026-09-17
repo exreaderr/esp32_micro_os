@@ -20,6 +20,7 @@
 #include <drivers/Cc1101Driver.h>
 #include "WxTrend.h"
 #include "WgWxCode.h"   // 0.7.4: честный weather_code из сырых переменных
+#include "WgWxWeek.h"   // 0.9.0 (W6): недельный прогноз -> HA (сырые данные)
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <WiFiClient.h>
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
@@ -943,17 +944,26 @@ size_t WeatherGateApp::weatherJson(char* buf, size_t bufSize) const {
         snprintf(p,  sizeof(p),  "%.2f", (double)d.pressureHpa());
         snprintf(ps, sizeof(ps), "%.2f", (double)d.pressureSeaHpa());
     }
-    // Бюджет MQTT_BODY_LEN (256): строка ~190 байт с запасом.
+    // 0.9.0 (W6): HA-condition — локальный weatherState (rain/wind точнее
+    // модели), а если он «cloudy» (осадков/ветра нет) — уточняем по коду
+    // open-meteo (sunny/partlycloudy/cloudy). ASCII-токен HA, не русский.
+    const char* cond = weatherState();
+    if (strcmp(cond, "cloudy") == 0 && _omCode >= 0)
+        cond = wgs::wmoToHaCond(_omCode);
+    // Бюджет MQTT_BODY_LEN (256): строка ~190 байт + cond/fc/storm/trend
+    // (~50 Б худший случай) ≈ 240 — влезает, host-тест сторожит потолок.
     int n = snprintf(buf, bufSize,
         "{\"valid\":1,\"temp\":%.2f,\"feels_like\":%.2f,\"state\":\"%s\","
         "\"humidity\":%.1f,\"wind\":%.2f,\"gust\":%.2f,\"dir\":%u,"
         "\"rain\":%.2f,\"press\":%s,\"press_sea\":%s,"
-        "\"rssi\":%d,\"batt\":%d,\"age_s\":%lu}",
+        "\"rssi\":%d,\"batt\":%d,\"age_s\":%lu,"
+        "\"cond\":\"%s\",\"fc\":%u,\"storm\":%u,\"trend\":%d}",
         (double)_out.tempC, (double)feelsLikeC(), weatherState(),
         (double)_out.humidityPct, (double)_out.windMs, (double)_out.gustMs,
         (unsigned)_out.dirDeg, (double)_out.rainMmPh, p, ps,
         (int)r.rssiDbm(), _out.batteryLow ? 0 : 1,
-        (unsigned long)((millis() - _out.rxMs) / 1000));
+        (unsigned long)((millis() - _out.rxMs) / 1000),
+        cond, (unsigned)_fcIdx, _storm ? 1u : 0u, (int)_trend);
     return n > 0 ? (size_t)n : 0;
 }
 
@@ -1174,7 +1184,43 @@ void WeatherGateApp::publishHaDiscovery() {
         "\"val_tpl\":\"{{ value_json.cpu_t }}\"%s}", id, tel, dev);
     mqtt.publishRaw(topic, cfg, true);
 
-    log(LogLevel::Info, "HA discovery: 14 entities announced");
+    // --- 0.9.0 (W6): сущность прогноза «на максималках» ---------------------
+    // Решение владельца: по сети только сырые данные (ASCII), человеческий
+    // язык — на стороне HA (карточка с Jinja-словарями, без configuration.yaml).
+    // Состояние HA-кодом (sunny/rainy/...): фронтенд HA локализует сам.
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_cond/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Состояние (HA)\",\"uniq_id\":\"%s_cond\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.cond }}\"%s}",
+        id, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    // Замбретти: state = индекс 1..32 (текст — словарь в карточке HA),
+    // атрибуты storm/trend/press_sea — из того же weather-JSON.
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_zamb/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Прогноз (Замбретти), индекс\",\"uniq_id\":\"%s_zamb\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.fc }}\","
+        "\"json_attr_t\":\"%s\",\"json_attr_tpl\":\"{{ {'storm': "
+        "value_json.storm, 'trend': value_json.trend, 'press_sea': "
+        "value_json.press_sea} | tojson }}\"%s}", id, wx, wx, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    // Недельный прогноз: отдельный топик weekly (JSON ~450 Б, forecastTask,
+    // раз в 3 ч, retained, онлайн-only). state = tmax сегодня, атрибут
+    // forecast = массив дней (для карточки/шаблонов HA).
+    char wk[MQTT_TOPIC_LEN];
+    snprintf(wk, sizeof(wk), "%s/%s/weekly", prefix, id);
+    snprintf(topic, sizeof(topic), "homeassistant/sensor/%s_week/config", id);
+    snprintf(cfg, sizeof(cfg),
+        "{\"name\":\"Прогноз на неделю\",\"uniq_id\":\"%s_week\","
+        "\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°C\","
+        "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.days[0].tmax }}\","
+        "\"json_attr_t\":\"%s\",\"json_attr_tpl\":\"{{ {'forecast': "
+        "value_json.days} | tojson }}\"%s}", id, wk, wk, dev);
+    mqtt.publishRaw(topic, cfg, true);
+
+    log(LogLevel::Info, "HA discovery: 17 entities announced");
 }
 
 // ============================================================================
@@ -1273,11 +1319,15 @@ void WeatherGateApp::forecastTask(void*) {
     WeatherGateApp& self = WeatherGateApp::getInstance();
     float lat = cfgGetFloat("wx.lat", 0.0f);
     float lon = cfgGetFloat("wx.lon", 0.0f);
-    char url[192];
+    char url[256];
     snprintf(url, sizeof(url),
              "http://api.open-meteo.com/v1/forecast"
              "?latitude=%.4f&longitude=%.4f"
-             "&current=weather_code,cloud_cover,precipitation",
+             "&current=weather_code,cloud_cover,precipitation"
+             // 0.9.0 (W6): недельный прогноз для HA — сырые daily-ряды,
+             // «человеческий язык» восстанавливает карточка на стороне HA.
+             "&daily=weather_code,temperature_2m_max,temperature_2m_min,"
+             "precipitation_sum&forecast_days=7&timezone=auto",
              (double)lat, (double)lon);
 
     WiFiClient client;
@@ -1286,8 +1336,8 @@ void WeatherGateApp::forecastTask(void*) {
     bool ok = false;
     if (http.begin(client, url)) {
         if (http.GET() == 200) {
-            // Тело ~450 байт (три поля); буфер, не String.
-            char body[768];
+            // Тело ~450 байт (current) + ~600 (daily×7); буфер, не String.
+            char body[1536];
             size_t got = http.getStream().readBytes(body, sizeof(body) - 1);
             body[got] = '\0';
             // 0.7.4: ищем ТОЛЬКО внутри секции данных "current":{...} —
@@ -1312,6 +1362,24 @@ void WeatherGateApp::forecastTask(void*) {
                              "open-meteo: code=%d (модель %d, облачность %d%%, "
                              "осадки %.2f мм)", (int)code, codeRaw, cloud,
                              (double)precip);
+                }
+            }
+            // 0.9.0 (W6): weekly-JSON для HA. Якорь "daily":{ — урок №25
+            // (те же имена в daily_units). Публикация retained; payload
+            // ~450 Б > outbox 256 — онлайн-only, офлайн честно дропнется
+            // (без сети прогноз всё равно не обновить).
+            wgw::Day days[wgw::MAX_DAYS];
+            uint8_t nd = wgw::parseDaily(body, days, wgw::MAX_DAYS);
+            if (nd > 0) {
+                char wjs[512];
+                size_t wl = wgw::weeklyJson(days, nd, wjs, sizeof(wjs));
+                if (wl > 0) {
+                    bool wrc = MqttTransport::getInstance()
+                        .publishStateSuffix("weekly", wjs, true);
+                    self.log(wrc ? LogLevel::Info : LogLevel::Warning,
+                             "open-meteo: weekly %u дн., %u Б, pub %s",
+                             (unsigned)nd, (unsigned)wl,
+                             wrc ? "ok" : "ОТКАЗ");
                 }
             }
         }
