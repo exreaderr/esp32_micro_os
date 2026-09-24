@@ -26,8 +26,15 @@ static_assert(sizeof(W7aHeader) == 16, "W7aHeader 16B");
 static_assert(sizeof(DlogAggr) == 16, "DlogAggr 16B");
 
 static constexpr uint32_t HOUR_SEC        = 3600;
-static constexpr uint32_t HALFDAY_SEC     = 43200;   // кадр = полдня (12 ч)
-static constexpr uint8_t  FRAME_RECS      = 12;      // записей в кадре (макс)
+static constexpr uint32_t SUBDAY_SEC      = 14400;   // кадр = 4 часа (4 записи)
+static constexpr uint8_t  PARTS_PER_DAY   = 6;       // субкадров в сутках (24/4)
+static constexpr uint8_t  FRAME_RECS      = 4;       // записей в кадре (макс)
+// Почему 4, а не 6 и не 12: входящий путь MQTT (subscribeExternal,
+// MqttTransport ExtSub.payload) капает тело на MQTT_BODY_LEN=256. Худший
+// кадр: 6 записей x [10-зн. ts + 3x7-симв. значения] + обвязка с 10-зн. CRC
+// = 290 Б > 255 — молчаливое усечение, CRC не сойдётся никогда (нашла
+// профильная ветка weather_gate, доп. к контракту 20.09.2026). 4 записи:
+// худший 216 Б, типичный ~150-200 Б — под капом 240 с запасом.
 static constexpr uint32_t SESSION_GUARD_MS  = 120000;  // сторож сессии выдачи
 static constexpr uint32_t REQ_ANTIBOUNCE_MS = 120000;  // повторный полный req
 
@@ -218,10 +225,11 @@ bool HmArchiveModule::appendRecord(uint8_t ch, const DlogAggr& r) {
 }
 
 // ============================================================================
-// ВЫДАЧА: MQTT запрос-ответ (контракт W7). Кадр = канал-ПОЛДНЯ (12 записей)
-// — поправка к ноте «канал-день (24)»: худший случай (давление) даёт
-// ~33 Б/запись × 24 ≈ 880 Б > бюджета кадра 700 Б. Полдня ≈ ≤460 Б всегда.
-// seq = ch*(days*2) + day*2 + half; total = CH_COUNT × days × 2.
+// ВЫДАЧА: MQTT запрос-ответ (контракт W7). Кадр = канал-4-ЧАСА (4 записи)
+// — вторая поправка к ноте «канал-день (24)»: сначала полдня (12) по бюджету
+// 700 Б, затем 4 часа по входящему капу MQTT_BODY_LEN=256 (доп. ветки
+// weather_gate 20.09.2026): 6 записей в худшем случае = 290 Б > 255.
+// seq = ch*(days*6) + day*6 + part; total = CH_COUNT × days × 6.
 // Детерминизм seq → переспрос регенерирует кадр из архива заново.
 // ============================================================================
 
@@ -276,7 +284,7 @@ void HmArchiveModule::onRequest(const char* payload) {
         _resendOnly = 1;
         _resendSeq = v;
         _seq = v;
-        _total = (uint32_t)CH_COUNT * _days * 2;
+        _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
         _serving = true;
         _reqStartedMs = millis();
         _scanYearIdx = 0;
@@ -296,7 +304,7 @@ void HmArchiveModule::onRequest(const char* payload) {
         _lastFullReqMs = now;
 
         _days = (uint8_t)constrain((int)v, 1, 31);
-        _total = (uint32_t)CH_COUNT * _days * 2;
+        _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
         _seq = 0;
         _resendOnly = 0;
         _serving = true;
@@ -375,11 +383,11 @@ bool HmArchiveModule::buildFrame() {
     fs::FS* sd = SdService::getInstance().fs();
     if (sd == nullptr) { abortSession("нет SD"); return true; }
 
-    uint32_t framesPerCh = (uint32_t)_days * 2;
+    uint32_t framesPerCh = (uint32_t)_days * PARTS_PER_DAY;
     uint8_t  ch   = (uint8_t)(_seq / framesPerCh);
     uint32_t rem  = _seq % framesPerCh;
-    int      day  = (int)(rem / 2);
-    int      half = (int)(rem % 2);
+    int      day  = (int)(rem / PARTS_PER_DAY);
+    int      part = (int)(rem % PARTS_PER_DAY);
 
     // Пустой архив целиком: на первом кадре ни одного файла — total=0.
     if (_seq == 0 && _scanYearIdx == 0 && !_scanFile) {
@@ -393,12 +401,12 @@ bool HmArchiveModule::buildFrame() {
         }
     }
 
-    // Окно кадра: day=0 — самый старый день; half 0/1 — до/после полудня UTC.
+    // Окно кадра: day=0 — самый старый день; part 0..5 — 4-часовой слот UTC.
     uint32_t nowU = (uint32_t)TimeService::getInstance().getUnixTime();
     uint32_t todayStart = nowU - (nowU % 86400UL);
     uint32_t w0 = todayStart - (uint32_t)(_days - 1 - day) * 86400UL
-                + (uint32_t)half * HALFDAY_SEC;
-    uint32_t w1 = w0 + HALFDAY_SEC;
+                + (uint32_t)part * SUBDAY_SEC;
+    uint32_t w1 = w0 + SUBDAY_SEC;
 
     // Открыть следующий файл канала (прошлый год, затем текущий).
     if (!_scanFile) {

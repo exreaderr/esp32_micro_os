@@ -12,7 +12,7 @@
 // ядра — Version.h зашивает полную метку «MICROOS|ядро|профиль|END» в .bin,
 // getVersion() отдаёт ту же версию строкой. Расходиться не могут по
 // построению.
-#define MICROOS_PROFILE_VER 0.8.1
+#define MICROOS_PROFILE_VER 0.8.2
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -30,7 +30,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HomeMasterApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.8.1: W7 архивариус (HmArchiveModule: часовые ведра wx_* на SD /archive/, выдача восстановления по MQTT запрос-ответу, кадр=полдня, CRC32/zlib); 0.8.0: единая инфо-карточка флота (uiDisplayName «Домашний мастер», extras режим/клиенты; ядро 5.9.0); 0.7.0: M5 — статус-LED WS2812 ×4 + OLED по требованию (ядро 5.8.9); 0.6.10: двухполевая версия OTA (ядро 5.8.8); 0.6.9: ConfirmState → ядро;         // 0.6.9: ядро 5.8.7 — ConfirmState демонтирован, подтверждения в HealthMonitor; 0.6.8: hm.fleet + гистерезис (вариант Б); 0.6.7: ручная загрузка троек + otam.src; 0.6.6: broker.pass → NVS, hostname; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.8.2: кадр архива = 4 ч / 4 записи, ≤216 Б худший (входящий кап MQTT_BODY_LEN=256, доп. ветки 20.09 — 6 записей давало 290 Б); 0.8.1: W7 архивариус (HmArchiveModule: часовые ведра wx_* на SD /archive/, выдача восстановления по MQTT запрос-ответу, кадр=полдня, CRC32/zlib); 0.8.0: единая инфо-карточка флота (uiDisplayName «Домашний мастер», extras режим/клиенты; ядро 5.9.0); 0.7.0: M5 — статус-LED WS2812 ×4 + OLED по требованию (ядро 5.8.9); 0.6.10: двухполевая версия OTA (ядро 5.8.8); 0.6.9: ConfirmState → ядро;         // 0.6.9: ядро 5.8.7 — ConfirmState демонтирован, подтверждения в HealthMonitor; 0.6.8: hm.fleet + гистерезис (вариант Б); 0.6.7: ручная загрузка троек + otam.src; 0.6.6: broker.pass → NVS, hostname; 0.6.5: OTA-раздача кусками + TWDT-feed; 0.6.4: bk само-проверка в цикле; 0.6.3: правка bk.self; 0.6.2: bk.self + оверлей; 0.6.1: OTA-зеркало
     ModuleId getModuleId() const override { return 0x1102; }   // 0x1101=SdService, 0x1103=BrokerService, 0x1104=BridgeService
     void registerExtensions() override;
     void init() override;

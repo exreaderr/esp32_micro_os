@@ -131,8 +131,8 @@ private:
     uint8_t  _scanYearIdx = 0;                // 0 = прошлый год, 1 = текущий
     DlogAggr _win[512 / sizeof(DlogAggr)];    // окно разбора (32 записи)
     // Сборка текущего кадра
-    char     _rbuf[620] = "";                 // "[[ts,mn,mx,avg],...]"
+    char     _rbuf[176] = "";                 // "[[ts,mn,mx,avg],...]" (4 записи, худший 143 Б)
     uint16_t _rN = 0;                         // записей в кадре
-    char     _frame[760] = "";
+    char     _frame[256] = "";                // кадр целиком (худший 216 Б < капа 240)
     uint32_t _reqServed = 0, _framesSent = 0;
 };
