@@ -2,7 +2,7 @@
   "profile": "weather_gate",
   "version": "5.9.5",
   "fw_md5": "d2c43386264f007fa61a89122601c9bf",
-  "fs_md5": "5fb8fb054735bce5e5d1ce82ce90b240",
+  "fs_md5": "ed7ca4e35a9491a533412df6d1b33190",
   "changelog": "Periodic production build update",
   "host": "weather_gate",
   "profile_version": "0.9.0",

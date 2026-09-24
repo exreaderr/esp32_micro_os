@@ -164,4 +164,18 @@ void registerHomeMasterConfig() {
         { "btn.ok", ConfigType::UINT, "2", 0, 48, CFG_CRITICAL,
           "Экран", "GPIO кнопки «ОК»" },
     });
+
+    // === ГРУППА: Архив W7 (20.09.2026) =================================
+    // Архивариус: «длинный» архив погоды шлюза на SD (часовые ведра,
+    // /archive/<gw_id>/<канал>-<ГГГГ>.w7a, DlogAggr 16 Б) + выдача
+    // восстановления по MQTT запрос-ответу. Поля живые (CFG_NONE).
+    // ПОЛЯ — ТОЛЬКО В КОНЕЦ СХЕМЫ (правило совместимости).
+    cfg.addFields("Архив W7", {
+        { "arch.enabled", ConfigType::BOOL, "true", 0, 0, CFG_CRITICAL,
+          "Архив W7", "Архивариус погоды на SD (ребут)" },
+        { "arch.src_topic", ConfigType::STRING, "microos/weather_gate/weather", 0, 0, CFG_CRITICAL,
+          "Архив W7", "Топик-источник (weather-JSON шлюза; ребут)" },
+        { "arch.gw_id", ConfigType::STRING, "weather_gate", 0, 0, CFG_CRITICAL,
+          "Архив W7", "id шлюза (каталог архива и resp-топик; ребут)" },
+    });
 }

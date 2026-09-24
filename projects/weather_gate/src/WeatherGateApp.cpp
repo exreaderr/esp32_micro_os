@@ -22,6 +22,7 @@
 #include "WgWxCode.h"   // 0.7.4: честный weather_code из сырых переменных
 #include "WgWxWeek.h"   // 0.9.0 (W6): недельный прогноз -> HA (сырые данные)
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
+#include <LittleFS.h>                // 0.9.1 (W7): запись восстановленных ярусов
 #include <WiFiClient.h>
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
 #include <esp_heap_caps.h>  // 0.7.5: dlogAdaptiveMaxN (largest_free_block)
@@ -727,7 +728,129 @@ void WeatherGateApp::onEvent(int32_t eventId, const ShEventData* data) {
         // следующего пакета/периода
         if (_out.valid && cfgGetBool("wx.mqtt_en", true))
             publishWeatherMqtt();
+        archiveRestoreAsk();   // 0.9.1 (W7): пустой ярус? -> запрос мастеру
         return;
+    }
+}
+
+// ============================================================================
+// W7 (0.9.1): ВОССТАНОВЛЕНИЕ DLOG ИЗ АРХИВА МАСТЕРА
+// ============================================================================
+// Контракт: нота W7 рев.3 + 5 штифтиков + кадр ≤240 Б (входящий кап
+// MQTT_BODY_LEN=256). Триггер: старт + часовой ярус короче суток +
+// MQTT подключён. Один запрос за загрузку. Кадры принимаются в
+// heap-образ (13,4 КБ, однократно), по complete() — мердж и атомарная
+// запись ярусов. Таймаут 60 с — молчаливая деградация (как до W7).
+// Мастер может быть не в сети/без архива (total=0) — это штатно.
+// ============================================================================
+void WeatherGateApp::archiveRestoreAsk() {
+    if (_archAsked) return;                      // раз в загрузку
+    _archAsked = true;
+    // Ярус пуст/короче суток? Смотрим по каналу температуры (пишется
+    // каждый час, самый массовый). 24+ записей — архив не нужен.
+    if (_chOutT >= 0) {
+        DlogAggr probe[24];
+        uint16_t n = DataLogService::getInstance()
+            .getTier((uint8_t)_chOutT, false, probe, 24, 0);
+        if (n >= 24) return;                     // история на месте
+    }
+    _archImg = new (std::nothrow) wgar::Image(); // 13,4 КБ, однократно
+    if (_archImg == nullptr) return;             // нет RAM — деградация
+    _archImg->reset();
+    _archStartMs = millis();
+    MqttTransport& mqtt = MqttTransport::getInstance();
+    const char* id = NetworkService::getInstance().deviceId();
+    char topic[MQTT_TOPIC_LEN];
+    snprintf(topic, sizeof(topic), "microos/master/archive/resp/%s", id);
+    mqtt.subscribeExternal(topic, archiveFrameCb);
+    char req[64];
+    snprintf(req, sizeof(req), "{\"id\":\"%s\",\"days\":7}", id);
+    mqtt.publishRaw("microos/master/archive/req", req, false);
+    log(LogLevel::Info, "archive: запрошено восстановление dlog (7 дн.)");
+}
+
+void WeatherGateApp::archiveFrameCb(const char*, const char* payload) {
+    WeatherGateApp& self = WeatherGateApp::getInstance();
+    if (self._archImg == nullptr) return;
+    wgar::Frame f;
+    if (!wgar::parseFrame(payload, f)) {
+        // Битый кадр: если seq читается — переспрос кадра (штифтик 2)
+        const char* s = strstr(payload, "\"seq\":");
+        if (s != nullptr) {
+            char req[64];
+            snprintf(req, sizeof(req), "{\"id\":\"%s\",\"seq\":%d}",
+                     NetworkService::getInstance().deviceId(),
+                     atoi(s + 6));
+            MqttTransport::getInstance()
+                .publishRaw("microos/master/archive/req", req, false);
+        }
+        return;
+    }
+    if (f.total == 0) {                          // пустой архив (штифтик 4)
+        delete self._archImg; self._archImg = nullptr;
+        self.log(LogLevel::Info, "archive: у мастера пусто, деградация");
+        return;
+    }
+    if (!self._archImg->addFrame(f)) return;
+    if (self._archImg->complete()) self.archiveApply();
+}
+
+void WeatherGateApp::archiveApply() {
+    if (_archImg == nullptr) return;
+    DataLogService& dl = DataLogService::getInstance();
+    uint16_t restored = 0;
+    for (uint8_t i = 0; i < _archImg->nch; i++) {
+        wgar::Image::Ch& c = _archImg->chs[i];
+        // Наш канал? Ищем индекс по id среди зарегистрированных
+        int8_t chIdx = -1;
+        char cid[12], nm[28], un[8];
+        for (uint8_t k = 0; k < dl.channelCount(); k++) {
+            if (dl.channelInfo(k, cid, sizeof(cid), nm, sizeof(nm),
+                               un, sizeof(un)) &&
+                strncmp(cid, c.id, sizeof(cid)) == 0) { chIdx = (int8_t)k; break; }
+        }
+        if (chIdx < 0) continue;
+        // Мердж с локальным ярусом (локальное новее — побеждает)
+        DlogAggr* local = new (std::nothrow) DlogAggr[DLOG_HOUR_CAP];
+        uint16_t ln = 0;
+        if (local != nullptr)
+            ln = dl.getTier((uint8_t)chIdx, false, local, DLOG_HOUR_CAP, 0);
+        wgar::mergeLocal(c, local, ln);
+        // Атомарная запись: tmp + rename (урок питания: не оставлять
+        // полуфайл при обесточке посередине)
+        char path[36], tmp[40];
+        snprintf(path, sizeof(path), "/datalog/H_%s.bin", c.id);
+        snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+        File f = LittleFS.open(tmp, "w");
+        bool ok = false;
+        if (f) {
+            DlogFileHeader hdr;
+            memset(&hdr, 0, sizeof(hdr));
+            hdr.magic = DLOG_FILE_MAGIC;
+            hdr.count = c.n;
+            hdr.cap   = DLOG_HOUR_CAP;
+            ok = f.write((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr) &&
+                 f.write((uint8_t*)c.recs, c.n * sizeof(DlogAggr)) ==
+                     (size_t)(c.n * sizeof(DlogAggr));
+            f.close();
+        }
+        if (ok && LittleFS.rename(tmp, path)) restored++;
+        else LittleFS.remove(tmp);
+        delete[] local;
+    }
+    log(LogLevel::Info,
+        "archive: восстановлено каналов %u/%u, dlog за 7 дней на месте",
+        (unsigned)restored, (unsigned)_archImg->nch);
+    delete _archImg; _archImg = nullptr;
+}
+
+void WeatherGateApp::archiveRestoreTick() {
+    if (_archImg == nullptr) return;
+    if (millis() - _archStartMs > 60000UL) {     // таймаут сборки
+        log(LogLevel::Warning,
+            "archive: таймаут 60 с, %u/%u кадров — деградация",
+            (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
+        delete _archImg; _archImg = nullptr;
     }
 }
 
@@ -747,6 +870,7 @@ void WeatherGateApp::tick() {
     }
 
     scanTick();   // W3.3: машина сканера частоты (нет активного — пустой)
+    archiveRestoreTick();   // W7 (0.9.1): таймаут сборки архива (нет — пустой)
 
     // Давление — по своему ритму (раз в минуту), независимо от эфира
     const Bme280Driver& d = Bme280Driver::getInstance();

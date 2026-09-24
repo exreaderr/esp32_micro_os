@@ -1,0 +1,489 @@
+// ============================================================================
+// HmArchiveModule.cpp — архивариус W7 (накопление на SD + выдача по MQTT)
+// ============================================================================
+#include "HmArchiveModule.h"
+#include "SdService.h"
+#include <services/ConfigService.h>
+#include <services/TimeService.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+// --- КАНОН ФАЙЛА -------------------------------------------------------------
+// /archive/<gw_id>/<канал>-<ГГГГ>.w7a: заголовок 16 Б, дальше DlogAggr 16 Б.
+// Самоописывающий заголовок (требование ядерной ветки): магия + версия +
+// имя канала — читается «руками с SD-карты через год».
+#pragma pack(push, 1)
+struct W7aHeader {
+    uint32_t magic;        // W7A_FILE_MAGIC
+    uint8_t  ver;          // 1
+    char     ch[8];        // "wx_ot" ...
+    uint8_t  pad[3];
+};
+#pragma pack(pop)
+static constexpr uint32_t W7A_FILE_MAGIC = 0x31413757UL;   // 'W7A1' (LE)
+static_assert(sizeof(W7aHeader) == 16, "W7aHeader 16B");
+static_assert(sizeof(DlogAggr) == 16, "DlogAggr 16B");
+
+static constexpr uint32_t HOUR_SEC        = 3600;
+static constexpr uint32_t HALFDAY_SEC     = 43200;   // кадр = полдня (12 ч)
+static constexpr uint8_t  FRAME_RECS      = 12;      // записей в кадре (макс)
+static constexpr uint32_t SESSION_GUARD_MS  = 120000;  // сторож сессии выдачи
+static constexpr uint32_t REQ_ANTIBOUNCE_MS = 120000;  // повторный полный req
+
+HmArchiveModule& HmArchiveModule::getInstance() {
+    static HmArchiveModule inst;
+    return inst;
+}
+
+const char* HmArchiveModule::chName(uint8_t i) {
+    static const char* names[CH_COUNT] = {"wx_ot", "wx_oh", "wx_p", "wx_w", "wx_r"};
+    return (i < CH_COUNT) ? names[i] : "wx_??";
+}
+const char* HmArchiveModule::chJsonKey(uint8_t i) {
+    // Ключи weather-JSON шлюза (контракт 0.9.0). Якорь по имени ключа
+    // целиком (урок №25): \"temp\" не встречается в единицах измерения.
+    static const char* keys[CH_COUNT] = {"\"temp\":", "\"humidity\":",
+                                         "\"press\":", "\"wind\":", "\"rain\":"};
+    return (i < CH_COUNT) ? keys[i] : "\"?\":";
+}
+
+// --- ЖИЗНЕННЫЙ ЦИКЛ ----------------------------------------------------------
+void HmArchiveModule::init() {
+    _enabled = cfgGetBool("arch.enabled", true);
+    cfgGetStr("arch.src_topic", _srcTopic, sizeof(_srcTopic),
+              "microos/weather_gate/weather");
+    cfgGetStr("arch.gw_id", _gwId, sizeof(_gwId), "weather_gate");
+    _initialized = true;
+}
+
+void HmArchiveModule::start() {
+    _started = true;
+    if (!_enabled) {
+        log(LogLevel::Info, "архив W7 выключен (arch.enabled=false)");
+        return;
+    }
+    BrokerService::getInstance().addEventHook(&HmArchiveModule::onBrokerEvent);
+    log(LogLevel::Info, "архив W7: источник %s, архив /archive/%s/",
+        _srcTopic, _gwId);
+}
+
+void HmArchiveModule::stop() {
+    BrokerService::getInstance().removeEventHook(&HmArchiveModule::onBrokerEvent);
+    if (_scanFile) { _scanFile.close(); }
+    _serving = false;
+    _started = false;
+}
+
+// --- ХУК БРОКЕРА (контекст tick брокера — ТОЛЬКО RAM, без SD!) ----------------
+void HmArchiveModule::onBrokerEvent(const BrokerEventInfo& info) {
+    HmArchiveModule& self = getInstance();
+    if (!self._enabled || !self._started) return;
+    if (info.type != BrokerEventInfo::Publish || info.truncated) return;
+
+    if (strcmp(info.topic, self._srcTopic) == 0) {
+        // Дедуп retained-повторов (реконнекты): тело в точности как прошлое.
+        if (strncmp(info.payload, self._lastPayload,
+                    sizeof(self._lastPayload)) == 0) {
+            self._recSkipped++;
+            return;
+        }
+        self.onWeather(info.payload);
+        return;
+    }
+    // req-топик: собран в start() из mqtt.prefix — сравниваем суффикс,
+    // чтобы не тащить prefix в хук.
+    if (strstr(info.topic, "/master/archive/req") != nullptr) {
+        self.onRequest(info.payload);
+    }
+}
+
+void HmArchiveModule::onWeather(const char* payload) {
+    uint32_t ts = (uint32_t)TimeService::getInstance().getUnixTime();
+    if (ts < 1700000000UL) return;   // время ещё не синхронизировано
+
+    bool any = false;
+    for (uint8_t ch = 0; ch < CH_COUNT; ++ch) {
+        const char* p = strstr(payload, chJsonKey(ch));
+        if (p == nullptr) continue;
+        p += strlen(chJsonKey(ch));
+        if (strncmp(p, "null", 4) == 0) continue;   // press: null и т.п.
+        float v = (float)atof(p);
+        DlogAggr rolled;
+        if (_bkt[ch].add(ts, v, HOUR_SEC, rolled)) {
+            if (_rollPend[ch]) _recSkipped++;   // tick не успел слить — не бывает
+            _rolled[ch] = rolled;
+            _rollPend[ch] = true;
+        }
+        any = true;
+    }
+    if (any) {
+        safeStrCopy(_lastPayload, sizeof(_lastPayload), payload);
+    }
+}
+
+// --- TICK: слив ведер на SD + темпованная выдача -------------------------------
+void HmArchiveModule::tick() {
+    if (!_enabled || !_started) return;
+    // Один append за тик (короткий сеанс SD, урок питания 15.09)
+    for (uint8_t ch = 0; ch < CH_COUNT; ++ch) {
+        if (_rollPend[ch]) { flushChannel(ch); break; }
+    }
+    serveTick();
+}
+
+void HmArchiveModule::flushChannel(uint8_t ch) {
+    _rollPend[ch] = false;
+    if (appendRecord(ch, _rolled[ch])) {
+        _recWritten++;
+    } else {
+        _recSkipped++;
+    }
+}
+
+void HmArchiveModule::filePath(uint8_t ch, int year, char* out, size_t n) const {
+    snprintf(out, n, "/archive/%s/%s-%04d.w7a", _gwId, chName(ch), year);
+}
+
+bool HmArchiveModule::writeHeaderIfNew(fs::File& f, const char* ch) {
+    if (f.size() != 0) return true;
+    W7aHeader h{};
+    h.magic = W7A_FILE_MAGIC;
+    h.ver = 1;
+    strncpy(h.ch, ch, sizeof(h.ch) - 1);
+    return f.write((const uint8_t*)&h, sizeof(h)) == sizeof(h);
+}
+
+uint32_t HmArchiveModule::readLastTs(uint8_t ch) {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) return 0;
+    // Год от текущего времени; хвост ищем в текущем, потом в прошлом.
+    time_t nowT = TimeService::getInstance().getUnixTime();
+    struct tm* tmv = gmtime(&nowT);
+    int year = tmv ? tmv->tm_year + 1900 : 1970;
+    char path[64];
+    for (int pass = 0; pass < 2; ++pass) {
+        filePath(ch, year - pass, path, sizeof(path));
+        if (!sd->exists(path)) continue;
+        fs::File f = sd->open(path, FILE_READ);
+        if (!f) continue;
+        size_t sz = f.size();
+        uint32_t ts = 0;
+        if (sz >= sizeof(W7aHeader) + sizeof(DlogAggr)) {
+            f.seek(sz - sizeof(DlogAggr));
+            DlogAggr r;
+            if (f.read((uint8_t*)&r, sizeof(r)) == sizeof(r)) ts = r.ts;
+        }
+        f.close();
+        if (ts != 0) return ts;
+    }
+    return 0;
+}
+
+bool HmArchiveModule::appendRecord(uint8_t ch, const DlogAggr& r) {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) return false;
+
+    // Идемпотентность: ts не новее последнего записанного — пропуск
+    // (retained-повторы, реконнекты, двойные сливы после ребута).
+    if (!_lastTsKnown[ch]) {
+        _lastTs[ch] = readLastTs(ch);
+        _lastTsKnown[ch] = true;
+    }
+    if (r.ts <= _lastTs[ch]) return false;
+
+    // Каталоги — один раз за сессию (mkdir существующего безвреден).
+    static bool dirsTried = false;
+    if (!dirsTried) {
+        dirsTried = true;
+        sd->mkdir("/archive");
+        char dir[48];
+        snprintf(dir, sizeof(dir), "/archive/%s", _gwId);
+        sd->mkdir(dir);
+    }
+
+    time_t nowT = TimeService::getInstance().getUnixTime();
+    struct tm* tmv = gmtime(&nowT);
+    int year = tmv ? tmv->tm_year + 1900 : 1970;
+    char path[64];
+    filePath(ch, year, path, sizeof(path));
+
+    fs::File f = sd->open(path, FILE_APPEND);   // создаёт при отсутствии
+    if (!f) return false;
+    bool ok = writeHeaderIfNew(f, chName(ch)) &&
+              f.write((const uint8_t*)&r, sizeof(r)) == sizeof(r);
+    f.close();
+    if (ok) _lastTs[ch] = r.ts;
+    return ok;
+}
+
+// ============================================================================
+// ВЫДАЧА: MQTT запрос-ответ (контракт W7). Кадр = канал-ПОЛДНЯ (12 записей)
+// — поправка к ноте «канал-день (24)»: худший случай (давление) даёт
+// ~33 Б/запись × 24 ≈ 880 Б > бюджета кадра 700 Б. Полдня ≈ ≤460 Б всегда.
+// seq = ch*(days*2) + day*2 + half; total = CH_COUNT × days × 2.
+// Детерминизм seq → переспрос регенерирует кадр из архива заново.
+// ============================================================================
+
+// CRC32/zlib (poly 0xEDB88320, init/xorout 0xFFFFFFFF) — контрактный вариант.
+// Побитовый, без таблицы: кадры редки, 600 Б × 8 итераций несущественно.
+uint32_t HmArchiveModule::crc32zlib(const uint8_t* d, size_t n) {
+    uint32_t crc = 0xFFFFFFFFUL;
+    for (size_t i = 0; i < n; ++i) {
+        crc ^= d[i];
+        for (uint8_t b = 0; b < 8; ++b)
+            crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320UL : (crc >> 1);
+    }
+    return crc ^ 0xFFFFFFFFUL;
+}
+
+// Компактный float: "%.2f" с обрезкой хвостовых нулей (21.50 → 21.5).
+static void w7FmtNum(float v, char* out, size_t n) {
+    snprintf(out, n, "%.2f", (double)v);
+    char* dot = strchr(out, '.');
+    if (dot == nullptr) return;
+    char* e = out + strlen(out) - 1;
+    while (e > dot && *e == '0') *e-- = '\0';
+    if (e == dot) *e = '\0';
+}
+
+static bool w7ParseStr(const char* json, const char* key, char* out, size_t n) {
+    const char* p = strstr(json, key);          // key вида "\"id\":\""
+    if (p == nullptr) return false;
+    p += strlen(key);
+    const char* q = strchr(p, '"');
+    if (q == nullptr || (size_t)(q - p) >= n) return false;
+    memcpy(out, p, (size_t)(q - p));
+    out[q - p] = '\0';
+    return true;
+}
+
+static bool w7ParseUint(const char* json, const char* key, uint32_t& out) {
+    const char* p = strstr(json, key);          // key вида "\"days\":"
+    if (p == nullptr) return false;
+    out = (uint32_t)strtoul(p + strlen(key), nullptr, 10);
+    return true;
+}
+
+void HmArchiveModule::onRequest(const char* payload) {
+    char id[33] = "";
+    if (!w7ParseStr(payload, "\"id\":\"", id, sizeof(id))) return;
+    if (strcmp(id, _gwId) != 0) return;         // архивируем одного шлюза
+
+    uint32_t v = 0;
+    if (w7ParseUint(payload, "\"seq\":", v)) {
+        // Переспрос кадра (CRC не сошёлся): регенерация по seq, без сессии.
+        _resendOnly = 1;
+        _resendSeq = v;
+        _seq = v;
+        _total = (uint32_t)CH_COUNT * _days * 2;
+        _serving = true;
+        _reqStartedMs = millis();
+        _scanYearIdx = 0;
+        _rbuf[0] = '\0';
+        _rN = 0;
+        return;
+    }
+    if (w7ParseUint(payload, "\"days\":", v)) {
+        // Антидребезг: повторный полный req от того же id в 120 с — мимо
+        // (reconnect-шторм на рваном линке не должен перезапускать выдачу).
+        uint32_t now = millis();
+        if (strcmp(id, _lastFullReqId) == 0 &&
+            now - _lastFullReqMs < REQ_ANTIBOUNCE_MS) {
+            return;
+        }
+        safeStrCopy(_lastFullReqId, sizeof(_lastFullReqId), id);
+        _lastFullReqMs = now;
+
+        _days = (uint8_t)constrain((int)v, 1, 31);
+        _total = (uint32_t)CH_COUNT * _days * 2;
+        _seq = 0;
+        _resendOnly = 0;
+        _serving = true;
+        _reqStartedMs = now;
+        _scanYearIdx = 0;
+        _scanCh = 0xFF;
+        _rbuf[0] = '\0';
+        _rN = 0;
+        log(LogLevel::Info, "архив W7: req от %s, days %u → %lu кадров",
+            id, _days, (unsigned long)_total);
+    }
+}
+
+void HmArchiveModule::sendEmpty() {
+    char topic[MQTT_TOPIC_LEN];
+    char prefix[24];
+    cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+    snprintf(topic, sizeof(topic), "%s/master/archive/resp/%s", prefix, _gwId);
+    BrokerService::getInstance().publishLocal(topic, "{\"seq\":0,\"total\":0}",
+                                              false);
+    _framesSent++;
+}
+
+void HmArchiveModule::sendFrame(const char* ch, int day, const char* rbuf,
+                                uint32_t seq, uint32_t total) {
+    char topic[MQTT_TOPIC_LEN];
+    char prefix[24];
+    cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+    snprintf(topic, sizeof(topic), "%s/master/archive/resp/%s", prefix, _gwId);
+    uint32_t crc = crc32zlib((const uint8_t*)rbuf, strlen(rbuf));
+    int n = snprintf(_frame, sizeof(_frame),
+                     "{\"seq\":%lu,\"total\":%lu,\"ch\":\"%s\",\"day\":%d,"
+                     "\"crc\":%lu,\"r\":%s}",
+                     (unsigned long)seq, (unsigned long)total, ch, day,
+                     (unsigned long)crc, rbuf);
+    if (n <= 0 || n >= (int)sizeof(_frame)) return;   // не влез — пропуск
+    if (BrokerService::getInstance().publishLocal(topic, _frame, false)) {
+        _framesSent++;
+    }
+}
+
+void HmArchiveModule::abortSession(const char* why) {
+    if (_scanFile) _scanFile.close();
+    _serving = false;
+    _rbuf[0] = '\0';
+    _rN = 0;
+    log(LogLevel::Warning, "архив W7: сессия выдачи прервана (%s)", why);
+}
+
+// Сессия выдачи: один шаг за тик (150 мс) — кадр, кусок файла или финал.
+void HmArchiveModule::serveTick() {
+    if (!_serving) return;
+    uint32_t now = millis();
+    if (now - _reqStartedMs > SESSION_GUARD_MS) {
+        abortSession("сторож 120 с");
+        return;
+    }
+    if (buildFrame()) {
+        // Кадр отправлен (или пуст). Конец сессии?
+        if (_resendOnly) {
+            _serving = false;
+            return;
+        }
+        if (_seq >= _total) {
+            _serving = false;
+            _reqServed++;
+            log(LogLevel::Info, "архив W7: выдача завершена, %lu кадров",
+                (unsigned long)_total);
+        }
+    }
+}
+
+// Строит и шлёт кадр для _seq. true — кадр завершён (отправлен), false —
+// нужен ещё тик (читаем файл кусками).
+bool HmArchiveModule::buildFrame() {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) { abortSession("нет SD"); return true; }
+
+    uint32_t framesPerCh = (uint32_t)_days * 2;
+    uint8_t  ch   = (uint8_t)(_seq / framesPerCh);
+    uint32_t rem  = _seq % framesPerCh;
+    int      day  = (int)(rem / 2);
+    int      half = (int)(rem % 2);
+
+    // Пустой архив целиком: на первом кадре ни одного файла — total=0.
+    if (_seq == 0 && _scanYearIdx == 0 && !_scanFile) {
+        char dir[48];
+        snprintf(dir, sizeof(dir), "/archive/%s", _gwId);
+        if (!sd->exists(dir)) {
+            sendEmpty();
+            _serving = false;
+            _reqServed++;
+            return true;
+        }
+    }
+
+    // Окно кадра: day=0 — самый старый день; half 0/1 — до/после полудня UTC.
+    uint32_t nowU = (uint32_t)TimeService::getInstance().getUnixTime();
+    uint32_t todayStart = nowU - (nowU % 86400UL);
+    uint32_t w0 = todayStart - (uint32_t)(_days - 1 - day) * 86400UL
+                + (uint32_t)half * HALFDAY_SEC;
+    uint32_t w1 = w0 + HALFDAY_SEC;
+
+    // Открыть следующий файл канала (прошлый год, затем текущий).
+    if (!_scanFile) {
+        if (_scanCh != ch) { _scanCh = ch; _scanYearIdx = 0; }
+        time_t nowT = (time_t)nowU;
+        struct tm* tmv = gmtime(&nowT);
+        int year = tmv ? tmv->tm_year + 1900 : 1970;
+        bool opened = false;
+        while (_scanYearIdx < 2 && !opened) {
+            char path[64];
+            filePath(ch, year - 1 + (int)_scanYearIdx, path, sizeof(path));
+            _scanYearIdx++;
+            if (!sd->exists(path)) continue;
+            _scanFile = sd->open(path, FILE_READ);
+            if (_scanFile) {
+                _scanFile.seek(sizeof(W7aHeader));   // заголовок — не данные
+                opened = true;
+            }
+        }
+        if (!opened) {   // файлов канала нет — кадр пустой ("r":[])
+            strcpy(_rbuf, "[]");
+            sendFrame(chName(ch), day, _rbuf, _seq, _total);
+            _seq++;
+            _scanCh = 0xFF;   // следующий кадр — новый канал, переоткрытие
+            _rbuf[0] = '\0'; _rN = 0;
+            return true;
+        }
+    }
+
+    // Кусок файла: 512 Б = 32 целых записи (заголовок 16 Б кратен записи,
+    // чтение всегда выровнено — неполных записей в окне не бывает).
+    int n = _scanFile.read((uint8_t*)_win, sizeof(_win));
+    if (n >= (int)sizeof(DlogAggr)) {
+        uint16_t recs = (uint16_t)(n / sizeof(DlogAggr));
+        bool past = false;
+        for (uint16_t i = 0; i < recs && _rN < FRAME_RECS; ++i) {
+            const DlogAggr& r = _win[i];
+            if (r.ts >= w1) { past = true; break; }   // записи по возрастанию ts
+            if (r.ts < w0) continue;
+            char num[12];
+            char rec[48];
+            // [ts,mn,mx,avg] — компактные float'ы (хвостовые нули долой)
+            int m = snprintf(rec, sizeof(rec), "%s[%lu,", (_rN ? "," : ""), (unsigned long)r.ts);
+            (void)m;
+            size_t used = strlen(rec);
+            w7FmtNum(r.mn, num, sizeof(num));
+            used += snprintf(rec + used, sizeof(rec) - used, "%s,", num);
+            w7FmtNum(r.mx, num, sizeof(num));
+            used += snprintf(rec + used, sizeof(rec) - used, "%s,", num);
+            w7FmtNum(r.avg, num, sizeof(num));
+            used += snprintf(rec + used, sizeof(rec) - used, "%s]", num);
+            if (strlen(_rbuf) + used + 2 < sizeof(_rbuf)) {
+                strcat(_rbuf, rec);
+                _rN++;
+            }
+        }
+        if (!past) return false;   // читаем дальше следующим тиком
+        // Окно пройдено — файл для этого кадра больше не нужен.
+        _scanFile.close();
+        _scanYearIdx = 2;         // сразу к финалу кадра
+    } else {
+        // Файл кончился: закрыть; следующий тик откроет другой год.
+        _scanFile.close();
+    }
+    if (_scanYearIdx < 2) return false;   // следующий тик откроет другой год
+
+    // Финал кадра: собрать "[...]" и отправить.
+    char body[sizeof(_rbuf)];
+    if (_rN == 0) {
+        strcpy(body, "[]");
+    } else {
+        snprintf(body, sizeof(body), "[%s]", _rbuf);
+    }
+    sendFrame(chName(ch), day, body, _seq, _total);
+    _seq++;
+    // Следующий кадр: если канал сменился — переоткрытие (помечаем 0xFF),
+    // иначе продолжаем сканировать тот же канал с начала файлов? Нет —
+    // файл уже дочитан; но кадры идут по возрастанию окон, а записи в файле
+    // по возрастанию ts: дочитанный файл для следующего кадра ЭТОГО канала
+    // не нужен только если окна не пересекаются с остатком файла. Честно и
+    // просто: переоткрываем файлы канала на каждый кадр (дешево: SD-чтение
+    // ~140 КБ × 70 кадров раз в перепрошивку; зато без хрупких оптимизаций).
+    _scanCh = 0xFF;
+    _scanYearIdx = 0;
+    _rbuf[0] = '\0';
+    _rN = 0;
+    return true;
+}

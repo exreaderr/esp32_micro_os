@@ -10,6 +10,7 @@
 #include "BackupService.h"
 #include "OtaMirrorService.h"
 #include "WeatherMirror.h"
+#include "HmArchiveModule.h"
 #include "StatusLedModule.h"
 #include "PanelDisplayModule.h"
 #include "HomeMasterApp.h"
@@ -67,5 +68,8 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     // молчат, мастер работает полной программой.
     k.registerModule(&StatusLedModule::getInstance(),  9, 4);
     k.registerModule(&PanelDisplayModule::getInstance(), 9, 5);
+    // W7 (20.09.2026): архивариус — слушатель брокера (weather шлюза),
+    // потребитель SD. После брокера и SD, рядом с журналом/бэкапами.
+    k.registerModule(&HmArchiveModule::getInstance(),  9, 6);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }
