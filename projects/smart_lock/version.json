@@ -1,7 +1,7 @@
 {
   "version": "5.9.5",
   "fw_md5": "6a4f25b9bea643993b38531891275ebd",
-  "fs_md5": "745821c83ee282e043e76dfc0f152d39",
+  "fs_md5": "35cc6b58f8d73c04c32e6eb9da1f9389",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
   "fs_url": "littlefs.bin",

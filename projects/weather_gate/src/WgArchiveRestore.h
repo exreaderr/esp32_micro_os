@@ -32,7 +32,12 @@ namespace wgar {
 // будущей ревизии без смены кода шлюза — парсер размер-агностичен).
 constexpr uint8_t  MAX_REC_PER_FRAME = 24;
 constexpr uint8_t  MAX_CH            = 8;    // = DLOG_MAX_CHANNELS
-constexpr uint16_t MAX_REC_PER_CH    = 744;  // весь часовой ярус
+// Восстанавливаем только 7 суток почасовых (168) + запас под локальные
+// записи при мердже (проба пропускает запрос при 24+ локальных).
+// 744 тут НЕЛЬЗЯ: Image = MAX_CH × (14 + 744×16) ≈ 95 КБ не влезает
+// в max block кучи (~61 КБ) — nothrow-new молча падал, запрос мастеру
+// не уходил (полевой тест 26.09.2026, урок №26).
+constexpr uint16_t MAX_REC_PER_CH    = 192;
 constexpr uint16_t MAX_FRAMES        = 256;  // потолок кадров набора
 
 struct Frame {

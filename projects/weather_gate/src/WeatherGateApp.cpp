@@ -739,7 +739,7 @@ void WeatherGateApp::onEvent(int32_t eventId, const ShEventData* data) {
 // Контракт: нота W7 рев.3 + 5 штифтиков + кадр ≤240 Б (входящий кап
 // MQTT_BODY_LEN=256). Триггер: старт + часовой ярус короче суток +
 // MQTT подключён. Один запрос за загрузку. Кадры принимаются в
-// heap-образ (13,4 КБ, однократно), по complete() — мердж и атомарная
+// heap-образ (~25 КБ, однократно), по complete() — мердж и атомарная
 // запись ярусов. Таймаут 60 с — молчаливая деградация (как до W7).
 // Мастер может быть не в сети/без архива (total=0) — это штатно.
 // ============================================================================
@@ -752,10 +752,16 @@ void WeatherGateApp::archiveRestoreAsk() {
         DlogAggr probe[24];
         uint16_t n = DataLogService::getInstance()
             .getTier((uint8_t)_chOutT, false, probe, 24, 0);
-        if (n >= 24) return;                     // история на месте
+        if (n >= 24) {                           // история на месте
+            log(LogLevel::Info, "archive: ярус на месте (%u записей), запрос не нужен", n);
+            return;
+        }
     }
-    _archImg = new (std::nothrow) wgar::Image(); // 13,4 КБ, однократно
-    if (_archImg == nullptr) return;             // нет RAM — деградация
+    _archImg = new (std::nothrow) wgar::Image(); // ~25 КБ, однократно
+    if (_archImg == nullptr) {                   // нет RAM — деградация
+        log(LogLevel::Warning, "archive: нет RAM под образ (~25 КБ), деградация");
+        return;
+    }
     _archImg->reset();
     _archStartMs = millis();
     MqttTransport& mqtt = MqttTransport::getInstance();
