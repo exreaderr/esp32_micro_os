@@ -125,6 +125,10 @@ void HmArchiveModule::onWeather(const char* payload) {
         any = true;
     }
     if (any) {
+        if (!_firstWxLogged) {
+            _firstWxLogged = true;
+            log(LogLevel::Info, "архив W7: первый weather-кадр принят, накопление пошло");
+        }
         safeStrCopy(_lastPayload, sizeof(_lastPayload), payload);
     }
 }
@@ -276,7 +280,14 @@ static bool w7ParseUint(const char* json, const char* key, uint32_t& out) {
 void HmArchiveModule::onRequest(const char* payload) {
     char id[33] = "";
     if (!w7ParseStr(payload, "\"id\":\"", id, sizeof(id))) return;
-    if (strcmp(id, _gwId) != 0) return;         // архивируем одного шлюза
+    if (strcmp(id, _gwId) != 0) {
+        // Диагностика конфигурации: чужой id — почти всегда это значит,
+        // что arch.gw_id не совпадает с реальным id шлюза (урок 27.09:
+        // дефолт "weather_gate" vs фактический "d4e9f4bd612b" — молчали оба).
+        log(LogLevel::Warning, "архив W7: req с чужим id '%s' (жду '%s') — игнор",
+            id, _gwId);
+        return;
+    }
 
     uint32_t v = 0;
     if (w7ParseUint(payload, "\"seq\":", v)) {

@@ -113,6 +113,7 @@ private:
     uint32_t _lastTs[CH_COUNT] = {};          // последний ts в файле (0=не читали)
     bool     _lastTsKnown[CH_COUNT] = {};
     uint32_t _recWritten = 0, _recSkipped = 0;
+    bool     _firstWxLogged = false;          // инфо-лог о первом принятом weather-кадре
 
     // --- Данные: выдача ---------------------------------------------------------
     bool     _serving = false;
