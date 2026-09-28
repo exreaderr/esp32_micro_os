@@ -357,6 +357,52 @@ void HmArchiveModule::sendFrame(const char* ch, int day, const char* rbuf,
     }
 }
 
+// --- API вкладки «Архив» (0.8.4): статус + файлы. Вызывается из HTTP-    ---
+// --- контекста веб-сервера (НЕ из хука брокера) — SD трогать можно.      ---
+size_t HmArchiveModule::apiStatus(char* buf, size_t size) {
+    fs::FS* sd = SdService::getInstance().fs();
+    int n = snprintf(buf, size,
+        "{\"enabled\":%d,\"started\":%d,\"src_topic\":\"%s\",\"gw_id\":\"%s\","
+        "\"rec_written\":%lu,\"rec_skipped\":%lu,\"req_served\":%lu,"
+        "\"frames_sent\":%lu,\"serving\":%d,\"seq\":%lu,\"total\":%lu,"
+        "\"sd\":\"%s\",\"files\":[",
+        _enabled ? 1 : 0, _started ? 1 : 0, _srcTopic, _gwId,
+        (unsigned long)_recWritten, (unsigned long)_recSkipped,
+        (unsigned long)_reqServed, (unsigned long)_framesSent,
+        _serving ? 1 : 0, (unsigned long)_seq, (unsigned long)_total,
+        (sd != nullptr) ? "mounted" : "нет");
+    if (n <= 0 || (size_t)n >= size) { buf[0] = '\0'; return 0; }
+    size_t used = (size_t)n;
+    if (sd != nullptr) {
+        char dir[48];
+        snprintf(dir, sizeof(dir), "/archive/%s", _gwId);
+        fs::File d = sd->open(dir);
+        if (d) {
+            bool first = true;
+            fs::File f;
+            while (used + 96 < size && (f = d.openNextFile())) {
+                if (!f.isDirectory()) {
+                    // File.name() на SD отдаёт полный путь — берём хвост.
+                    const char* nm = f.name();
+                    const char* base = strrchr(nm, '/');
+                    base = (base != nullptr) ? base + 1 : nm;
+                    unsigned long sz = (unsigned long)f.size();
+                    // 16 Б заголовок W7A1 + записи DlogAggr по 16 Б.
+                    unsigned long recs = (sz >= 16) ? (sz - 16) / 16 : 0;
+                    n = snprintf(buf + used, size - used,
+                                 "%s{\"name\":\"%s\",\"size\":%lu,\"records\":%lu}",
+                                 first ? "" : ",", base, sz, recs);
+                    if (n > 0) { used += (size_t)n; first = false; }
+                }
+                f.close();
+            }
+            d.close();
+        }
+    }
+    if (used + 3 <= size) { memcpy(buf + used, "]}", 2); used += 2; buf[used] = '\0'; }
+    return used;
+}
+
 void HmArchiveModule::abortSession(const char* why) {
     if (_scanFile) _scanFile.close();
     _serving = false;

@@ -133,6 +133,7 @@ footer b{color:var(--text)}
     <div class="btab" data-t="mqtt" onclick="showTab('mqtt')"><span class="fav">📡</span>MQTT</div>
     <div class="btab" data-t="jrn" onclick="showTab('jrn')"><span class="fav">📒</span>Журнал</div>
     <div class="btab" data-t="bk" onclick="showTab('bk')"><span class="fav">💾</span>Бэкапы</div>
+    <div class="btab" data-t="arch" onclick="showTab('arch')"><span class="fav">📦</span>Архив</div>
     <div class="btab" data-t="cfg" onclick="showTab('cfg')"><span class="fav">⚙️</span>Настройки</div>
   </div>
 
@@ -292,6 +293,27 @@ footer b{color:var(--text)}
     <div id="omHosts"></div>
   </section>
 
+  <!-- ================= АРХИВ W7 (0.8.4) ================= -->
+  <section id="t-arch" class="hidden">
+    <div class="card">
+      <h2>Архивариус погоды (W7, SD) <button style="float:right" onclick="needAuth(loadArchive)">Обновить</button></h2>
+      <div class="note">Часовые ведра wx_* шлюза на SD (<code>/archive/&lt;id шлюза&gt;/</code>, записи DlogAggr по 16 Б)
+      + выдача восстановления шлюзу по MQTT запрос-ответу (кадр = 4 часа, до 4 записей, ≤240 Б).
+      Настройки — группа «Архив W7» ниже на этой вкладке. Поля критичные — применяются после перезагрузки.</div>
+      <div class="row"><span class="k">Состояние</span><span id="archState">—</span></div>
+      <div class="row"><span class="k">Источник (топик)</span><span id="archSrc">—</span></div>
+      <div class="row"><span class="k">id шлюза</span><span id="archGw">—</span></div>
+      <div class="row"><span class="k">SD</span><span id="archSd">—</span></div>
+      <div class="row"><span class="k">Выдача восстановления</span><span id="archSrv">—</span></div>
+      <div class="row"><span class="k">Счётчики</span><span id="archCnt">—</span></div>
+    </div>
+    <div class="card">
+      <h2>Файлы архива</h2>
+      <div id="archFiles">—</div>
+    </div>
+    <div id="cfgArch"></div>
+  </section>
+
   <!-- ================= НАСТРОЙКИ (прочие группы) ================= -->
   <section id="t-cfg" class="hidden">
     <div class="card">
@@ -427,14 +449,14 @@ const CHK_ST=[['ok','Ok'],['warn','Warning'],['err','Critical']];
 // hm.* остаются в JSON/логах, на панели — понятные подписи. Неизвестное
 // имя показывается как есть (новые проверки не требуют правки панели).
 const CHK_NAME={'hm.sd':'SD-карта мастера','hm.bk':'Бэкапы конфигов парка','hm.ota':'OTA-зеркало прошивок','hm.fleet':'Присутствие парка','heap':'Свободная память (heap)','cpu_temp':'Температура кристалла'};
-const TABS=['net','paz','sys','adm','status','mqtt','jrn','bk','cfg'];
+const TABS=['net','paz','sys','adm','status','mqtt','jrn','bk','arch','cfg'];
 // Распределение конфиг-групп по вкладкам (правило 23): общие группы ядра —
 // в общие вкладки (Сеть/Система/Безопасность→Админ), MQTT отделён от сети
 // (специфика мастера), всё нераспознанное падает в «Настройки» —
 // расширенный профильный набор (Мастер, SD-карта, Журнал M3, Погодное
 // зеркало). Схема приходит с устройства.
 const GROUP_TAB={'Сеть':'net','MQTT':'mqtt','MQTT-брокер':'mqtt','Мост M2':'mqtt',
-  'Система':'sys','Безопасность':'adm'};
+  'Система':'sys','Безопасность':'adm','Архив W7':'arch'};
 let curTab='status', brokerTimer=null;
 
 // ---------- транспорт ----------
@@ -532,6 +554,7 @@ function openTab(t,force){
   else if(t==='cfg'){needAuth(()=>loadCfg(),force);}
   else if(t==='paz'){needAuth(()=>loadPaz());}
   else if(t==='bk'){needAuth(()=>{bkLoad();omLoad();});}
+  else if(t==='arch'){needAuth(()=>{loadArchive();loadCfg();});}
   else if(t==='sys'){needAuth(()=>{$('auditLink').href='/api/audit?token='+encodeURIComponent(T);renderOta();});}
   // status — публичный, обновляется глобальным таймером шапки
 }
@@ -807,12 +830,29 @@ async function loadPaz(){
   }catch(e){if(e.message!=='401')$('pazChecks').textContent='ошибка загрузки';}
 }
 
+// ---------- архивариус W7 (0.8.4) ----------
+async function loadArchive(){
+  try{
+    const j=await (await api('GET','/api/dev/hm/archive/status')).json();
+    $('archState').innerHTML=j.enabled?(j.started?badge('включён, слушает','ok'):badge('включён','ok')):badge('выключен','err');
+    $('archSrc').textContent=j.src_topic||'—';
+    $('archGw').textContent=j.gw_id||'—';
+    $('archSd').innerHTML=j.sd==='mounted'?badge('смонтирована','ok'):badge('НЕТ SD','err');
+    $('archSrv').innerHTML=j.serving?badge('идёт выдача: кадр '+j.seq+' из '+j.total,'warn'):badge('ожидание запроса','mut');
+    $('archCnt').textContent='записей в архиве за сессию: '+j.rec_written+' · дублей отброшено: '+j.rec_skipped+' · сессий выдачи: '+j.req_served+' · кадров отправлено: '+j.frames_sent;
+    $('archFiles').innerHTML=(j.files&&j.files.length)
+      ?'<table class="jrn-table"><tr><th>Файл</th><th>Размер</th><th>Записей</th></tr>'+
+        j.files.map(f=>'<tr><td>'+esc(f.name)+'</td><td>'+f.size+' Б</td><td>'+f.records+'</td></tr>').join('')+'</table>'
+      :'<span class="k">архив пока пуст — файлы появятся после первого закрытого часового ведра</span>';
+  }catch(e){if(e.message!=='401')$('archState').textContent='ошибка загрузки';}
+}
+
 // ---------- настройки (schema-driven, группы разнесены по вкладкам) ----------
 const TRUTHY={'1':1,'true':1,'on':1};
 async function loadCfg(){
   try{
     const j=await (await api('GET','/api/config')).json();
-    const buckets={net:{},mqtt:{},sys:{},adm:{},misc:{}};
+    const buckets={net:{},mqtt:{},sys:{},adm:{},arch:{},misc:{}};
     Object.keys(j).forEach(k=>{const f=j[k];f.key=k;
       // Правило 23: группы с флагом hg (ConfigService::setHiddenGroups —
       // «Планировщик»/«Счётчики» на этом профиле не используются) НЕ
@@ -827,6 +867,7 @@ async function loadCfg(){
     $('cfgMqtt').innerHTML=render(buckets.mqtt)||'<div class="card k">MQTT-группы не пришли в схеме устройства.</div>';
     $('cfgSys').innerHTML=render(buckets.sys)||'';
     $('cfgAdm').innerHTML=render(buckets.adm)||'<div class="card k">Группа «Безопасность» не пришла в схеме устройства.</div>';
+    $('cfgArch').innerHTML=render(buckets.arch)||'<div class="card k">Группа «Архив W7» не пришла в схеме устройства.</div>';
     $('cfgMisc').innerHTML=render(buckets.misc)||'<div class="card k">Прочих групп нет.</div>';
     applyDhcpVisibility();   // начальное состояние — по загруженному конфигу
   }catch(e){if(e.message!=='401')$('cfgMisc').innerHTML='<div class="card">ошибка загрузки</div>';}

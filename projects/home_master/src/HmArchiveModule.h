@@ -71,6 +71,14 @@ public:
     uint32_t reqServed()    const { return _reqServed; }    // сессий выдачи
     uint32_t framesSent()   const { return _framesSent; }
     bool     serving()      const { return _serving; }
+    const char* srcTopic()  const { return _srcTopic; }
+    const char* gwId()      const { return _gwId; }
+    uint32_t seq()          const { return _seq; }
+    uint32_t total()        const { return _total; }
+
+    /// JSON для /api/dev/hm/archive/status (вкладка «Архив», 0.8.4):
+    /// состояние + счётчики + список файлов /archive/<gw>/ с числом записей.
+    size_t   apiStatus(char* buf, size_t size);
 
 private:
     HmArchiveModule() = default;

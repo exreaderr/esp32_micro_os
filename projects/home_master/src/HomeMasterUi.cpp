@@ -9,6 +9,7 @@
 #include "JournalService.h"
 #include "BackupService.h"
 #include "OtaMirrorService.h"
+#include "HmArchiveModule.h"
 #include <services/HttpService.h>
 #include <services/ConfigService.h>
 #include <services/MqttTransport.h>
@@ -128,6 +129,12 @@ bool HomeMasterUi::handleApi(const char* pathTail, const ShUiRequest& req,
     // --- 5.8.0: «Скачать журнал» — сегмент честным файлом (admin, потоково)
     if (strcmp(pathTail, "hm/journal/dl") == 0) {
         return apiJournalDl(req, responseBuf, bufSize, statusCode);
+    }
+    // --- 0.8.4: вкладка «Архив» — статус архивариуса W7 -------------------
+    if (strcmp(pathTail, "hm/archive/status") == 0) {
+        statusCode = 200;
+        HmArchiveModule::getInstance().apiStatus(responseBuf, bufSize);
+        return true;
     }
     // --- M3.3: бэкапы парка (BackupService; admin уже проверен ядром) ---
     if (strcmp(pathTail, "hm/backup/status") == 0) {
