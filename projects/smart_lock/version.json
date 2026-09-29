@@ -1,8 +1,10 @@
 {
-  "version": "5.8.3",
-  "fw_md5": "d177c02fd03454320167141a84225afb",
-  "fs_md5": "75cf6b48c9ea8b91e3ab4cb6ff933b75",
+  "version": "5.9.6",
+  "fw_md5": "6a016abf5f04524bfbff79543294f88b",
+  "fs_md5": "a485b8180e6c085c910111662aa3fbca",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
-  "fs_url": "littlefs.bin"
+  "fs_url": "littlefs.bin",
+  "host": "smart_lock",
+  "profile_version": "0.5.17"
 }

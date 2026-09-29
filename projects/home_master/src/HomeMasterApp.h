@@ -12,7 +12,7 @@
 // ядра — Version.h зашивает полную метку «MICROOS|ядро|профиль|END» в .bin,
 // getVersion() отдаёт ту же версию строкой. Расходиться не могут по
 // построению.
-#define MICROOS_PROFILE_VER 0.8.4
+#define MICROOS_PROFILE_VER 0.8.5
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>

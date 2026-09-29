@@ -85,6 +85,7 @@ private:
     struct HostState {
         char     host[24]     = "";      // sys.hostname устройства
         char     version[20]  = "";      // зеркалированная версия ("" = зеркала нет)
+        char     pver[16]     = "";      // версия профиля из profile_version манифеста (0.8.5)
         uint32_t lastOkUnix   = 0;       // последняя удачная сверка/закачка
         char     lastErr[24]  = "";      // "offline"/"http_404"/"md5_fw"/...
         uint32_t fwSize       = 0;
@@ -164,6 +165,7 @@ private:
     uint8_t   _phase        = 0;
     char      _manifest[MANIFEST_CAP];   // манифест текущего хоста (между фазами)
     char      _pVer[20], _pFwUrl[160], _pFsUrl[160], _pFwMd5[40], _pFsMd5[40];
+    char      _pProfVer[16] = "";       // profile_version опрашиваемого манифеста (0.8.5)
     uint32_t  _nextPollAtMs = 0;         // 0 = назначить FIRST_POLL_MS при 1-м tick
     uint32_t  _lastRunUnix  = 0;
 

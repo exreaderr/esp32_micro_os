@@ -1114,12 +1114,13 @@ async function omLoad(){
     const box=$('omHosts');box.innerHTML='';
     (j.hosts||[]).forEach(h=>{
       const c=document.createElement('div');c.className='card';
+      const verStr=h.version?(h.version+(h.pver?' · профиль '+h.pver:'')):'';
       const badge=h.version
-        ?'<span class="badge ok">'+h.version+'</span>'
+        ?'<span class="badge ok">'+verStr+'</span>'
         :(h.lastErr?'<span class="badge warn">'+h.lastErr+'</span>':'<span class="badge">ещё не снято</span>');
       c.innerHTML='<h2>'+h.host+' '+badge
         +'<button style="float:right" onclick="omCheck(\''+h.host+'\')">Проверить</button></h2>'
-        +'<div class="row"><span class="k">Зеркалированная версия</span><span>'+(h.version||'—')+'</span></div>'
+        +'<div class="row"><span class="k">Зеркалированная версия</span><span>'+(verStr||'—')+'</span></div>'
         +'<div class="row"><span class="k">Размеры</span><span>fw '+(h.fwSize?Math.round(h.fwSize/1024)+' КБ':'—')
         +' · fs '+(h.fsSize?Math.round(h.fsSize/1024)+' КБ':'—')+'</span></div>'
         +'<div class="row"><span class="k">Последняя сверка</span><span>'

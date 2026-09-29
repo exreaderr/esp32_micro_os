@@ -221,6 +221,7 @@ void OtaMirrorService::runCycleStep() {
             return;
         }
         omJsonStr(_manifest, "\"version\"", _pVer, sizeof(_pVer));
+        omJsonStr(_manifest, "\"profile_version\"", _pProfVer, sizeof(_pProfVer));
         omJsonStr(_manifest, "\"fw_url\"", _pFwUrl, sizeof(_pFwUrl));
         omJsonStr(_manifest, "\"fs_url\"", _pFsUrl, sizeof(_pFsUrl));
         // Урок 5.0.12: поле Build Master — «fw_md5» (не «md5»)
@@ -235,7 +236,7 @@ void OtaMirrorService::runCycleStep() {
         if (h.version[0] == '\0') {
             // Первый опрос после ребута мастера: RAM чист, но зеркало могло
             // собраться прошлым циклом — сверимся с манифестом на SD.
-            char path[96], sdVer[20] = "";
+            char path[96], sdVer[20] = "", sdPver[16] = "";
             snprintf(path, sizeof(path), "/ota/%s/version.json", h.host);
             File f = sd->open(path, FILE_READ);
             if (f) {
@@ -244,9 +245,11 @@ void OtaMirrorService::runCycleStep() {
                 f.close();
                 js[r] = '\0';
                 omJsonStr(js, "\"version\"", sdVer, sizeof(sdVer));
+                omJsonStr(js, "\"profile_version\"", sdPver, sizeof(sdPver));
             }
             if (strcmp(sdVer, _pVer) == 0) {
                 safeStrCopy(h.version, sizeof(h.version), sdVer);
+                safeStrCopy(h.pver, sizeof(h.pver), sdPver);
                 finishHost(h, nullptr);
                 return;
             }
@@ -288,6 +291,7 @@ void OtaMirrorService::runCycleStep() {
     default: {  // 3 — коммит: манифест ПОСЛЕДНИМ (точка коммита)
         if (storeManifest(h.host, _manifest, strlen(_manifest), err, sizeof(err))) {
             safeStrCopy(h.version, sizeof(h.version), _pVer);
+            safeStrCopy(h.pver, sizeof(h.pver), _pProfVer);
             log(LogLevel::Info, "OTA-зеркало: %s -> %s (fw %u, fs %u)",
                 h.host, h.version, h.fwSize, h.fsSize);
             finishHost(h, nullptr);
@@ -836,6 +840,7 @@ bool OtaMirrorService::tryFinalize(const char* host, char* msg, size_t cap) {
     if (idx >= 0) {
         HostState& h = _hosts[idx];
         safeStrCopy(h.version, sizeof(h.version), ver);
+        omJsonStr(js, "\"profile_version\"", h.pver, sizeof(h.pver));   // 0.8.5
         h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
         h.lastErr[0] = '\0';
         char fin[112];
@@ -885,7 +890,9 @@ size_t OtaMirrorService::apiStatus(char* buf, size_t bufSize) {
         // Версию тоже поднимаем с SD, если RAM пуст (ребут мастера).
         char ver[20];
         safeStrCopy(ver, sizeof(ver), h.version);
-        if (ver[0] == '\0' && sd != nullptr) {
+        char pver[16];                       // 0.8.5: версия профиля рядом
+        safeStrCopy(pver, sizeof(pver), h.pver);
+        if ((ver[0] == '\0' || pver[0] == '\0') && sd != nullptr) {
             char path[96];
             snprintf(path, sizeof(path), "/ota/%s/version.json", h.host);
             File f = sd->open(path, FILE_READ);
@@ -894,13 +901,15 @@ size_t OtaMirrorService::apiStatus(char* buf, size_t bufSize) {
                 size_t r = f.read((uint8_t*)js, sizeof(js) - 1);
                 f.close();
                 js[r] = '\0';
-                omJsonStr(js, "\"version\"", ver, sizeof(ver));
+                if (ver[0] == '\0') omJsonStr(js, "\"version\"", ver, sizeof(ver));
+                if (pver[0] == '\0') omJsonStr(js, "\"profile_version\"", pver, sizeof(pver));
             }
         }
         n += snprintf(buf + n, bufSize - n,
-                      "%s{\"host\":\"%s\",\"version\":\"%s\",\"lastOkUnix\":%lu,"
+                      "%s{\"host\":\"%s\",\"version\":\"%s\",\"pver\":\"%s\","
+                      "\"lastOkUnix\":%lu,"
                       "\"lastErr\":\"%s\",\"fwSize\":%lu,\"fsSize\":%lu}",
-                      i ? "," : "", h.host, ver, (unsigned long)h.lastOkUnix,
+                      i ? "," : "", h.host, ver, pver, (unsigned long)h.lastOkUnix,
                       h.lastErr, (unsigned long)fw, (unsigned long)fsz);
     }
     n += snprintf(buf + n, bufSize - n, "]}");
