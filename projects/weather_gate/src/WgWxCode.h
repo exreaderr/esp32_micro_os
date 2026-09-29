@@ -55,4 +55,28 @@ inline const char* wmoToHaCond(int wmo) {
     return "cloudy";
 }
 
+// ----------------------------------------------------------------------------
+// 0.9.3: текст транспортной ошибки HTTPClient для диагностики fetch.
+// Полевой случай 29.09: провайдер заблокировал IP api.open-meteo.com, а лог
+// говорил лишь «fetch failed» — пришлось диагностировать curl'ом с ПК.
+// Отрицательные коды Arduino HTTPClient; >= 0 — HTTP-статус (вернём nullptr,
+// его печатаем числом). Чистая логика, host-тестируемая.
+// ----------------------------------------------------------------------------
+inline const char* httpcErrText(int code) {
+    switch (code) {
+        case -1:  return "connection failed";
+        case -2:  return "send header failed";
+        case -3:  return "send payload failed";
+        case -4:  return "not connected";
+        case -5:  return "connection lost";
+        case -6:  return "no stream";
+        case -7:  return "no HTTP server";
+        case -8:  return "out of RAM";
+        case -9:  return "encoding";
+        case -10: return "stream write";
+        case -11: return "read timeout";
+        default:  return nullptr;
+    }
+}
+
 } // namespace wgs

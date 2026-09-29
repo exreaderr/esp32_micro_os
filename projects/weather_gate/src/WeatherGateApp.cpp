@@ -24,6 +24,7 @@
 #include <HTTPClient.h>              // авто-высота (одноразовая задача)
 #include <LittleFS.h>                // 0.9.1 (W7): запись восстановленных ярусов
 #include <WiFiClient.h>
+#include <WiFi.h>   // 0.9.3: WiFi.hostByName для DNS-диагностики fetch (только резолв; WiFi.mode не трогаем — Ethernet)
 #include <lwip/sockets.h>   // 0.7.3: setsockopt/SO_LINGER (abortHttpSession)
 #include <esp_heap_caps.h>  // 0.7.5: dlogAdaptiveMaxN (largest_free_block)
 #include <ctime>            // 0.8.0 (W5.1): gmtime_r — месяц для сезонной поправки Замбретти
@@ -1464,8 +1465,10 @@ void WeatherGateApp::forecastTask(void*) {
     HTTPClient http;
     http.setTimeout(5000);
     bool ok = false;
+    int httpCode = 0;               // 0.9.3: диагностика фазы обрыва
     if (http.begin(client, url)) {
-        if (http.GET() == 200) {
+        httpCode = http.GET();
+        if (httpCode == 200) {
             // Тело ~450 байт (current) + ~600 (daily×7); буфер, не String.
             char body[1536];
             size_t got = http.getStream().readBytes(body, sizeof(body) - 1);
@@ -1518,8 +1521,26 @@ void WeatherGateApp::forecastTask(void*) {
         client.stop();
     }
     self._omNextMs = millis() + (ok ? 3600000UL : 1800000UL);
-    if (!ok)
-        self.log(LogLevel::Warning, "open-meteo: fetch failed, retry in 30min");
+    if (!ok) {
+        // 0.9.3: одна строка — три фазы. http<0: текст транспортной ошибки;
+        // http>0: статус ответа (403/429/5xx); плюс отдельный DNS-резолв —
+        // по ним видно, что случилось, без curl с ПК (блокировка IP
+        // провайдером 29.09 диагностировалась вручную часами).
+        IPAddress ip;
+        bool dnsOk = WiFi.hostByName("api.open-meteo.com", ip) == 1;
+        char ipStr[16];
+        snprintf(ipStr, sizeof(ipStr), "%s", dnsOk ? ip.toString().c_str() : "FAIL");
+        const char* et = wgs::httpcErrText(httpCode);
+        if (httpCode == 0)
+            self.log(LogLevel::Warning, "open-meteo: fetch failed: begin/url, dns=%s, retry in 30min",
+                     ipStr);
+        else if (httpCode < 0 && et != nullptr)
+            self.log(LogLevel::Warning, "open-meteo: fetch failed: %s (http %d), dns=%s, retry in 30min",
+                     et, httpCode, ipStr);
+        else
+            self.log(LogLevel::Warning, "open-meteo: fetch failed: http %d, dns=%s, retry in 30min",
+                     httpCode, ipStr);
+    }
     s_omTaskRunning = false;
     vTaskDelete(nullptr);
 }
