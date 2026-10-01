@@ -89,7 +89,9 @@ inline bool parseFrame(const char* p, Frame& f) {
     }
     if (*re != ']') return false;
     if (crc32z(rs, (size_t)(re - rs + 1)) != f.crc) return false;  // штифтик 2
-    // Записи [ts,mn,mx,avg]
+    // Записи [ts,mn,mx,avg]. 0.9.4: пустой кадр "r":[] с валидным CRC —
+    // ЛЕГАЛЕН (ответ ветки 01.10.2026): архив разреженный, окно без
+    // данных закрывается пустым кадром; окно засчитывается обработанным.
     f.nrec = 0;
     const char* q = rs + 1;
     while (q < re) {
@@ -106,7 +108,7 @@ inline bool parseFrame(const char* p, Frame& f) {
         q++;                               // за ']'
         f.nrec++;
     }
-    return f.nrec > 0;
+    return true;                           // 0.9.4: nrec==0 — пустое окно, ок
 }
 
 // --- ОБРАЗ ВОССТАНОВЛЕНИЯ (RAM, однократно на boot) ---------------------------
@@ -119,14 +121,25 @@ struct Image {
     uint8_t  nch = 0;
     uint16_t total = 0;                    // ожидаемое число кадров
     uint8_t  got[MAX_FRAMES / 8];          // битовая карта принятых seq
+    uint8_t  reask[MAX_FRAMES / 8];        // 0.9.4: переспрос seq уже слали
     uint16_t gotCount = 0;
 
     void reset() {
         nch = 0; total = 0; gotCount = 0;
         memset(got, 0, sizeof(got));
+        memset(reask, 0, sizeof(reask));
     }
     bool gotSeq(uint16_t s) const {
         return s < MAX_FRAMES && (got[s / 8] >> (s % 8)) & 1;
+    }
+    // 0.9.4: переспрос битого кадра — не чаще одного на seq за сессию
+    // (ответ ветки 01.10.2026: шторм переспросов рвал выдачу мастера).
+    // Возврат: true — переспрос РАЗРЕШЁН (первый), false — уже слали.
+    bool reaskOnce(uint16_t s) {
+        if (s >= MAX_FRAMES) return false;
+        if ((reask[s / 8] >> (s % 8)) & 1) return false;
+        reask[s / 8] |= (uint8_t)(1u << (s % 8));
+        return true;
     }
     Ch* findCh(const char* id) {
         for (uint8_t i = 0; i < nch; i++)

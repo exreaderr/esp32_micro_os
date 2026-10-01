@@ -291,16 +291,25 @@ void HmArchiveModule::onRequest(const char* payload) {
 
     uint32_t v = 0;
     if (w7ParseUint(payload, "\"seq\":", v)) {
-        // Переспрос кадра (CRC не сошёлся): регенерация по seq, без сессии.
+        // Переспрос кадра (CRC не сошёлся): регенерация по seq.
+        // 0.8.6: если идёт полная сессия — прячем её _seq и ПОЛНОСТЬЮ
+        // сбрасываем состояние скана (файл, канал, буфер), иначе переспрос
+        // ломал бегущую выдачу (дефект A полевого теста 01.10).
+        if (_serving && !_resendOnly) {
+            _resumeSeq = _seq;
+            _resumePend = 1;
+        }
+        if (_scanFile) _scanFile.close();
+        _scanCh = 0xFF;
+        _scanYearIdx = 0;
+        _rbuf[0] = '\0';
+        _rN = 0;
         _resendOnly = 1;
         _resendSeq = v;
         _seq = v;
         _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
         _serving = true;
         _reqStartedMs = millis();
-        _scanYearIdx = 0;
-        _rbuf[0] = '\0';
-        _rN = 0;
         return;
     }
     if (w7ParseUint(payload, "\"days\":", v)) {
@@ -309,6 +318,8 @@ void HmArchiveModule::onRequest(const char* payload) {
         uint32_t now = millis();
         if (strcmp(id, _lastFullReqId) == 0 &&
             now - _lastFullReqMs < REQ_ANTIBOUNCE_MS) {
+            log(LogLevel::Info, "архив W7: повторный req от %s за %lu с — антидребезг, мимо",
+                id, (unsigned long)((now - _lastFullReqMs) / 1000));
             return;
         }
         safeStrCopy(_lastFullReqId, sizeof(_lastFullReqId), id);
@@ -318,6 +329,7 @@ void HmArchiveModule::onRequest(const char* payload) {
         _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
         _seq = 0;
         _resendOnly = 0;
+        _resumePend = 0;                        // новая полная сессия — старая забыта
         _serving = true;
         _reqStartedMs = now;
         _scanYearIdx = 0;
@@ -411,7 +423,9 @@ void HmArchiveModule::abortSession(const char* why) {
     log(LogLevel::Warning, "архив W7: сессия выдачи прервана (%s)", why);
 }
 
-// Сессия выдачи: один шаг за тик (150 мс) — кадр, кусок файла или финал.
+// Сессия выдачи: до 8 шагов buildFrame за тик (150 мс) — ~кадр за тик.
+// 0.8.6: раньше один 512-байтный шаг за тик — 210 кадров ≈ 95+ с, шлюз
+// с 60-с таймаутом сборки падал (дефект B полевого теста 01.10).
 void HmArchiveModule::serveTick() {
     if (!_serving) return;
     uint32_t now = millis();
@@ -419,18 +433,33 @@ void HmArchiveModule::serveTick() {
         abortSession("сторож 120 с");
         return;
     }
-    if (buildFrame()) {
-        // Кадр отправлен (или пуст). Конец сессии?
-        if (_resendOnly) {
+    bool done = false;
+    for (uint8_t iter = 0; iter < 8 && !done; ++iter) {
+        done = buildFrame();
+    }
+    if (!done) return;              // кадр ещё собирается — следующий тик
+    // Кадр отправлен (или пуст). Конец сессии?
+    if (_resendOnly) {
+        _resendOnly = 0;
+        if (_resumePend) {
+            // Возвращаемся в прерванную полную сессию: скан уже сброшен
+            // в onRequest, откроется заново с начала файла канала.
+            _resumePend = 0;
+            _seq = _resumeSeq;
+            _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
+            _reqStartedMs = millis();
+            log(LogLevel::Info, "архив W7: переспрос %lu отдан, возврат в сессию (seq %lu)",
+                (unsigned long)_resendSeq, (unsigned long)_seq);
+        } else {
             _serving = false;
-            return;
         }
-        if (_seq >= _total) {
-            _serving = false;
-            _reqServed++;
-            log(LogLevel::Info, "архив W7: выдача завершена, %lu кадров",
-                (unsigned long)_total);
-        }
+        return;
+    }
+    if (_seq >= _total) {
+        _serving = false;
+        _reqServed++;
+        log(LogLevel::Info, "архив W7: выдача завершена, %lu кадров",
+            (unsigned long)_total);
     }
 }
 

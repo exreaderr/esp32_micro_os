@@ -781,9 +781,13 @@ void WeatherGateApp::archiveFrameCb(const char*, const char* payload) {
     if (self._archImg == nullptr) return;
     wgar::Frame f;
     if (!wgar::parseFrame(payload, f)) {
-        // Битый кадр: если seq читается — переспрос кадра (штифтик 2)
+        // Битый кадр (несошёлся CRC, обрезан, нет поля): переспрос seq —
+        // НЕ ЧАЩЕ ОДНОГО на кадр за сессию (0.9.4, ответ ветки: шторм
+        // переспросов рвал бегущую выдачу мастера — дефект A мастера,
+        // но и наш шторм ему не помощник). Пустой кадр r:[] сюда не
+        // попадает: он легален и разбирается как nrec==0.
         const char* s = strstr(payload, "\"seq\":");
-        if (s != nullptr) {
+        if (s != nullptr && self._archImg->reaskOnce((uint16_t)atoi(s + 6))) {
             char req[64];
             snprintf(req, sizeof(req), "{\"id\":\"%s\",\"seq\":%d}",
                      NetworkService::getInstance().deviceId(),
@@ -853,7 +857,35 @@ void WeatherGateApp::archiveApply() {
 
 void WeatherGateApp::archiveRestoreTick() {
     if (_archImg == nullptr) return;
+    // 0.9.4: ретрай ПОЛНОГО запроса. Типовой сценарий — OTA-пара: второй
+    // запрос попадает в окно антидребезга мастера (120 с) и молча
+    // игнорируется. По таймауту не сдаёмся, а переспрашиваем через
+    // 150 с (> антидребезга; ветка подтвердила прохождение). Образ и
+    // принятые кадры сохраняем: повторный поток идемпотентен (gotSeq).
+    if (_archRetryAtMs != 0) {
+        if ((int32_t)(millis() - _archRetryAtMs) < 0) return;
+        _archRetryAtMs = 0;
+        _archStartMs = millis();
+        MqttTransport& mqtt = MqttTransport::getInstance();
+        const char* id = NetworkService::getInstance().deviceId();
+        char req[64];
+        snprintf(req, sizeof(req), "{\"id\":\"%s\",\"days\":7}", id);
+        mqtt.publishRaw("microos/master/archive/req", req, false);
+        log(LogLevel::Info, "archive: ретрай запроса (окно антидребезга истекло)");
+        return;
+    }
     if (millis() - _archStartMs > 60000UL) {     // таймаут сборки
+        // Ретрай — всегда, пока образ жив (сессия не завершена): при
+        // молчаливом антидребезге total==0, и «gotCount < total» бы
+        // ретрай не дало — а это и есть главный сценарий OTA-пары.
+        if (!_archRetried) {
+            _archRetried = true;
+            _archRetryAtMs = millis() + 150000UL;
+            log(LogLevel::Warning,
+                "archive: таймаут 60 с, %u/%u кадров — ретрай через 150 с",
+                (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
+            return;
+        }
         log(LogLevel::Warning,
             "archive: таймаут 60 с, %u/%u кадров — деградация",
             (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
