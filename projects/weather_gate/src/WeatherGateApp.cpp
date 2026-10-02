@@ -764,16 +764,17 @@ void WeatherGateApp::archiveRestoreAsk() {
         return;
     }
     _archImg->reset();
-    _archStartMs = millis();
     MqttTransport& mqtt = MqttTransport::getInstance();
     const char* id = NetworkService::getInstance().deviceId();
     char topic[MQTT_TOPIC_LEN];
     snprintf(topic, sizeof(topic), "microos/master/archive/resp/%s", id);
     mqtt.subscribeExternal(topic, archiveFrameCb);
-    char req[64];
-    snprintf(req, sizeof(req), "{\"id\":\"%s\",\"days\":7}", id);
-    mqtt.publishRaw("microos/master/archive/req", req, false);
-    log(LogLevel::Info, "archive: запрошено восстановление dlog (7 дн.)");
+    // 0.9.5: запрос НЕ сразу, а через 2 с — гонка SUBACK: подписка должна
+    // дойти до брокера раньше, чем мастер ответит на запрос (первая
+    // сессия полевого теста 01.10 дала 0/210; одобрено веткой).
+    _archReqAtMs = millis() + 2000UL;
+    _archProgMs = millis();
+    log(LogLevel::Info, "archive: подписка готова, запрос через 2 с");
 }
 
 void WeatherGateApp::archiveFrameCb(const char*, const char* payload) {
@@ -857,6 +858,26 @@ void WeatherGateApp::archiveApply() {
 
 void WeatherGateApp::archiveRestoreTick() {
     if (_archImg == nullptr) return;
+    // 0.9.5: отложенный первый запрос (2 с после подписки — гонка SUBACK)
+    if (_archReqAtMs != 0) {
+        if ((int32_t)(millis() - _archReqAtMs) < 0) return;
+        _archReqAtMs = 0;
+        _archStartMs = millis();           // таймаут сборки — от запроса
+        MqttTransport& mqtt = MqttTransport::getInstance();
+        char req[64];
+        snprintf(req, sizeof(req), "{\"id\":\"%s\",\"days\":7}",
+                 NetworkService::getInstance().deviceId());
+        mqtt.publishRaw("microos/master/archive/req", req, false);
+        log(LogLevel::Info, "archive: запрошено восстановление dlog (7 дн.)");
+        return;
+    }
+    // 0.9.5: прогресс-лог приёма — форма потерь в поле (ровная просадка
+    // или провалы пачками) для докладов ветке.
+    if (millis() - _archProgMs > 10000UL && _archImg->total > 0) {
+        _archProgMs = millis();
+        log(LogLevel::Info, "archive: приём %u/%u кадров",
+            (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
+    }
     // 0.9.4: ретрай ПОЛНОГО запроса. Типовой сценарий — OTA-пара: второй
     // запрос попадает в окно антидребезга мастера (120 с) и молча
     // игнорируется. По таймауту не сдаёмся, а переспрашиваем через
