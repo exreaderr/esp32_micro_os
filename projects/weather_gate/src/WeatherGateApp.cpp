@@ -764,6 +764,7 @@ void WeatherGateApp::archiveRestoreAsk() {
         return;
     }
     _archImg->reset();
+    _archMaxSeq = 0;                        // 0.9.6: переспрос дырок
     MqttTransport& mqtt = MqttTransport::getInstance();
     const char* id = NetworkService::getInstance().deviceId();
     char topic[MQTT_TOPIC_LEN];
@@ -804,6 +805,7 @@ void WeatherGateApp::archiveFrameCb(const char*, const char* payload) {
         return;
     }
     if (!self._archImg->addFrame(f)) return;
+    if (f.seq > self._archMaxSeq) self._archMaxSeq = f.seq;   // 0.9.6: для переспроса дырок
     if (self._archImg->complete()) self.archiveApply();
 }
 
@@ -871,12 +873,30 @@ void WeatherGateApp::archiveRestoreTick() {
         log(LogLevel::Info, "archive: запрошено восстановление dlog (7 дн.)");
         return;
     }
-    // 0.9.5: прогресс-лог приёма — форма потерь в поле (ровная просадка
-    // или провалы пачками) для докладов ветке.
+    // 0.9.5: прогресс-лог приёма + 0.9.6: переспрос ДЫРОК. Поток мастера
+    // упорядочен по seq — дырка ниже maxSeq потеряна навсегда (не «поздний
+    // кадр»). Переспрашиваем по чуть-чуть (≤8 за 10-с тик, reaskOnce —
+    // не чаще одного на seq за сессию): мастер 0.8.6+ обслуживает
+    // переспросы без разрыва сессии (_resumeSeq).
     if (millis() - _archProgMs > 10000UL && _archImg->total > 0) {
         _archProgMs = millis();
         log(LogLevel::Info, "archive: приём %u/%u кадров",
             (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
+        uint16_t lim = _archMaxSeq < _archImg->total ? _archMaxSeq
+                                                     : _archImg->total;
+        uint8_t asked = 0;
+        for (uint16_t s = 0; s < lim && asked < 8; s++) {
+            if (_archImg->gotSeq(s) || !_archImg->reaskOnce(s)) continue;
+            char req[64];
+            snprintf(req, sizeof(req), "{\"id\":\"%s\",\"seq\":%u}",
+                     NetworkService::getInstance().deviceId(), (unsigned)s);
+            MqttTransport::getInstance()
+                .publishRaw("microos/master/archive/req", req, false);
+            asked++;
+        }
+        if (asked > 0)
+            log(LogLevel::Info, "archive: переспрос дырок: %u шт (maxSeq=%u)",
+                (unsigned)asked, (unsigned)_archMaxSeq);
     }
     // 0.9.4: ретрай ПОЛНОГО запроса. Типовой сценарий — OTA-пара: второй
     // запрос попадает в окно антидребезга мастера (120 с) и молча
@@ -895,7 +915,7 @@ void WeatherGateApp::archiveRestoreTick() {
         log(LogLevel::Info, "archive: ретрай запроса (окно антидребезга истекло)");
         return;
     }
-    if (millis() - _archStartMs > 60000UL) {     // таймаут сборки
+    if (millis() - _archStartMs > 150000UL) {    // таймаут сборки (0.9.6: 150 с — pace 500 мс ≈ 105 с поток + запас; просьба ветки)
         // Ретрай — всегда, пока образ жив (сессия не завершена): при
         // молчаливом антидребезге total==0, и «gotCount < total» бы
         // ретрай не дало — а это и есть главный сценарий OTA-пары.
@@ -903,12 +923,12 @@ void WeatherGateApp::archiveRestoreTick() {
             _archRetried = true;
             _archRetryAtMs = millis() + 150000UL;
             log(LogLevel::Warning,
-                "archive: таймаут 60 с, %u/%u кадров — ретрай через 150 с",
+                "archive: таймаут 150 с, %u/%u кадров — ретрай через 150 с",
                 (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
             return;
         }
         log(LogLevel::Warning,
-            "archive: таймаут 60 с, %u/%u кадров — деградация",
+            "archive: таймаут 150 с, %u/%u кадров — деградация",
             (unsigned)_archImg->gotCount, (unsigned)_archImg->total);
         delete _archImg; _archImg = nullptr;
     }

@@ -35,8 +35,14 @@ static constexpr uint8_t  FRAME_RECS      = 4;       // записей в кад
 // = 290 Б > 255 — молчаливое усечение, CRC не сойдётся никогда (нашла
 // профильная ветка weather_gate, доп. к контракту 20.09.2026). 4 записи:
 // худший 216 Б, типичный ~150-200 Б — под капом 240 с запасом.
-static constexpr uint32_t SESSION_GUARD_MS  = 120000;  // сторож сессии выдачи
+static constexpr uint32_t SESSION_GUARD_MS  = 240000;  // сторож сессии выдачи (0.8.9: сессия ~105 с + переспросы)
 static constexpr uint32_t REQ_ANTIBOUNCE_MS = 120000;  // повторный полный req
+// 0.8.8: пейсинг выдачи по wall-clock. Замер ветки weather_gate (02.10):
+// фактический период serveTick ~20 мс, не 150 — выдача уходила ~50 кадров/с
+// и затиралась однослотовым mailbox шлюза. 0.8.9: пауза — из конфига
+// (arch.pace_ms, дефолт 500: дренаж шлюза измерен ~2 кадра/с), это лишь
+// запасной дефолт если поля нет в NVS.
+static constexpr uint32_t SERVE_PACE_MS     = 500;
 
 HmArchiveModule& HmArchiveModule::getInstance() {
     static HmArchiveModule inst;
@@ -310,6 +316,7 @@ void HmArchiveModule::onRequest(const char* payload) {
         _total = (uint32_t)CH_COUNT * _days * PARTS_PER_DAY;
         _serving = true;
         _reqStartedMs = millis();
+        _lastPubMs = 0;                       // первый кадр — сразу
         return;
     }
     if (w7ParseUint(payload, "\"days\":", v)) {
@@ -332,6 +339,7 @@ void HmArchiveModule::onRequest(const char* payload) {
         _resumePend = 0;                        // новая полная сессия — старая забыта
         _serving = true;
         _reqStartedMs = now;
+        _lastPubMs = 0;                       // первый кадр — сразу
         _scanYearIdx = 0;
         _scanCh = 0xFF;
         _rbuf[0] = '\0';
@@ -423,25 +431,30 @@ void HmArchiveModule::abortSession(const char* why) {
     log(LogLevel::Warning, "архив W7: сессия выдачи прервана (%s)", why);
 }
 
-// Сессия выдачи: РОВНО один кадр за тик (150 мс) — 210 кадров ≈ 32 с.
-// 0.8.7 (доклад ветки weather_gate 01.10): пачки «до 8 кадров за тик»
-// (0.8.6) убивались однослотовым mailbox ext-подписки ядра на шлюзе —
-// сообщения на один топик между тиками затирают друг друга непрочитанными,
-// из пачки доходил максимум один кадр (измерено 8/210). Теперь цикл
-// крутит скан файла внутри тика до границы очередного кадра и публикует
-// ровно ОДИН кадр; до 60-с таймаута шлюза двукратный запас.
+// Сессия выдачи: ровно один кадр на интервал arch.pace_ms (дефолт 500 мс,
+// 0.8.9) — 210 кадров ≈ 105 с. Пейсинг по wall-clock, НЕ по тикам: замер
+// 02.10 показал, что реальный период serveTick ~20 мс, а не 150, как было
+// принято в комментарии 0.8.7; а замер дренажа шлюза (~2 кадра/с — loop
+// занят dlog-записью в LittleFS и стартовыми задачами) показал, что и
+// 200 мс мало (приём 86/210). Таймаут сборки на шлюзе поднят веткой
+// до 150 с (0.9.6).
 void HmArchiveModule::serveTick() {
     if (!_serving) return;
     uint32_t now = millis();
     if (now - _reqStartedMs > SESSION_GUARD_MS) {
-        abortSession("сторож 120 с");
+        abortSession("сторож 240 с");
         return;
     }
+    // Пейсинг по часам: тик службы ~20 мс, а между публикациями должно
+    // пройти ≥arch.pace_ms (дефолт 500) — иначе однослотовый mailbox
+    // шлюза затирает кадры (дренаж шлюза измерен ~2 кадра/с, 02.10).
+    if (now - _lastPubMs < _paceMs) return;
     bool done = false;
     for (uint8_t iter = 0; iter < 32 && !done; ++iter) {
         done = buildFrame();        // шаги скана внутри тика, публикация — одна
     }
     if (!done) return;              // кадр ещё собирается — следующий тик
+    _lastPubMs = now;
     // Кадр отправлен (или пуст). Конец сессии?
     if (_resendOnly) {
         _resendOnly = 0;
