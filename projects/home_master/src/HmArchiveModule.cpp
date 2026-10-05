@@ -67,6 +67,11 @@ void HmArchiveModule::init() {
     cfgGetStr("arch.src_topic", _srcTopic, sizeof(_srcTopic),
               "microos/weather_gate/weather");
     cfgGetStr("arch.gw_id", _gwId, sizeof(_gwId), "weather_gate");
+    // 0.9.0: строка чтения pace_ms была съедена гремлином при сборке 0.8.9
+    // (дефолт 500 совпал с полем — потому и работало; поймано ревизией W8).
+    _paceMs = cfgGetUInt("arch.pace_ms", SERVE_PACE_MS);
+    _bfEnabled = cfgGetBool("arch.bf_enabled", true);      // 0.9.0 (W8)
+    _bfHour = (uint8_t)cfgGetUInt("arch.bf_hour", 3);
     _initialized = true;
 }
 
@@ -108,6 +113,32 @@ void HmArchiveModule::onBrokerEvent(const BrokerEventInfo& info) {
     // чтобы не тащить prefix в хук.
     if (strstr(info.topic, "/master/archive/req") != nullptr) {
         self.onRequest(info.payload);
+        return;
+    }
+    // W8: ответы бэкфилла (кадры формата W7) — разбор в хуке, только RAM.
+    if (strstr(info.topic, "/master/archive/bfresp/") != nullptr) {
+        self.onBfResp(info.payload);
+        return;
+    }
+    // W8 триггер: retained state шлюза (<prefix>/<gw_id>/state).
+    // online после offline > 75 мин → внеплановый скан дыр.
+    {
+        char st[48];
+        snprintf(st, sizeof(st), "/%s/state", self._gwId);
+        if (strstr(info.topic, st) != nullptr) {
+            bool on = (strncmp(info.payload, "online", 6) == 0);
+            if (!on) {
+                if (self._gwDownMs == 0) self._gwDownMs = millis();
+            } else {
+                if (self._gwDownMs != 0 &&
+                    millis() - self._gwDownMs > 75UL * 60UL * 1000UL) {
+                    self._bfScanPend = true;
+                    self.log(LogLevel::Info, "архив W8: шлюз online после offline %lu мин — скан дыр",
+                        (unsigned long)((millis() - self._gwDownMs) / 60000));
+                }
+                self._gwDownMs = 0;
+            }
+        }
     }
 }
 
@@ -147,6 +178,7 @@ void HmArchiveModule::tick() {
         if (_rollPend[ch]) { flushChannel(ch); break; }
     }
     serveTick();
+    bfTick();          // W8: планировщик бэкфилла (скан/сессия/мердж)
 }
 
 void HmArchiveModule::flushChannel(uint8_t ch) {
@@ -385,12 +417,18 @@ size_t HmArchiveModule::apiStatus(char* buf, size_t size) {
         "{\"enabled\":%d,\"started\":%d,\"src_topic\":\"%s\",\"gw_id\":\"%s\","
         "\"rec_written\":%lu,\"rec_skipped\":%lu,\"req_served\":%lu,"
         "\"frames_sent\":%lu,\"serving\":%d,\"seq\":%lu,\"total\":%lu,"
-        "\"sd\":\"%s\",\"files\":[",
+        "\"sd\":\"%s\",\"bf\":{\"enabled\":%d,\"scanning\":%d,\"active\":%d,"
+        "\"queue\":%u,\"holes_found\":%lu,\"holes_closed\":%lu,"
+        "\"sessions\":%lu,\"unserv\":%lu,\"rec_merged\":%lu},\"files\":[",
         _enabled ? 1 : 0, _started ? 1 : 0, _srcTopic, _gwId,
         (unsigned long)_recWritten, (unsigned long)_recSkipped,
         (unsigned long)_reqServed, (unsigned long)_framesSent,
         _serving ? 1 : 0, (unsigned long)_seq, (unsigned long)_total,
-        (sd != nullptr) ? "mounted" : "нет");
+        (sd != nullptr) ? "mounted" : "нет",
+        _bfEnabled ? 1 : 0, _bfScanning ? 1 : 0, _bfActive ? 1 : 0,
+        _bfQLen, (unsigned long)_bfHolesFound, (unsigned long)_bfHolesClosed,
+        (unsigned long)_bfSessions, (unsigned long)_bfUnserv,
+        (unsigned long)_bfRecMerged);
     if (n <= 0 || (size_t)n >= size) { buf[0] = '\0'; return 0; }
     size_t used = (size_t)n;
     if (sd != nullptr) {
@@ -597,4 +635,336 @@ bool HmArchiveModule::buildFrame() {
     _rbuf[0] = '\0';
     _rN = 0;
     return true;
+}
+
+// ============================================================================
+// W8 BACKFILL (0.9.0) — дозаливка дыр w7a с почасового яруса шлюза.
+// Контракт утверждён 04.10.2026 (ответ ветке weather_gate):
+//   bfreq : <prefix>/master/archive/bfreq  {"id":"<gw>","from":F,"to":T}
+//           окно = ОДНИ сутки UTC (F = 00:00 UTC, T = F + 86400);
+//   bfresp: <prefix>/master/archive/bfresp/<gw> — кадры формата W7,
+//           days=1 → всего 30 (5 каналов × 6 слотов по 4 ч);
+//   пустые кадры r:[] легальны; пустой ответ целиком {"seq":0,"total":0};
+//   мердж только ОТСУТСТВУЮЩИХ ts; взаимное исключение с W7 (_serving).
+// Приём на мастере — in-proc хук брокера (mailbox ядра не задействован);
+// хук — ТОЛЬКО RAM (разбор + буфер), SD — из тика.
+// ============================================================================
+static constexpr uint8_t  BF_FRAMES_PER_DAY = 30;   // 5 каналов × 6 слотов по 4 ч
+static constexpr uint32_t BF_GUARD_MS       = 240000;  // как сторож W7
+static constexpr uint32_t BF_SESS_GAP_MS    = 5000;    // пауза между окнами
+
+int HmArchiveModule::chIndexByName(const char* name) const {
+    for (uint8_t i = 0; i < CH_COUNT; ++i)
+        if (strcmp(name, chName(i)) == 0) return (int)i;
+    return -1;
+}
+
+bool HmArchiveModule::bfIsDead(uint32_t dayStart) const {
+    for (uint8_t i = 0; i < _bfDeadN; ++i)
+        if (_bfDead[i] == dayStart) return true;
+    return false;
+}
+
+bool HmArchiveModule::bfDeadMark(uint32_t dayStart) {
+    if (bfIsDead(dayStart)) return false;
+    if (_bfDeadN >= 8) {   // FIFO: вытесняем самое старое
+        memmove(_bfDead, _bfDead + 1, 7 * sizeof(uint32_t));
+        _bfDeadN = 7;
+    }
+    _bfDead[_bfDeadN++] = dayStart;
+    return true;
+}
+
+// --- Планировщик (tick) ------------------------------------------------------
+void HmArchiveModule::bfTick() {
+    if (!_bfEnabled) return;
+    uint32_t nowU = (uint32_t)TimeService::getInstance().getUnixTime();
+    if (nowU < 1700000000UL) return;          // время не синхронизировано
+    uint32_t now = millis();
+
+    // Хук попросил финал сессии (все кадры / пустой ответ) — делаем в тике.
+    if (_bfActive && _bfEndReq) {
+        bfFinalize(_bfEmptySess ? "пустой ответ" : "окно принято");
+        return;
+    }
+    // Сторож активной сессии.
+    if (_bfActive && now - _bfReqMs > BF_GUARD_MS) {
+        bfFinalize("сторож 240 с");
+        return;
+    }
+    if (_bfActive || _serving) return;        // взаимное исключение W7/W8
+
+    // Плановый скан: первый через 5 мин после старта, далее ежесуточно
+    // в arch.bf_hour UTC.
+    if (_bfNextScanUtc == 0) _bfNextScanUtc = nowU + 300;
+    if (!_bfScanning && (_bfScanPend || nowU >= _bfNextScanUtc)) {
+        _bfScanPend = false;
+        _bfScanning = true;
+        _bfScanCh = 0;
+    }
+    if (_bfScanning) { bfScanStep(); return; }
+
+    // Старт сессии по очереди (пауза 5 с между окнами).
+    if (_bfQLen > 0 && now - _bfSessGapMs > BF_SESS_GAP_MS) {
+        bfStartSession();
+    }
+}
+
+// --- Скан дыр: один канал за вызов (файл читается целиком — он мал) ---------
+void HmArchiveModule::bfScanStep() {
+    fs::FS* sd = SdService::getInstance().fs();
+    uint32_t nowU = (uint32_t)TimeService::getInstance().getUnixTime();
+    uint32_t todayStart = nowU - (nowU % 86400UL);
+
+    // Смена суток UTC — очищаем список «мёртвых» (повтор раз в сутки).
+    if (_bfDeadDay != todayStart) { _bfDeadDay = todayStart; _bfDeadN = 0; }
+
+    // Часовая сетка: 168 часов, h=0 — самый старый; два последних часа
+    // (текущее открытое ведро + только что закрывшееся) пропускаем —
+    // запись могла ещё не слиться.
+    static uint8_t present[168];
+    memset(present, 0, sizeof(present));
+    uint32_t hourStart = nowU - (nowU % 3600UL);
+    uint32_t oldest = hourStart - 167 * 3600UL;
+
+    if (sd != nullptr) {
+        for (int pass = 0; pass < 2; ++pass) {   // прошлый год, текущий
+            time_t t0 = (time_t)nowU;
+            struct tm* tmv = gmtime(&t0);
+            int year = tmv ? tmv->tm_year + 1900 : 1970;
+            char path[64];
+            filePath(_bfScanCh, year - 1 + pass, path, sizeof(path));
+            if (!sd->exists(path)) continue;
+            fs::File f = sd->open(path, FILE_READ);
+            if (!f) continue;
+            f.seek(sizeof(W7aHeader));
+            DlogAggr r;
+            while (f.read((uint8_t*)&r, sizeof(r)) == sizeof(r)) {
+                if (r.ts < oldest || r.ts >= hourStart) continue;
+                if (r.ts % 3600UL != 0) continue;
+                uint32_t h = (r.ts - oldest) / 3600UL;
+                if (h < 168) present[h] = 1;
+            }
+            f.close();
+        }
+    }
+
+    // Дыры канала → общая битовая карта суток (0=сегодня … 6=самый старый).
+    static uint32_t holeDays[CH_COUNT];   // аккумулятор по каналам скана
+    uint32_t holes = 0;
+    for (uint16_t h = 0; h < 166; ++h) {
+        if (present[h]) continue;
+        uint32_t ds = ((oldest + h * 3600UL) / 86400UL) * 86400UL;
+        if (ds > todayStart) continue;
+        uint32_t d = (todayStart - ds) / 86400UL;
+        if (d < 7) holes |= (1UL << d);
+    }
+    holeDays[_bfScanCh] = holes;
+    _bfScanCh++;
+
+    if (_bfScanCh < CH_COUNT) return;     // следующий канал — следующим тиком
+    _bfScanning = false;
+
+    // Сводка: очередь суток (без dead и без дублей очереди).
+    uint8_t added = 0;
+    for (uint8_t d = 0; d < 7; ++d) {
+        uint32_t m = 0;
+        for (uint8_t c = 0; c < CH_COUNT; ++c) m |= holeDays[c];
+        if ((m & (1UL << d)) == 0) continue;
+        uint32_t ds = todayStart - d * 86400UL;
+        if (bfIsDead(ds)) continue;
+        bool queued = false;
+        for (uint8_t q = 0; q < _bfQLen; ++q)
+            if (_bfQueue[q] == ds) { queued = true; break; }
+        if (queued || (_bfActive && _bfDayStart == ds)) continue;
+        if (_bfQLen < 8) { _bfQueue[_bfQLen++] = ds; _bfHolesFound++; added++; }
+    }
+    // Следующий плановый скан — ближайший arch.bf_hour UTC.
+    uint32_t next = todayStart + (uint32_t)_bfHour * 3600UL;
+    if (next <= nowU) next += 86400UL;
+    _bfNextScanUtc = next;
+    log(LogLevel::Info, "архив W8: скан дыр — %u суток-дырок в очереди (всего найдено %lu)",
+        _bfQLen, (unsigned long)_bfHolesFound);
+    (void)added;
+}
+
+// --- Старт сессии: bfreq на первые сутки очереди -----------------------------
+void HmArchiveModule::bfStartSession() {
+    uint32_t ds = _bfQueue[0];
+    memmove(_bfQueue, _bfQueue + 1, 7 * sizeof(uint32_t));
+    _bfQLen--;
+
+    _bfDayStart = ds;
+    _bfActive = true;
+    _bfReqMs = millis();
+    _bfRxFrames = 0;
+    _bfEndReq = 0;
+    _bfEmptySess = 0;
+    for (uint8_t c = 0; c < CH_COUNT; ++c) _bfCnt[c] = 0;
+    _bfSessions++;
+
+    char topic[MQTT_TOPIC_LEN];
+    char prefix[24];
+    cfgGetStr("mqtt.prefix", prefix, sizeof(prefix), "microos");
+    snprintf(topic, sizeof(topic), "%s/master/archive/bfreq", prefix);
+    char pl[112];
+    snprintf(pl, sizeof(pl), "{\"id\":\"%s\",\"from\":%lu,\"to\":%lu}",
+             _gwId, (unsigned long)ds, (unsigned long)(ds + 86400UL));
+    BrokerService::getInstance().publishLocal(topic, pl, false);
+
+    time_t t0 = (time_t)ds;
+    struct tm* tmv = gmtime(&t0);
+    log(LogLevel::Info, "архив W8: bfreq за %02d.%02d.%04d — сессия %lu",
+        tmv ? tmv->tm_mday : 0, tmv ? tmv->tm_mon + 1 : 0,
+        tmv ? tmv->tm_year + 1900 : 0, (unsigned long)_bfSessions);
+}
+
+// --- Приём кадра (хук брокера — ТОЛЬКО RAM!) ---------------------------------
+void HmArchiveModule::onBfResp(const char* payload) {
+    if (!_bfActive || _bfEndReq) return;
+
+    // Пустой ответ целиком: {"seq":0,"total":0} — у шлюза нет ничего.
+    if (strstr(payload, "\"total\":0") != nullptr) {
+        _bfEmptySess = 1;
+        _bfEndReq = 1;
+        return;
+    }
+
+    uint32_t seq = 0, crc = 0;
+    if (!w7ParseUint(payload, "\"seq\":", seq)) return;
+    if (!w7ParseUint(payload, "\"crc\":", crc)) return;
+    char chn[8] = "";
+    if (!w7ParseStr(payload, "\"ch\":\"", chn, sizeof(chn))) return;
+    int ch = chIndexByName(chn);
+    if (ch < 0) return;
+
+    // r — подстрока от '[' после "r": до последнего ']' (кадр ≤ 240 Б).
+    const char* rp = strstr(payload, "\"r\":");
+    if (rp == nullptr) return;
+    const char* rStart = strchr(rp, '[');
+    const char* rEnd = strrchr(payload, ']');
+    if (rStart == nullptr || rEnd == nullptr || rEnd < rStart) return;
+    size_t rLen = (size_t)(rEnd - rStart + 1);
+    if (crc32zlib((const uint8_t*)rStart, rLen) != crc) {
+        log(LogLevel::Warning, "архив W8: кадр seq %lu — CRC не сошёлся, пропуск",
+            (unsigned long)seq);
+        return;
+    }
+    _bfRxFrames++;
+
+    // Разбор записей [ts,mn,mx,avg] — в буфер, если час в окне суток.
+    const char* p = rStart;
+    while ((p = strchr(p, '[')) != nullptr && p < rEnd) {
+        p++;
+        char* end = nullptr;
+        uint32_t ts = (uint32_t)strtoul(p, &end, 10);
+        if (end == p || *end != ',') break;
+        float mn = strtof(end + 1, &end);
+        if (*end != ',') break;
+        float mx = strtof(end + 1, &end);
+        if (*end != ',') break;
+        float av = strtof(end + 1, &end);
+        if (ts >= _bfDayStart && ts < _bfDayStart + 86400UL) {
+            bool dup = false;
+            for (uint8_t i = 0; i < _bfCnt[ch]; ++i)
+                if (_bfBuf[ch][i].ts == ts) { dup = true; break; }
+            if (!dup && _bfCnt[ch] < 24) {
+                DlogAggr& d = _bfBuf[ch][_bfCnt[ch]++];
+                d.ts = ts; d.mn = mn; d.mx = mx; d.avg = av;
+            }
+        }
+        p = end;
+    }
+    if (_bfRxFrames >= BF_FRAMES_PER_DAY) _bfEndReq = 1;
+}
+
+// --- Финал сессии: мердж буферов в w7a (tick, SD можно) -----------------------
+void HmArchiveModule::bfFinalize(const char* why) {
+    _bfActive = false;
+    _bfEndReq = 0;
+    _bfSessGapMs = millis();
+
+    uint16_t total = 0;
+    for (uint8_t c = 0; c < CH_COUNT; ++c) total += _bfCnt[c];
+
+    if (total == 0) {
+        bfDeadMark(_bfDayStart);
+        _bfUnserv++;
+        log(LogLevel::Info, "архив W8: сессия %s — 0 записей, сутки помечены необслужимыми",
+            why);
+        return;
+    }
+    uint32_t before = _bfRecMerged;
+    for (uint8_t c = 0; c < CH_COUNT; ++c)
+        if (_bfCnt[c] > 0) bfMergeChannel(c);
+    _bfHolesClosed++;
+    log(LogLevel::Info, "архив W8: сессия %s — %lu кадров, влито %lu записей",
+        why, (unsigned long)_bfRxFrames, (unsigned long)(_bfRecMerged - before));
+}
+
+// Мердж одного канала: потоковый two-pointer (оба источника по возрастанию
+// ts), запись через tmp+rename (урок питания). Существующие ts первичны.
+void HmArchiveModule::bfMergeChannel(uint8_t ch) {
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) return;
+
+    // Буфер — по возрастанию ts (вставка, ≤24 записей).
+    for (uint8_t i = 1; i < _bfCnt[ch]; ++i) {
+        DlogAggr v = _bfBuf[ch][i];
+        int j = (int)i - 1;
+        while (j >= 0 && _bfBuf[ch][j].ts > v.ts) {
+            _bfBuf[ch][j + 1] = _bfBuf[ch][j];
+            j--;
+        }
+        _bfBuf[ch][j + 1] = v;
+    }
+
+    time_t t0 = (time_t)_bfDayStart;
+    struct tm* tmv = gmtime(&t0);
+    int year = tmv ? tmv->tm_year + 1900 : 1970;
+    char path[64], tmp[72];
+    filePath(ch, year, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    fs::File in;
+    if (sd->exists(path)) in = sd->open(path, FILE_READ);
+    fs::File out = sd->open(tmp, FILE_WRITE);
+    if (!out) { if (in) in.close(); return; }
+
+    // Заголовок: из входа или новый.
+    if (in && in.size() >= sizeof(W7aHeader)) {
+        W7aHeader h;
+        if (in.read((uint8_t*)&h, sizeof(h)) == sizeof(h))
+            out.write((const uint8_t*)&h, sizeof(h));
+    } else {
+        writeHeaderIfNew(out, chName(ch));
+    }
+
+    uint16_t merged = 0;
+    uint8_t bi = 0;
+    DlogAggr r;
+    while (in && in.read((uint8_t*)&r, sizeof(r)) == sizeof(r)) {
+        while (bi < _bfCnt[ch] && _bfBuf[ch][bi].ts < r.ts) {
+            out.write((const uint8_t*)&_bfBuf[ch][bi], sizeof(DlogAggr));
+            merged++; bi++;
+        }
+        if (bi < _bfCnt[ch] && _bfBuf[ch][bi].ts == r.ts) bi++;  // дубль — мастерское первично
+        out.write((const uint8_t*)&r, sizeof(r));
+    }
+    while (bi < _bfCnt[ch]) {
+        out.write((const uint8_t*)&_bfBuf[ch][bi], sizeof(DlogAggr));
+        merged++; bi++;
+    }
+    if (in) in.close();
+    out.close();
+
+    sd->remove(path);
+    if (sd->rename(tmp, path)) {
+        _bfRecMerged += merged;
+        if (merged > 0)
+            log(LogLevel::Info, "архив W8: %s — влито %u записей", chName(ch), merged);
+    } else {
+        log(LogLevel::Warning, "архив W8: %s — rename не удался", chName(ch));
+        sd->remove(tmp);
+    }
 }

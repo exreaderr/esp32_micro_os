@@ -730,6 +730,7 @@ void WeatherGateApp::onEvent(int32_t eventId, const ShEventData* data) {
         if (_out.valid && cfgGetBool("wx.mqtt_en", true))
             publishWeatherMqtt();
         archiveRestoreAsk();   // 0.9.1 (W7): пустой ярус? -> запрос мастеру
+        backfillSubscribe();   // 0.9.7 (W8): подписка bfreq (раздача суток)
         return;
     }
 }
@@ -935,6 +936,121 @@ void WeatherGateApp::archiveRestoreTick() {
 }
 
 // ============================================================================
+// W8 (0.9.7): BACKFILL ЗЕРКАЛА — РАЗДАЧА СУТОК МАСТЕРУ
+// ============================================================================
+// Контракт: дизайн-нота W8 + ответ ветки 04.10.2026 (мастер 0.9.0).
+// Мастер нашёл дыру в w7a → bfreq {"id","from","to"} (сутки UTC, to искл.)
+// → шлюз отдаёт кадры W7 (days=1, total=nch×6, seq=ch×6+part) на
+// …/bfresp/<gw_id>. Пейсинг 500 мс по millis — приёмник мастера на том же
+// однослотовом mailbox ядра (урок W7 в обратную сторону). Пустые кадры
+// легальны; совсем пустой снимок → {"seq":0,"total":0}. Антидребезг
+// bfreq 120 с. Callback только кладёт окно в pending (контекст mailbox),
+// снимок с ФС и раздача — в tick (контекст loop, как archiveRestoreTick).
+// ============================================================================
+void WeatherGateApp::backfillSubscribe() {
+    if (_bfSubscribed) return;                     // раз в загрузку
+    _bfSubscribed = true;
+    MqttTransport::getInstance()
+        .subscribeExternal("microos/master/archive/bfreq", backfillReqCb);
+    log(LogLevel::Info, "backfill: подписка bfreq готова (W8)");
+}
+
+void WeatherGateApp::backfillReqCb(const char*, const char* payload) {
+    WeatherGateApp& self = WeatherGateApp::getInstance();
+    uint32_t from = 0, to = 0;
+    if (!wgbf::parseBfreq(payload, from, to)) {
+        self.log(LogLevel::Warning, "backfill: bfreq отброшен (окно не по контракту)");
+        return;
+    }
+    // Антидребезг 120 с (контракт). Первая за загрузку — пропускаем.
+    if (self._bfLastReqMs != 0 &&
+        millis() - self._bfLastReqMs < wgbf::REQ_DEBOUNCE_SEC * 1000UL) {
+        self.log(LogLevel::Info, "backfill: bfreq в окне антидребезга, игнор");
+        return;
+    }
+    if (self._bfServing || self._bfReqPending) {
+        self.log(LogLevel::Info, "backfill: раздача уже идёт, bfreq игнор");
+        return;
+    }
+    if (self._archImg != nullptr) {
+        // Взаимное исключение с W7: сессия восстановления важнее (мастер
+        // со своей стороны тоже не стартует backfill при _serving).
+        self.log(LogLevel::Info, "backfill: идёт восстановление W7, bfreq игнор");
+        return;
+    }
+    self._bfLastReqMs = millis();
+    self._bfReqFrom = from; self._bfReqTo = to;
+    self._bfReqPending = true;
+    self.log(LogLevel::Info, "backfill: bfreq окно [%lu, %lu), снимок в tick",
+             (unsigned long)from, (unsigned long)to);
+}
+
+void WeatherGateApp::backfillTick() {
+    // --- Этап 1: снимок суток по отложенному запросу ---
+    if (_bfReqPending) {
+        _bfReqPending = false;
+        _bfSnap.from = _bfReqFrom; _bfSnap.to = _bfReqTo; _bfSnap.nch = 0;
+        const struct { int8_t idx; const char* id; } tab[5] = {
+            {_chOutT, "wx_ot"}, {_chOutH, "wx_oh"}, {_chPress, "wx_p"},
+            {_chWind, "wx_w"},  {_chRain, "wx_r"},
+        };
+        DataLogService& dl = DataLogService::getInstance();
+        for (uint8_t i = 0; i < 5; i++) {
+            if (tab[i].idx < 0) continue;
+            wgbf::ChSnap& c = _bfSnap.chs[_bfSnap.nch];
+            strncpy(c.id, tab[i].id, sizeof(c.id) - 1);
+            c.id[sizeof(c.id) - 1] = '\0';
+            c.n = 0;
+            DlogAggr buf[wgbf::RECS_PER_DAY];      // 384 Б, один канал за раз
+            uint16_t n = dl.getTier((uint8_t)tab[i].idx, false, buf,
+                                    wgbf::RECS_PER_DAY, _bfSnap.from);
+            for (uint16_t k = 0; k < n && c.n < wgbf::RECS_PER_DAY; k++) {
+                if (buf[k].ts >= _bfSnap.to) break;      // to искл., хронология
+                c.recs[c.n++] = buf[k];
+            }
+            _bfSnap.nch++;
+        }
+        _bfSeq = 0; _bfEmptyOnce = false; _bfServing = true;
+        _bfLastMs = millis();          // первый кадр — через 500 мс
+        log(LogLevel::Info, "backfill: снимок готов — %u каналов, %u записей, кадров %u",
+            (unsigned)_bfSnap.nch, (unsigned)_bfSnap.totalRecs(),
+            (unsigned)_bfSnap.totalFrames());
+    }
+    // --- Этап 2: пейсер раздачи (кадр раз в 500 мс по millis) ---
+    if (!_bfServing) return;
+    if (millis() - _bfLastMs < wgbf::PACE_MS) return;
+    _bfLastMs = millis();
+    MqttTransport& mqtt = MqttTransport::getInstance();
+    const char* id = NetworkService::getInstance().deviceId();
+    char topic[MQTT_TOPIC_LEN];
+    snprintf(topic, sizeof(topic), "microos/master/archive/bfresp/%s", id);
+    // Совсем пустой снимок → один ответ {"seq":0,"total":0} (контракт).
+    if (_bfSnap.totalRecs() == 0) {
+        if (!_bfEmptyOnce) {
+            _bfEmptyOnce = true;
+            mqtt.publishRaw(topic, "{\"seq\":0,\"total\":0}", false);
+            log(LogLevel::Info, "backfill: снимок пуст, ответ total=0");
+        }
+        _bfServing = false;
+        return;
+    }
+    char fr[wgbf::FRAME_CAP + 16];
+    uint16_t len = wgbf::frameJson(_bfSnap, _bfSeq, fr, sizeof(fr));
+    if (len == 0) {                    // страховка: seq вне снимка
+        _bfServing = false;
+        return;
+    }
+    mqtt.publishRaw(topic, fr, false);
+    _bfSeq++;
+    if (_bfSeq >= _bfSnap.totalFrames()) {
+        _bfServing = false;
+        log(LogLevel::Info, "backfill: выдача завершена, %u кадров, окно [%lu, %lu)",
+            (unsigned)_bfSeq, (unsigned long)_bfSnap.from,
+            (unsigned long)_bfSnap.to);
+    }
+}
+
+// ============================================================================
 // TICK (1 с): новые пакеты, даталог давления, периодическая публикация,
 // запуск задачи авто-высоты. Бюджет 50 мс — всё короткое, HTTP уехал
 // в отдельную задачу.
@@ -951,6 +1067,7 @@ void WeatherGateApp::tick() {
 
     scanTick();   // W3.3: машина сканера частоты (нет активного — пустой)
     archiveRestoreTick();   // W7 (0.9.1): таймаут сборки архива (нет — пустой)
+    backfillTick();         // W8 (0.9.7): снимок по bfreq + пейсер раздачи
 
     // Давление — по своему ритму (раз в минуту), независимо от эфира
     const Bme280Driver& d = Bme280Driver::getInstance();

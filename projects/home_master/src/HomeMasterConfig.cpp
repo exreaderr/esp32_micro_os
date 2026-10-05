@@ -184,5 +184,10 @@ void registerHomeMasterConfig() {
         // без пересборки.
         { "arch.pace_ms", ConfigType::UINT, "500", 100, 2000, CFG_CRITICAL,
           "Архив W7", "Пауза между кадрами выдачи, мс (ребут)" },
+        // 0.9.0 (W8): бэкфилл — дозаливка дыр w7a с почасового яруса шлюза.
+        { "arch.bf_enabled", ConfigType::BOOL, "true", 0, 0, CFG_CRITICAL,
+          "Архив W7", "Бэкфилл: дозаливка дыр со шлюза (ребут)" },
+        { "arch.bf_hour", ConfigType::UINT, "3", 0, 23, CFG_CRITICAL,
+          "Архив W7", "Час ночного скана дыр (UTC, ребут)" },
     });
 }

@@ -148,4 +148,57 @@ private:
     uint16_t _rN = 0;                         // записей в кадре
     char     _frame[256] = "";                // кадр целиком (худший 216 Б < капа 240)
     uint32_t _reqServed = 0, _framesSent = 0;
+
+    // --- W8: BACKFILL (0.9.0, контракт утверждён 04.10.2026) -------------------
+    // Обратное направление W7: мастер находит дыры в w7a за 7 суток и
+    // дозаливает их с почасового яруса шлюза. Инициатор — мастер.
+    //   bfreq : <prefix>/master/archive/bfreq  {"id":"<gw>","from":F,"to":T}
+    //           (окно = ОДНИ сутки UTC: F=00:00 UTC, T=F+86400)
+    //   bfresp: <prefix>/master/archive/bfresp/<gw>  — кадры формата W7,
+    //           days=1 → total=30 (5 каналов × 6 слотов по 4 ч).
+    // Пейсинг шлюза 500 мс; на мастере приём идёт in-proc хуком брокера
+    // (mailbox ядра не задействован), разбор кадра в хуке — только RAM,
+    // мердж на SD — из тика по завершении сессии. Мердж: вставка только
+    // ОТСУТСТВУЮЩИХ ts (потоковый two-pointer, tmp+rename — урок питания).
+    // Взаимное исключение: пока идёт выдача W7 (_serving), backfill ждёт.
+    bool     _bfEnabled = true;
+    uint8_t  _bfHour = 3;                     // час ночного скана (UTC)
+    uint32_t _bfNextScanUtc = 0;              // плановый скан (unix), 0=нет
+    bool     _bfScanPend = false;             // внеплановый скан (триггер)
+    uint8_t  _bfScanCh = 0;                   // скан идёт по каналу за тик
+    bool     _bfScanning = false;
+    uint32_t _gwDownMs = 0;                   // 0=шлюз online; метка offline
+    // Очередь дыр: начала суток UTC (epoch), до 8; «мёртвые» сутки
+    // (шлюз вернул сплошь пустые кадры — сам был offline) повторяем не
+    // чаще раза в сутки.
+    uint32_t _bfQueue[8] = {};  uint8_t _bfQLen = 0;
+    uint32_t _bfDead[8] = {};   uint8_t _bfDeadN = 0;
+    // Активная сессия
+    bool     _bfActive = false;
+    uint32_t _bfDayStart = 0;                 // from (00:00 UTC)
+    uint32_t _bfReqMs = 0;                    // сторож сессии (240 с)
+    uint32_t _bfRxFrames = 0;                 // кадров принято в сессии
+    // Буфер сессии: сутки = до 24 записей на канал (24×16 Б × 5 = 1,9 КБ)
+    DlogAggr _bfBuf[CH_COUNT][24];
+    uint8_t  _bfCnt[CH_COUNT] = {};
+    // Счётчики (API/журнал)
+    uint32_t _bfHolesFound = 0;               // суток-дырок найдено
+    uint32_t _bfHolesClosed = 0;              // суток закрыто (хоть 1 запись)
+    uint32_t _bfSessions = 0;                 // сессий backfill
+    uint32_t _bfUnserv = 0;                   // суток помечено необслужимыми
+    uint32_t _bfRecMerged = 0;                // записей влито в w7a
+    uint32_t _bfSessGapMs = 0;                // пауза 5 с между сессиями
+    uint8_t  _bfEndReq = 0;                   // хук просит финал (все кадры/пусто)
+    uint8_t  _bfEmptySess = 0;                // сессия дала 0 записей → dead
+    uint32_t _bfDeadDay = 0;                  // метка суток, когда чистили dead
+
+    void bfTick();                            // планировщик (tick)
+    void bfScanStep();                        // скан дыр: канал за вызов (tick)
+    void bfStartSession();                    // bfreq на первую сутки очереди
+    void bfFinalize(const char* why);         // конец сессии + мердж
+    void bfMergeChannel(uint8_t ch);          // tmp+rename, только новые ts
+    bool bfDeadMark(uint32_t dayStart);       // необслужимые сутки
+    bool bfIsDead(uint32_t dayStart) const;
+    void onBfResp(const char* payload);       // разбор кадра (хук, только RAM)
+    int  chIndexByName(const char* name) const;
 };
