@@ -146,6 +146,23 @@ void HmArchiveModule::onWeather(const char* payload) {
     uint32_t ts = (uint32_t)TimeService::getInstance().getUnixTime();
     if (ts < 1700000000UL) return;   // время ещё не синхронизировано
 
+    // 0.9.2: W8-триггер «данные возобновились после перерыва > 75 мин».
+    // Полевой тест 05.10: обрыв линка мастера НЕ фиксируется брокером
+    // (нет keepalive, сокет повисает) — retained state шлюза остаётся
+    // «online», state-триггер слепнет в главном аварийном сценарии.
+    // Возобновление живого потока — транспортно-независимый признак
+    // перерыва: сами данные и есть доказательство дыры.
+    {
+        uint32_t nowMs = millis();
+        if (_bfEnabled && _lastWxMs != 0 &&
+            nowMs - _lastWxMs > 75UL * 60UL * 1000UL) {
+            _bfScanPend = true;
+            log(LogLevel::Info, "архив W8: поток возобновился после %lu мин — скан дыр",
+                (unsigned long)((nowMs - _lastWxMs) / 60000UL));
+        }
+        _lastWxMs = nowMs;
+    }
+
     bool any = false;
     for (uint8_t ch = 0; ch < CH_COUNT; ++ch) {
         const char* p = strstr(payload, chJsonKey(ch));
@@ -853,8 +870,14 @@ void HmArchiveModule::onBfResp(const char* payload) {
     _bfRxFrames++;
 
     // Разбор записей [ts,mn,mx,avg] — в буфер, если час в окне суток.
+    // 0.9.2: r — [[rec],[rec]] (ДВОЙНАЯ скобка). Поиск '[' с p+1: первый
+    // найденный — внутренняя скобка первой записи, не скобка массива
+    // (дефект 0.9.0/0.9.1: strchr(p,...) хватал внешнюю '[', strtoul
+    // упирался во вторую '[' → break → 0 записей из ЛЮБОГО непустого
+    // кадра; пустые "[]" проходили безотказно — потому и не поймали).
+    // Проверено на пойманных с провода кадрах 05.10.2026.
     const char* p = rStart;
-    while ((p = strchr(p, '[')) != nullptr && p < rEnd) {
+    while ((p = strchr(p + 1, '[')) != nullptr && p < rEnd) {
         p++;
         char* end = nullptr;
         uint32_t ts = (uint32_t)strtoul(p, &end, 10);

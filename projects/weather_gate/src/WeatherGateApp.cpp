@@ -995,21 +995,36 @@ void WeatherGateApp::backfillTick() {
             {_chWind, "wx_w"},  {_chRain, "wx_r"},
         };
         DataLogService& dl = DataLogService::getInstance();
+        // 0.9.8 — урок №29: getTier — UI-API с потоковой децимацией
+        // (stride = ceil(total/maxN) от ВСЕГО файла яруса!). При maxN=24
+        // сутки возвращались 4 осреднёнными группами по 7 ч (полевой тест
+        // 05.10: «снимок 20 записей» вместо ~90). Backfill нужны СЫРЫЕ
+        // часы: maxN = DLOG_HOUR_CAP → stride=1 гарантированно.
+        // Буфер 744×16 ≈ 11,9 КБ — разово в heap на сессию (не стек!).
+        DlogAggr* buf = new (std::nothrow) DlogAggr[DLOG_HOUR_CAP];
+        if (buf == nullptr) {
+            // НЕ отвечаем total=0: мастер пометил бы дыру необслужимой
+            // по ошибке. Молчим — их сторож сессии закроет день сам.
+            log(LogLevel::Warning,
+                "backfill: нет RAM под буфер яруса (%u КБ), сессия пропущена",
+                (unsigned)(DLOG_HOUR_CAP * sizeof(DlogAggr) / 1024));
+            return;
+        }
         for (uint8_t i = 0; i < 5; i++) {
             if (tab[i].idx < 0) continue;
             wgbf::ChSnap& c = _bfSnap.chs[_bfSnap.nch];
             strncpy(c.id, tab[i].id, sizeof(c.id) - 1);
             c.id[sizeof(c.id) - 1] = '\0';
             c.n = 0;
-            DlogAggr buf[wgbf::RECS_PER_DAY];      // 384 Б, один канал за раз
             uint16_t n = dl.getTier((uint8_t)tab[i].idx, false, buf,
-                                    wgbf::RECS_PER_DAY, _bfSnap.from);
+                                    DLOG_HOUR_CAP, _bfSnap.from);
             for (uint16_t k = 0; k < n && c.n < wgbf::RECS_PER_DAY; k++) {
                 if (buf[k].ts >= _bfSnap.to) break;      // to искл., хронология
                 c.recs[c.n++] = buf[k];
             }
             _bfSnap.nch++;
         }
+        delete[] buf;
         _bfSeq = 0; _bfEmptyOnce = false; _bfServing = true;
         _bfLastMs = millis();          // первый кадр — через 500 мс
         log(LogLevel::Info, "backfill: снимок готов — %u каналов, %u записей, кадров %u",

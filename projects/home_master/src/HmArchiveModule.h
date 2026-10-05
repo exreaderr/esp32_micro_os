@@ -168,6 +168,7 @@ private:
     uint8_t  _bfScanCh = 0;                   // скан идёт по каналу за тик
     bool     _bfScanning = false;
     uint32_t _gwDownMs = 0;                   // 0=шлюз online; метка offline
+    uint32_t _lastWxMs = 0;                   // 0.9.2: последний живой weather (gap-триггер W8)
     // Очередь дыр: начала суток UTC (epoch), до 8; «мёртвые» сутки
     // (шлюз вернул сплошь пустые кадры — сам был offline) повторяем не
     // чаще раза в сутки.
