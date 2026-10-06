@@ -380,7 +380,28 @@ bool JournalService::apiFiles(char* out, size_t cap) {
         const char* base = strrchr(nm, '/');
         base = base ? base + 1 : nm;
         if (!validSegmentName(base)) { e.close(); continue; }
-        if (cnt >= JRN_LIST_MAX) { trunc = true; e.close(); continue; }
+        if (cnt >= JRN_LIST_MAX) {
+            // 0.9.4, «застрявший журнал»: раньше 33-й и дальше улетал
+            // в мусор ДО сортировки — FATFS отдаёт каталог в физическом
+            // порядке, и при 32+ сегментах свежайший файл (он же первый
+            // по сортировке!) терялся, вьюер «застревал» на старой дате
+            // (полевой случай 06.10: current=events-20261006 при списке,
+            // отрезанном по 16.09). Теперь — вставка с вытеснением
+            // самого старого из топ-N.
+            if (strcmp(_lstNames[JRN_LIST_MAX - 1], base) < 0) {
+                uint8_t j = JRN_LIST_MAX - 1;
+                while (j > 0 && strcmp(_lstNames[j - 1], base) < 0) {
+                    memcpy(_lstNames[j], _lstNames[j - 1], JRN_NAME_LEN);
+                    _lstSizes[j] = _lstSizes[j - 1];
+                    --j;
+                }
+                strncpy(_lstNames[j], base, JRN_NAME_LEN - 1);
+                _lstNames[j][JRN_NAME_LEN - 1] = '\0';
+                _lstSizes[j] = (uint32_t)e.size();
+            }
+            trunc = true;   // файлов больше слотов — флаг честный
+            e.close(); continue;
+        }
         uint8_t i = cnt;
         while (i > 0 && strcmp(_lstNames[i - 1], base) < 0) {
             memcpy(_lstNames[i], _lstNames[i - 1], JRN_NAME_LEN);

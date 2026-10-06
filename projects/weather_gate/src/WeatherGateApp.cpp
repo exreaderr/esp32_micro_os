@@ -962,14 +962,29 @@ void WeatherGateApp::backfillReqCb(const char*, const char* payload) {
         self.log(LogLevel::Warning, "backfill: bfreq отброшен (окно не по контракту)");
         return;
     }
-    // Антидребезг 120 с (контракт). Первая за загрузку — пропускаем.
-    if (self._bfLastReqMs != 0 &&
+    // Антидребезг 120 с — ТОЛЬКО на повтор ТОГО ЖЕ окна (0.9.9: в 0.9.7/0.9.8
+    // глушил ВСЕ запросы подряд и съел вторые сутки из очереди мастера —
+    // их контракт: до 8 окон, 5 с между сессиями; 29.09 помечена
+    // необслужимой по сторожу. Полевой тест 06.10).
+    if (from == self._bfLastFrom && to == self._bfLastTo &&
+        self._bfLastReqMs != 0 &&
         millis() - self._bfLastReqMs < wgbf::REQ_DEBOUNCE_SEC * 1000UL) {
-        self.log(LogLevel::Info, "backfill: bfreq в окне антидребезга, игнор");
+        self.log(LogLevel::Info, "backfill: повтор того же окна в антидребезге, игнор");
         return;
     }
     if (self._bfServing || self._bfReqPending) {
-        self.log(LogLevel::Info, "backfill: раздача уже идёт, bfreq игнор");
+        // Раздача занимает 30 с, мастер шлёт следующее окно через 5 с —
+        // ставим в одноместную очередь (мастер сессии сериализует,
+        // глубже одного слота очередь не растёт; занятый слот — не беда:
+        // невыданное окно мастер переспросит своим сканом).
+        if (!self._bfQuePending) {
+            self._bfQueFrom = from; self._bfQueTo = to;
+            self._bfQuePending = true;
+            self.log(LogLevel::Info, "backfill: раздача идёт, окно [%lu, %lu) в очередь",
+                     (unsigned long)from, (unsigned long)to);
+        } else {
+            self.log(LogLevel::Info, "backfill: очередь занята, окно игнор");
+        }
         return;
     }
     if (self._archImg != nullptr) {
@@ -979,6 +994,7 @@ void WeatherGateApp::backfillReqCb(const char*, const char* payload) {
         return;
     }
     self._bfLastReqMs = millis();
+    self._bfLastFrom = from; self._bfLastTo = to;
     self._bfReqFrom = from; self._bfReqTo = to;
     self._bfReqPending = true;
     self.log(LogLevel::Info, "backfill: bfreq окно [%lu, %lu), снимок в tick",
@@ -1031,7 +1047,18 @@ void WeatherGateApp::backfillTick() {
             (unsigned)_bfSnap.nch, (unsigned)_bfSnap.totalRecs(),
             (unsigned)_bfSnap.totalFrames());
     }
-    // --- Этап 2: пейсер раздачи (кадр раз в 500 мс по millis) ---
+    // --- Этап 2: очередь окон (0.9.9) — сессия кончилась, есть ждущее ---
+    if (!_bfServing && !_bfReqPending && _bfQuePending) {
+        _bfQuePending = false;
+        _bfLastReqMs = millis();
+        _bfLastFrom = _bfQueFrom; _bfLastTo = _bfQueTo;
+        _bfReqFrom = _bfQueFrom; _bfReqTo = _bfQueTo;
+        _bfReqPending = true;
+        log(LogLevel::Info, "backfill: окно из очереди [%lu, %lu) в работу",
+            (unsigned long)_bfQueFrom, (unsigned long)_bfQueTo);
+        return;                       // снимок — следующим тиком
+    }
+    // --- Этап 3: пейсер раздачи (кадр раз в 500 мс по millis) ---
     if (!_bfServing) return;
     if (millis() - _bfLastMs < wgbf::PACE_MS) return;
     _bfLastMs = millis();

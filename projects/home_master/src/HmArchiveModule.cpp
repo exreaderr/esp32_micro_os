@@ -668,7 +668,12 @@ bool HmArchiveModule::buildFrame() {
 // ============================================================================
 static constexpr uint8_t  BF_FRAMES_PER_DAY = 30;   // 5 каналов × 6 слотов по 4 ч
 static constexpr uint32_t BF_GUARD_MS       = 240000;  // как сторож W7
-static constexpr uint32_t BF_SESS_GAP_MS    = 5000;    // пауза между окнами
+// 0.9.3: пауза между сессиями очереди 130 с — ДОЛЖНА перекрывать шлюзовой
+// антидребезг bfreq (120 с по контракту). Полевой тест №2 (06.10): пауза
+// 5 с → второй bfreq суток 29.09 проигнорирован шлюзом («в окне
+// антидребезга, игнор»), мастер по сторожу 240 с пометил сутки мёртвыми.
+// 7 суток очереди × (30 с выдача + 130 с пауза) ≈ 19 мин худший случай.
+static constexpr uint32_t BF_SESS_GAP_MS    = 130000;  // > 120 с антидребезга шлюза
 
 int HmArchiveModule::chIndexByName(const char* name) const {
     for (uint8_t i = 0; i < CH_COUNT; ++i)

@@ -462,7 +462,9 @@ let curTab='status', brokerTimer=null;
 
 // ---------- транспорт ----------
 async function api(method,url,body){
-  const opt={method,headers:{}};
+  // 0.9.4: no-store на все API — sendJson не шлёт Cache-Control,
+  // эвристический кэш браузера имеет право отдать вчерашний JSON.
+  const opt={method,headers:{},cache:'no-store'};
   if(T)opt.headers['X-Auth-Token']=T;
   if(body!==undefined){opt.headers['Content-Type']='application/x-www-form-urlencoded';opt.body=body;}
   const r=await fetch(url,opt);
