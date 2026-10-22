@@ -841,12 +841,16 @@ size_t BackupService::apiFiles(const char* ip, char* buf, size_t bufSize) {
             memcpy(buf + pos, "],\"extras\":[", 12);
             pos += 12;
         }
+        // 0.9.5 прогон-4: у extras СВОЙ флаг first — иначе после непустого
+        // files первая запись получала запятую и JSON ломался целиком
+        // (морда молча не раскрывала список именно у замка; хост-тест).
+        bool firstX = true;
         for (int i = (int)xn - 1; i >= 0 && pos < bufSize - 48; --i) {
             int w = snprintf(buf + pos, bufSize - pos, "%s\"%s\"",
-                             first ? "" : ",", xnames[i]);
+                             firstX ? "" : ",", xnames[i]);
             if (w < 0) break;
             pos += (size_t)w;
-            first = false;
+            firstX = false;
         }
     }
     if (pos < bufSize - 3) { buf[pos++] = ']'; buf[pos++] = '}'; buf[pos] = '\0'; }
