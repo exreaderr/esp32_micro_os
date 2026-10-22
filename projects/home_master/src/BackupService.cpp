@@ -10,6 +10,7 @@
 #include <services/TimeService.h>
 #include <services/NetworkManager.h>
 #include <HTTPClient.h>
+#include <WiFiClient.h>
 #include <time.h>
 
 BackupService& BackupService::getInstance() {
@@ -226,7 +227,7 @@ void BackupService::stepSelf(HostState& h) {
     if (ok) {
         h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
         h.lastErr[0] = '\0';
-        rotate("self", (uint8_t)cfgGetInt("bk.keep", 10));
+        rotate("self", "config-", (uint8_t)cfgGetInt("bk.keep", 10));
         log(LogLevel::Info, "bk: self снимок сохранён (%u Б)", (unsigned)len);
     } else {
         strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
@@ -329,8 +330,9 @@ void BackupService::runCycleStep() {
     if (ok) {
         h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
         h.lastErr[0] = '\0';
-        rotate(h.ip, (uint8_t)cfgGetInt("bk.keep", 10));
+        rotate(h.ip, "config-", (uint8_t)cfgGetInt("bk.keep", 10));
         log(LogLevel::Info, "bk: %s снимок сохранён (%u Б)", h.ip, (unsigned)len);
+        stepExtras(h.ip, token);   // 0.9.5: доп.снимки (база замка и пр.)
     } else {
         strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
@@ -471,22 +473,25 @@ bool BackupService::storeSnapshot(const char* ip, const char* data, size_t len,
     return true;
 }
 
-void BackupService::rotate(const char* ip, uint8_t keep) {
+void BackupService::rotate(const char* ip, const char* prefix, uint8_t keep) {
     fs::FS* sd = SdService::getInstance().fs();
     if (sd == nullptr) return;
     char dir[40];
     snprintf(dir, sizeof(dir), "/backup/%s", ip);
     File d = sd->open(dir);
     if (!d) return;
-    // Имена config-YYYYMMDD-HHMMSS.json сортируются хронологически —
+    // Имена <prefix>YYYYMMDD-HHMMSS.json сортируются хронологически —
     // собираем и режем хвост сверх keep. Снимков мало (≤60), пузырёк честен.
+    // 0.9.5: префикс — параметр ("config-", "<slug>-"); latest*.json и
+    // чужие серии не трогаем.
+    const size_t plen = strlen(prefix);
     char names[64][40];
     uint8_t n = 0;
     for (File f = d.openNextFile(); f && n < 64; f = d.openNextFile()) {
         const char* nm = f.name();   // может быть с путём — берём хвост
         const char* base = strrchr(nm, '/');
         base = base != nullptr ? base + 1 : nm;
-        if (strncmp(base, "config-", 7) != 0) continue;   // latest.json не трогаем
+        if (strncmp(base, prefix, plen) != 0) continue;   // latest* и прочие — мимо
         size_t l = strlen(base);
         if (l >= 40) continue;
         // вставка с сохранением порядка
@@ -507,6 +512,174 @@ void BackupService::rotate(const char* ip, uint8_t keep) {
         memmove(names, names + 1, (n - 1) * 40);
         n--;
     }
+}
+
+// ============================================================================
+// 0.9.5 (m38): ДОП.СНИМКИ — bk.extras ("ip:путь,ip:путь", путь от /api/dev/)
+// ============================================================================
+// Слаг серии из пути: последний сегмент, а если он "export" — предыдущий
+// ("lock/users/export" -> "users"). Только [A-Za-z0-9_-], до 24 символов.
+static void extraSlug(const char* path, char* out, size_t cap) {
+    out[0] = '\0';
+    if (path == nullptr) return;
+    size_t l = strlen(path);
+    while (l > 0 && path[l - 1] == '/') l--;              // хвостовые слэши
+    if (l == 0) return;
+    const char* end = path + l;
+    const char* beg = end;
+    while (beg > path && beg[-1] != '/') beg--;           // последний сегмент
+    if ((size_t)(end - beg) == 6 && strncmp(beg, "export", 6) == 0 &&
+        beg > path) {
+        end = beg - 1;                                     // перед '/'
+        while (beg > path && beg[-1] != '/') beg--;        // предыдущий сегмент
+    }
+    size_t n = 0;
+    for (const char* p = beg; p < end && n < cap - 1; ++p) {
+        const char c = *p;
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-') out[n++] = c;
+    }
+    out[n] = '\0';
+}
+
+void BackupService::stepExtras(const char* ip, const char* token) {
+    char list[CFG_VALUE_LEN];
+    cfgGetStr("bk.extras", list, sizeof(list), "");
+    if (list[0] == '\0') return;
+    fs::FS* sd = SdService::getInstance().fs();
+    if (sd == nullptr) return;
+
+    // Буфер крупнее конфиг-снимка (users.json замка ≈ 30 КБ) — из кучи
+    // на время шага (тот же урок saveToJson: транзиентам — куча).
+    char* buf = (char*)malloc(BK_EXTRA_CAP);
+    if (buf == nullptr) {
+        log(LogLevel::Warning, "bk: %s extras — нет кучи", ip);
+        return;
+    }
+    const uint8_t keep = (uint8_t)cfgGetInt("bk.keep", 10);
+
+    uint8_t done = 0;
+    char* save = nullptr;
+    for (char* ent = strtok_r(list, ",", &save);
+         ent != nullptr && done < BK_MAX_EXTRAS;
+         ent = strtok_r(nullptr, ",", &save)) {
+        char* colon = strchr(ent, ':');
+        if (colon == nullptr) continue;
+        *colon = '\0';
+        if (strcmp(ent, ip) != 0) continue;               // запись чужого хоста
+        const char* path = colon + 1;
+        if (path[0] == '\0') continue;
+        done++;
+
+        char slug[25];
+        extraSlug(path, slug, sizeof(slug));
+        if (slug[0] == '\0') {
+            log(LogLevel::Warning, "bk: %s extra «%s» — пустой слаг, пропуск",
+                ip, path);
+            continue;
+        }
+
+        char url[96];
+        snprintf(url, sizeof(url), "http://%s/api/dev/%s", ip, path);
+        HTTPClient http;
+        http.setTimeout(8000);
+        if (!http.begin(url)) {
+            log(LogLevel::Warning, "bk: %s extra %s — begin", ip, slug);
+            continue;
+        }
+        http.addHeader("X-Auth-Token", token);
+        int code = http.GET();
+        if (code != 200) {
+            // 404 = хост на старой прошивке без endpoint'а — не беда и
+            // не ошибка хоста (lastErr не трогаем — конфиг уже снят).
+            if (code == 404) {
+                log(LogLevel::Info,
+                    "bk: %s extra %s — нет endpoint'а (старая прошивка)",
+                    ip, slug);
+            } else {
+                log(LogLevel::Warning, "bk: %s extra %s — http_%d",
+                    ip, slug, code);
+            }
+            http.end();
+            continue;
+        }
+        // Потоково в буфер с потолком: String на 30+ КБ — риск фрагментации
+        // кучи (урок: большие ответы — только в заранее выделенный буфер).
+        WiFiClient* stream = http.getStreamPtr();
+        size_t total = 0;
+        const uint32_t deadline = millis() + 8000;
+        while ((int32_t)(millis() - deadline) < 0) {
+            int av = stream->available();
+            if (av > 0) {
+                const size_t room = BK_EXTRA_CAP - 1 - total;
+                if (room == 0) break;
+                if ((size_t)av > room) av = (int)room;
+                int r = stream->read((uint8_t*)buf + total, av);
+                if (r <= 0) break;
+                total += (size_t)r;
+            } else if (!http.connected()) {
+                break;
+            } else {
+                delay(1);
+            }
+        }
+        http.end();
+        buf[total] = '\0';
+        if (total < 2 || (buf[0] != '{' && buf[0] != '[')) {
+            log(LogLevel::Warning, "bk: %s extra %s — bad_body (%u Б)",
+                ip, slug, (unsigned)total);
+            continue;
+        }
+
+        struct tm t;
+        if (!TimeService::getInstance().getLocalTime(t)) {
+            log(LogLevel::Warning, "bk: %s extra %s — no_time", ip, slug);
+            continue;
+        }
+        char dir[40];
+        snprintf(dir, sizeof(dir), "/backup/%s", ip);   // каталог уже есть (конфиг)
+        char fpath[80];
+        snprintf(fpath, sizeof(fpath), "%s/%s-%04d%02d%02d-%02d%02d%02d.json",
+                 dir, slug, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                 t.tm_hour, t.tm_min, t.tm_sec);
+
+        // tmp+rename — та же дисциплина, что у конфиг-снимков.
+        char tmp[84];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
+        File f = sd->open(tmp, FILE_WRITE);
+        if (!f) { log(LogLevel::Warning, "bk: %s extra %s — open", ip, slug); continue; }
+        size_t w = f.write((const uint8_t*)buf, total);
+        f.close();
+        if (w != total) {
+            sd->remove(tmp);
+            log(LogLevel::Warning, "bk: %s extra %s — write", ip, slug);
+            continue;
+        }
+        if (sd->exists(fpath)) sd->remove(fpath);
+        if (!sd->rename(tmp, fpath)) {
+            sd->remove(tmp);
+            log(LogLevel::Warning, "bk: %s extra %s — rename", ip, slug);
+            continue;
+        }
+        char latest[80], ltmp[84];
+        snprintf(latest, sizeof(latest), "%s/latest-%s.json", dir, slug);
+        snprintf(ltmp, sizeof(ltmp), "%s.tmp", latest);
+        File lf = sd->open(ltmp, FILE_WRITE);
+        if (lf) {
+            size_t lw = lf.write((const uint8_t*)buf, total);
+            lf.close();
+            if (lw == total) {
+                if (sd->exists(latest)) sd->remove(latest);
+                sd->rename(ltmp, latest);
+            } else sd->remove(ltmp);
+        }
+        char prefix[28];
+        snprintf(prefix, sizeof(prefix), "%s-", slug);
+        rotate(ip, prefix, keep);
+        log(LogLevel::Info, "bk: %s extra %s сохранён (%u Б)",
+            ip, slug, (unsigned)total);
+    }
+    free(buf);
 }
 
 // ============================================================================

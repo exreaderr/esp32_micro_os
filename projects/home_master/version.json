@@ -1,10 +1,10 @@
 {
   "version": "5.9.6",
-  "fw_md5": "6602bed5953f930a2f04a1111ce5be4b",
-  "fs_md5": "652eddf2c4829120906be88962f1a6fb",
+  "fw_md5": "a020324fd2b9158b26d4f2eee8cdc328",
+  "fs_md5": "541193f9faa3b16caf0692c59acd7f8d",
   "changelog": "Periodic production build update",
   "fw_url": "firmware.bin",
   "fs_url": "littlefs.bin",
   "host": "home_master",
-  "profile_version": "0.9.4"
+  "profile_version": "0.9.5"
 }

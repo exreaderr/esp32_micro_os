@@ -36,6 +36,7 @@
 #include "LockControl.h"
 #include <services/HttpService.h>
 #include <services/AuthService.h>
+#include <services/StorageService.h>   // 0.5.19: openRead для выгрузки базы
 #include <services/TimeService.h>
 #include <services/ConfigService.h>
 #include <services/AudioService.h>
@@ -256,6 +257,24 @@ bool SmartLockUi::handleApi(const char* tail, const ShUiRequest& req,
     if (strncmp(tail, "lock/", 5) == 0 && !isAdmin(req)) {
         status = 401;
         snprintf(buf, size, "{\"err\":\"admin_required\"}");
+        return true;
+    }
+
+    // 0.5.19: выгрузка базы пользователей для мастера (снимок на SD мастера;
+    // журнал событий доступа мастер уже ведёт сам — ядро зеркалирует
+    // ACCESS_* в microos/<id>/events/*, а его журнал слушает
+    // microos/+/events/#). Потоковая отдача файла (status=0 — ответ уже
+    // ушёл через streamFileDownload). Админ-токен обязателен: в файле ПИНы.
+    if (strcmp(tail, "lock/users/export") == 0 &&
+        strcmp(req.method, "GET") == 0) {
+        File f = StorageService::getInstance().openRead(SL_DB_PATH);
+        if (!f) {
+            status = 404;
+            snprintf(buf, size, "{\"err\":\"no_db\"}");
+            return true;
+        }
+        HttpService::getInstance().streamFileDownload(f, "users.json");
+        status = 0;
         return true;
     }
 

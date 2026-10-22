@@ -916,6 +916,19 @@ void HmArchiveModule::bfFinalize(const char* why) {
     for (uint8_t c = 0; c < CH_COUNT; ++c) total += _bfCnt[c];
 
     if (total == 0) {
+        // 0.9.5: сторож с 0 записей (шлюз занят/отвалился посреди сессии) —
+        // ОДИН повтор: сутки возвращаются в голову очереди, dead-mark только
+        // после второго такого же провала. Пустой ответ ("total":0) — это
+        // ЧЕСТНЫЙ ответ шлюза («у меня за эти сутки пусто»), не повторяем.
+        if (!_bfEmptySess && _bfRetryDay != _bfDayStart && _bfQLen < 8) {
+            _bfRetryDay = _bfDayStart;
+            memmove(_bfQueue + 1, _bfQueue, _bfQLen * sizeof(uint32_t));
+            _bfQueue[0] = _bfDayStart;
+            _bfQLen++;
+            log(LogLevel::Info, "архив W8: сессия %s — 0 записей, повтор один раз",
+                why);
+            return;
+        }
         bfDeadMark(_bfDayStart);
         _bfUnserv++;
         log(LogLevel::Info, "архив W8: сессия %s — 0 записей, сутки помечены необслужимыми",

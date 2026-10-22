@@ -514,6 +514,17 @@ void SmartLockApp::playGreeting(const SlUser* user) {
 void SmartLockApp::remoteOpen(SlOpenSource source, const char* userName) {
     if (userName != nullptr && userName[0] != '\0') {
         safeStrCopy(_lastUser, sizeof(_lastUser), userName);
+        // 0.5.19 (решение владельца 22.10): персонифицированное
+        // веб-открытие = проход жильца, идёт в его счётчик. Только WEB:
+        // MQTT — канал автоматики, не человека. «Админ (веб)» имени в
+        // базе не найдёт и посчитан не будет — это осознанно.
+        if (source == SlOpenSource::WEB) {
+            const SlUser* u = CardStore::getInstance().findByName(userName);
+            if (u != nullptr) {
+                CardStore::getInstance().recordUse(
+                    u->id, (uint32_t)TimeService::getInstance().getUnixTime());
+            }
+        }
     }
     LockControl::getInstance().openPulse(source, "REMOTE");
     sayFiltered("sl.remote.open", sl_track::REMOTE_OPEN);

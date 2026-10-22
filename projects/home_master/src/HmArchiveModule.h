@@ -51,7 +51,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HmArchive"; }
-    const char* getVersion() const override { return "0.1.0-w7"; }
+    const char* getVersion() const override { return "0.1.1-w8"; }   // w8.1: один повтор после сторожа (0.9.5)
     ModuleId getModuleId() const override { return 0x1107; }   // hm: 0x1101..0x1106 заняты
     void init() override;
     void start() override;
@@ -174,6 +174,7 @@ private:
     // чаще раза в сутки.
     uint32_t _bfQueue[8] = {};  uint8_t _bfQLen = 0;
     uint32_t _bfDead[8] = {};   uint8_t _bfDeadN = 0;
+    uint32_t _bfRetryDay = 0;   // 0.9.5: сутки, уже получившие свой 1 повтор (0 — никто)
     // Активная сессия
     bool     _bfActive = false;
     uint32_t _bfDayStart = 0;                 // from (00:00 UTC)

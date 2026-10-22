@@ -80,6 +80,11 @@ public:
     /// по нему контроллер знает ИМЯ (приветствие, аудит). nullptr — нет.
     const SlUser* findByPin(const char* pin) const;
 
+    /// Поиск по имени (0.5.19: персонифицированные веб-открытия идут
+    /// в счётчик проходов — UI знает из сессии только имя, карту для
+    /// recordUse находим здесь). Первое совпадение. nullptr — нет.
+    const SlUser* findByName(const char* name) const;
+
     /// ПИН занят другой записью (exceptId — не считать самого себя).
     /// ПИНи СТРОГО уникальны (монолит: единственный контроллер с жильцами).
     bool pinTaken(const char* pin, const char* exceptId) const;

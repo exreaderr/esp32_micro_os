@@ -39,7 +39,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.3.1-m37"; }   // m37: fleetSilence для hm.fleet (0.6.8); m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
+    const char* getVersion() const override { return "0.3.2-m38"; }   // m38: bk.extras — доп.снимки с хостов (0.9.5: база пользователей замка); m37: fleetSilence для hm.fleet (0.6.8); m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
     // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
     // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
     // в /backup/self/. Восстановление: applySnapshotJson + отложенный
@@ -92,6 +92,10 @@ private:
     static constexpr uint32_t CYCLE_GAP_MS     = 15000;    // между хостами в цикле
     static constexpr uint32_t ON_CHANGE_DELAY_MS = 300000; // ~5 мин после CFG_CHANGED
     static constexpr size_t   BK_SNAPSHOT_CAP  = 96 * (32 + 48 + 6) + 16;  // = CFG_SNAPSHOT_CAP ядра
+    // 0.9.5 (m38): доп.снимки крупнее конфига (users.json замка на 250
+    // пользователей ≈ 30 КБ) — отдельный потолок и отдельный буфер.
+    static constexpr size_t   BK_EXTRA_CAP     = 40960;
+    static constexpr uint8_t  BK_MAX_EXTRAS    = 4;   // доп.endpoint'ов на хост за шаг
 
     struct HostState {
         char     ip[20]      = "";
@@ -119,7 +123,12 @@ private:
                           char* err, size_t errCap);
     bool     storeSnapshot(const char* ip, const char* data, size_t len,
                            char* err, size_t errCap);
-    void     rotate(const char* ip, uint8_t keep);
+    void     rotate(const char* ip, const char* prefix, uint8_t keep);
+    // 0.9.5 (m38): после удачного снимка конфига — доп.снимки по bk.extras
+    // ("ip:путь,ip:путь", путь от /api/dev/). Ошибки extra НЕ портят
+    // lastErr хоста (конфиг уже снят) — только лог; 404 = старая
+    // прошивка хоста, без endpoint'а.
+    void     stepExtras(const char* ip, const char* token);
     static bool ipListed(const char* csv, const char* ip);   // "a,b,c" без пробелов
 
     HostState _hosts[BK_MAX_HOSTS];

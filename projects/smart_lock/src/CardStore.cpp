@@ -103,6 +103,17 @@ const SlUser* CardStore::findByPin(const char* pin) const {
     return nullptr;
 }
 
+// 0.5.19: имя из веб-сессии -> запись базы (счётчик проходов веб-открытий).
+const SlUser* CardStore::findByName(const char* name) const {
+    if (name == nullptr || name[0] == '\0') return nullptr;
+    for (uint8_t i = 0; i < _count; ++i) {
+        if (strcmp(users()[i].name, name) == 0) {
+            return &users()[i];
+        }
+    }
+    return nullptr;
+}
+
 bool CardStore::pinTaken(const char* pin, const char* exceptId) const {
     if (pin == nullptr || pin[0] == '\0') return false;   // пустой не занят
     for (uint8_t i = 0; i < _count; ++i) {
