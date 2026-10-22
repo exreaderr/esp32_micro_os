@@ -531,6 +531,7 @@ static void extraSlug(const char* path, char* out, size_t cap) {
     if ((size_t)(end - beg) == 6 && strncmp(beg, "export", 6) == 0 &&
         beg > path) {
         end = beg - 1;                                     // перед '/'
+        beg = end;   // 0.9.5-фикс (полевой прогон 22.10): beg тоже отступаем
         while (beg > path && beg[-1] != '/') beg--;        // предыдущий сегмент
     }
     size_t n = 0;
