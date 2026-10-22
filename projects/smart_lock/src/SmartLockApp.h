@@ -17,7 +17,7 @@
 // нумерация была наследием времён, когда версия профиля совпадала с версией
 // ядра. Ведущий 0 = «это версия ПРОФИЛЯ», хвост 5.15 сохранён — профиль
 // прошёл путь и его история видна (решение владельца 08.09.2026).
-#define MICROOS_PROFILE_VER 0.5.17
+#define MICROOS_PROFILE_VER 0.5.18
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>
@@ -36,7 +36,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "SmartLockApp"; }
-    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.17: статус-лента WS2812 (SlStatusLed, 3 LED: замок/кнопка/ПАЗ, поля led.* — решение владельца 11.09); 0.5.16: единая инфо-карточка флота (uiDisplayName «Умный замок», extras «Циклов замка»; ядро 5.9.0); 0.5.15: шкала профиля отвязана от ядра (была 5.5.15), двухполевая версия OTA (ядро 5.8.8); 5.5.14: правило 23, зеркало blocked/expiry     // 5.5.14: правило 23 — порядок вкладок (Сеть, ПАЗ, Система, Админ → профильные), «Служебные» не отображаются (web); правило зеркала — веб-доступ чтит blocked/expiry как карта (репорт 03.09)
+    const char* getVersion() const override { return MICROOS_STR(MICROOS_PROFILE_VER); }   // 0.5.18: таймаут кадра Wiegand в конфиг (lock.wg_frame_ms, умолчание 100 мс — ST-PR012EHM-BK на изолированном входе даёт паузу посреди кадра; полевой лог 21.10: пары noise с суммой ровно 26); лог шума с суммой бит за 500 мс; 0.5.17: статус-лента WS2812 (SlStatusLed, 3 LED: замок/кнопка/ПАЗ, поля led.* — решение владельца 11.09); 0.5.16: единая инфо-карточка флота (uiDisplayName «Умный замок», extras «Циклов замка»; ядро 5.9.0); 0.5.15: шкала профиля отвязана от ядра (была 5.5.15), двухполевая версия OTA (ядро 5.8.8); 5.5.14: правило 23, зеркало blocked/expiry     // 5.5.14: правило 23 — порядок вкладок (Сеть, ПАЗ, Система, Админ → профильные), «Служебные» не отображаются (web); правило зеркала — веб-доступ чтит blocked/expiry как карта (репорт 03.09)
     ModuleId getModuleId() const override { return 0x1002; }   // профиль
 
     void registerExtensions() override;   // конфиг lock.*, SoundPack
@@ -136,6 +136,13 @@ private:
     uint32_t _webReadStart = 0;
     char _webReadCard[9] = "";
     static constexpr uint32_t WEB_READ_TIMEOUT_MS = 10000;
+
+    // 0.5.18: окно суммирования бит шума Wiegand — фрагменты одного
+    // кадра, разнесённые паузой, в логе видны как «N, всего за окно 26»,
+    // а не как серия наводок.
+    uint32_t _noiseWinStartMs = 0;
+    uint32_t _noiseWinBits = 0;
+    static constexpr uint32_t NOISE_WINDOW_MS = 500;
 
     // Последнее событие (для API)
     char _lastCard[9] = "None";

@@ -58,6 +58,13 @@ public:
     /// Привязка к пинам/параметрам из манифеста профиля.
     void configure(uint8_t pinD0, uint8_t pinD1, const Config& cfg);
 
+    /// Смена таймаута кадра на лету (0.5.18 замка). Значение из конфига
+    /// профиля читается в init() профильного приложения — ПОСЛЕ
+    /// ConfigService::init (урок 5.8.4-pre5: на фазе registerDrivers
+    /// значения схемы ещё не подняты, видны только дефолты). Переустановка
+    /// железа не нужна: таймаут — просто сравниваемая величина в ISR/poll.
+    void setFrameTimeoutMs(uint32_t ms) { _cfg.frameTimeoutMs = ms; }
+
     // --- IDeviceDriver ---------------------------------------------------
     const char* driverName() const override { return "wiegand"; }
     bool init() override;

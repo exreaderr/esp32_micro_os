@@ -23,6 +23,7 @@
 #include <services/StorageService.h>   // персистентный кэш погоды
 #include <core/Events.h>
 #include <core/EventBus.h>
+#include <catalog/wiegand/WiegandDriver.h>   // 0.5.18: таймаут кадра из конфига
 
 // Хелпер HA-состояний: retained-публикация с учётом выключателя
 // mqtt.ha_discovery (единая точка политики «объявлять/молчать»).
@@ -75,6 +76,15 @@ void SmartLockApp::init() {
         log(LogLevel::Warning,
             "джампер GPIO35: строгий локальный режим (сеть игнорируется)");
     }
+    // 0.5.18: таймаут кадра Wiegand — из конфига. Читаем ЗДЕСЬ, а не в
+    // registerDrivers: значения схемы поднимает ConfigService::init, а он
+    // бежит ПОСЛЕ регистрации драйверов (урок 5.8.4-pre5 — драйверы читают
+    // конфиг в init()). Железо переустанавливать не нужно: таймаут —
+    // просто сравниваемая величина в ISR/poll драйвера.
+    uint32_t wgFrameMs = cfgGetUInt("lock.wg_frame_ms", 100);
+    WiegandDriver::getInstance().setFrameTimeoutMs(wgFrameMs);
+    log(LogLevel::Info, "wiegand frame timeout: %lu ms",
+        (unsigned long)wgFrameMs);
     _initialized = true;
     log(LogLevel::Info, "access policy ready, cards=%u",
         CardStore::getInstance().count());
@@ -224,8 +234,16 @@ void SmartLockApp::onEvent(int32_t eventId, const ShEventData* data) {
         return;
     }
     if (eventId == DRV_EVENT_WIEGAND_NOISE) {
-        log(LogLevel::Warning, "wiegand noise, bits=%ld",
-            data ? (long)data->code : 0L);
+        // 0.5.18: сумма бит за окно 500 мс — разнесённые паузой фрагменты
+        // одного кадра видны в логе как «всего 26», а не серия наводок.
+        uint32_t nowMs = millis();
+        if (nowMs - _noiseWinStartMs > NOISE_WINDOW_MS) {
+            _noiseWinStartMs = nowMs;
+            _noiseWinBits = 0;
+        }
+        _noiseWinBits += data ? (uint32_t)data->code : 0;
+        log(LogLevel::Warning, "wiegand noise, bits=%ld (окно 500 мс: %lu)",
+            data ? (long)data->code : 0L, (unsigned long)_noiseWinBits);
         return;
     }
 

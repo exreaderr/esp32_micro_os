@@ -14,6 +14,9 @@
   --bg: #f3eee2; --card: #fffdf6; --text: #3b3226; --text2: #8a7c63;
   --border: #ddd0b8; --field: #bfa982; --info: #9a6716; --success: #5d8a3c;
   --warning: #cf8a1c; --error: #b23c2e; --svc: #71634f;
+  /* 0.9.10-ui: отличительный акцент шлюза — «грозовая сталь» (синевато-морской);
+     в рамках общей концепции, но визуально отличается от замка/мастера */
+  --accent: #2e6e8e; --accent-dk: #245870; --accent-soft: rgba(46,110,142,.16);
   /* Акценты метрик — «погодная» палитра поверх тёплой гаммы экосистемы */
   --c-temp: #c05c2a; --c-hum: #4a7d9a; --c-press: #5d8a3c;
   --c-wind: #7a6a9a; --c-rain: #3d8a99;
@@ -22,6 +25,7 @@
 body.dark {
   --bg: #1f1810; --card: #2a2114; --text: #ede3cf; --text2: #ab997a;
   --border: #4a3d27; --field: #6b5834; --svc: #584b37;
+  --accent: #5aa3c4; --accent-dk: #48879f; --accent-soft: rgba(90,163,196,.22);
   --c-temp: #e08a5a; --c-hum: #7fb0cc; --c-press: #8fbc6a;
   --c-wind: #ab9bcc; --c-rain: #6fb5c4;
   --shadow: 0 2px 10px rgba(0,0,0,.5);
@@ -31,7 +35,7 @@ body {
   background: var(--bg); color: var(--text); transition: background .3s, color .3s;
   padding: calc(10px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
 }
-.container { max-width: 700px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+.container { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
 .hidden { display: none !important; }
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
@@ -63,21 +67,41 @@ input[type=password] {
   border-radius: 10px; background: var(--bg); color: var(--text); font-size: 15px;
   margin: 8px 0;
 }
+/* ---- 0.9.10-ui: кнопки — залитые, семантические (концепция smart_lock,
+   акцент шлюза «грозовая сталь»). Читаются без приглядывания. ---- */
 .btn {
   display: inline-block; border: none; border-radius: 10px; padding: 10px 16px;
-  background: var(--field); color: #fff; font-size: 15px; cursor: pointer;
+  background: var(--accent); color: #fff; font-size: 15px; font-weight: 600;
+  cursor: pointer; text-decoration: none; font-family: inherit;
+  transition: filter .15s, transform .06s;
 }
-/* ---- Настроечные панели (0.4.0, движок по образцу smart_lock 5.5.14) ---- */
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.btn:hover { filter: brightness(1.08); }
+.btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.sec    { background: var(--svc); }
+.btn.danger { background: var(--error); }
+.btn.warn   { background: var(--warning); color: #2b2113; }
+.btn.small  { padding: 7px 12px; font-size: 13px; border-radius: 9px; }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+/* ---- Настроечные панели (0.4.0, движок по образцу smart_lock 5.5.14;
+   0.9.10-ui: плотность + брейкпоинты 380/760/1000 по концепции замка) ---- */
+.container { max-width: 760px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
 .form-grid .span2 { grid-column: span 2; }
-@media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } .form-grid .span2 { grid-column: span 1; } }
-.form-grid label { font-size: 10px; font-weight: 600; color: var(--text2); display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .3px; }
+@media (max-width: 759px) { .form-grid { grid-template-columns: 1fr; } .form-grid .span2 { grid-column: span 1; } }
+@media (min-width: 1000px) { .container { max-width: 980px; } }
+@media (max-width: 380px) {
+  .card { padding: 10px 12px; }
+  .container { gap: 8px; }
+  .btn { width: 100%; }
+}
+.form-grid label { font-size: 10px; font-weight: 600; color: var(--text2); display: block; margin-bottom: 3px; text-transform: uppercase; letter-spacing: .3px; }
 .form-grid input {
   width: 100%; padding: 9px 12px; border-radius: 10px; box-sizing: border-box;
   border: 1.5px solid var(--field); background: var(--card);
   color: var(--text); font-size: 14px; outline: none; font-family: inherit;
 }
-.form-grid input:focus { border-color: var(--info); }
+.form-grid input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .form-grid input:disabled { opacity: .55; }
 .form-grid input[type="checkbox"] { width: auto; }
 .check-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--card); border-radius: 10px; border: 1.5px solid var(--field); }
@@ -302,7 +326,7 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     <!-- РАДИО (приёмник CC1101): статус + профильные настройки (0.4.0) -->
     <div id="tab-radio" class="tab-pane hidden">
       <div id="radioRows"><div class="hint">Загрузка…</div></div>
-      <div class="chips"><button class="chip" onclick="renderRadio()">Обновить</button></div>
+      <div class="chips"><button class="btn small sec" onclick="renderRadio()">Обновить</button></div>
       <div id="cfg-radio"></div>
       <div class="save-row"><button class="btn" onclick="saveConfig('radio')">💾 Сохранить параметры</button></div>
 
@@ -320,8 +344,8 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
             <option value="60" selected>окно 60 с</option>
             <option value="120">окно 120 с</option>
           </select>
-          <button class="chip" id="scanStartBtn" onclick="scanStart()">Найти лучшую частоту</button>
-          <button class="chip hidden" id="scanAbortBtn" onclick="scanAbort()">Отмена</button>
+          <button class="btn small" id="scanStartBtn" onclick="scanStart()">Найти лучшую частоту</button>
+          <button class="btn small danger hidden" id="scanAbortBtn" onclick="scanAbort()">Отмена</button>
         </div>
         <div class="hint" id="scanProgress"></div>
         <div id="scanChart"></div>
@@ -341,7 +365,7 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     <!-- СЕТЬ: статус + настройка групп «Сеть»/«MQTT» (0.4.0) -->
     <div id="tab-net" class="tab-pane">
       <div id="netRows"><div class="hint">Загрузка…</div></div>
-      <div class="chips"><button class="chip" onclick="renderNet()">Обновить</button></div>
+      <div class="chips"><button class="btn small sec" onclick="renderNet()">Обновить</button></div>
       <div id="cfg-net"></div>
       <div class="save-row"><button class="btn" onclick="saveConfig('net')">💾 Сохранить параметры</button></div>
       <div class="hint">Остальные поля (журналы, аудит, даталоггер) — в ядерной
@@ -352,7 +376,7 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
     <div id="tab-paz" class="tab-pane hidden">
       <div id="pazRows"><div class="hint">Загрузка…</div></div>
       <div id="pazJournal"></div>
-      <div class="chips"><button class="chip" onclick="renderPaz()">Обновить</button></div>
+      <div class="chips"><button class="btn small sec" onclick="renderPaz()">Обновить</button></div>
       <div id="cfg-paz"></div>
       <div class="save-row"><button class="btn" onclick="saveConfig('paz')">💾 Сохранить параметры</button></div>
     </div>
@@ -368,23 +392,23 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
         <div class="hint" id="otaBarTxt" style="margin-top:4px"></div>
       </div>
       <div class="chips">
-        <button class="chip" onclick="otaCheck()">Проверить обновление</button>
-        <button class="chip" onclick="otaRemote()">Обновить с сервера (прошивка + ФС)</button>
+        <button class="btn small sec" onclick="otaCheck()">Проверить обновление</button>
+        <button class="btn small" onclick="otaRemote()">Обновить с сервера (прошивка + ФС)</button>
       </div>
       <div class="chips">
-        <button class="chip" onclick="$('otaFwFile').click()">Прошивка из файла (.bin)</button>
-        <button class="chip" onclick="$('otaFsFile').click()">Файловая система (.bin)</button>
+        <button class="btn small sec" onclick="$('otaFwFile').click()">Прошивка из файла (.bin)</button>
+        <button class="btn small sec" onclick="$('otaFsFile').click()">Файловая система (.bin)</button>
         <input type="file" id="otaFwFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fw')">
         <input type="file" id="otaFsFile" accept=".bin" class="hidden" onchange="otaUpload(this,'fs')">
       </div>
       <div class="chips">
-        <button class="chip" onclick="cfgBackup()">Бэкап конфигурации в NVS</button>
-        <button class="chip" onclick="cfgRestore()">Восстановить из NVS</button>
+        <button class="btn small sec" onclick="cfgBackup()">Бэкап конфигурации в NVS</button>
+        <button class="btn small sec" onclick="cfgRestore()">Восстановить из NVS</button>
       </div>
       <div class="hint" id="cfgBakInfo"></div>
       <div id="otaHistory"></div>
       <div class="chips" style="margin-top:8px">
-        <button class="chip" onclick="rebootDevice()">Перезагрузить контроллер</button>
+        <button class="btn small danger" onclick="rebootDevice()">Перезагрузить контроллер</button>
       </div>
       <div class="hint" style="margin-top:6px">A/B-разделы: новая прошивка стартует в режиме
         проверки (60 с), при сбое загрузчик сам откатывается на предыдущую. Обновление ФС
@@ -415,9 +439,9 @@ body.dark .scale .bar { background: rgba(255,255,255,.08); }
       <div id="cfg-adm"></div>
       <div class="save-row"><button class="btn" onclick="saveConfig('adm')">💾 Сохранить параметры</button></div>
       <div class="chips">
-        <a class="chip" href="/admin">Открыть /admin (все поля, журналы, аудит)</a>
-        <a class="chip" href="/api/dev/weather" target="_blank">weather-JSON</a>
-        <button class="chip" onclick="doLogout()">Выйти из админки</button>
+        <a class="btn small sec" href="/admin">Открыть /admin (все поля, журналы, аудит)</a>
+        <a class="btn small sec" href="/api/dev/weather" target="_blank">weather-JSON</a>
+        <button class="btn small danger" onclick="doLogout()">Выйти из админки</button>
       </div>
     </div>
   </div>
