@@ -691,9 +691,14 @@ bool BackupService::pushSnapshot(const char* ip, const char* file,
     fs::FS* sd = SdService::getInstance().fs();
     if (sd == nullptr) { snprintf(err, errCap, "no_sd"); return false; }
 
-    // Путь собираем сами — траверсал режем на входе (file — только имя)
+    // Путь собираем сами — траверсал режем на входе (file — только имя).
+    // 0.9.5 прогон-3: восстанавливаются ТОЛЬКО конфиг-снимки (extras —
+    // пользовательские базы и пр. — хранятся, но не разворачиваются
+    // через /api/config/import: замок чужой JSON как конфиг не примет,
+    // а вот мусорный CFG_CHANGED-шторм нам не нужен).
     if (file == nullptr || strstr(file, "..") != nullptr ||
-        strchr(file, '/') != nullptr) {
+        strchr(file, '/') != nullptr ||
+        strncmp(file, "config-", 7) != 0) {
         snprintf(err, errCap, "bad_name");
         return false;
     }
@@ -790,15 +795,32 @@ size_t BackupService::apiFiles(const char* ip, char* buf, size_t bufSize) {
     if (d) {
         // Свежие первыми: имена сортируются — выводим в обратном порядке,
         // для этого сначала в массив (снимков ≤60, как в rotate).
+        // 0.9.5 прогон-3: extras (users-*.json и др. серии bk.extras)
+        // отдаём ОТДЕЛЬНЫМ массивом "extras" — они не конфиги, кнопки
+        // «Развернуть» у них в морде нет (и apiRestore их не примет).
         char names[60][40];
         uint8_t n = 0;
-        for (File f = d.openNextFile(); f && n < 60; f = d.openNextFile()) {
+        char xnames[16][40];
+        uint8_t xn = 0;
+        for (File f = d.openNextFile(); f && (n < 60 || xn < 16); f = d.openNextFile()) {
             const char* nm = f.name();
             const char* base = strrchr(nm, '/');
             base = base != nullptr ? base + 1 : nm;
-            if (strncmp(base, "config-", 7) != 0) continue;
             size_t l = strlen(base);
             if (l >= 40) continue;
+            if (strncmp(base, "config-", 7) != 0) {
+                // extras: *.json серий bk.extras; latest-* — мимо
+                if (xn >= 16 || l < 6 || strcmp(base + l - 5, ".json") != 0 ||
+                    strncmp(base, "latest", 6) == 0) continue;
+                uint8_t i = xn;
+                while (i > 0 && strcmp(xnames[i - 1], base) > 0) {
+                    memcpy(xnames[i], xnames[i - 1], 40);
+                    i--;
+                }
+                memcpy(xnames[i], base, l + 1);
+                xn++;
+                continue;
+            }
             uint8_t i = n;
             while (i > 0 && strcmp(names[i - 1], base) > 0) {
                 memcpy(names[i], names[i - 1], 40);
@@ -811,6 +833,17 @@ size_t BackupService::apiFiles(const char* ip, char* buf, size_t bufSize) {
         for (int i = (int)n - 1; i >= 0 && pos < bufSize - 48; --i) {
             int w = snprintf(buf + pos, bufSize - pos, "%s\"%s\"",
                              first ? "" : ",", names[i]);
+            if (w < 0) break;
+            pos += (size_t)w;
+            first = false;
+        }
+        if (pos < bufSize - 12) {
+            memcpy(buf + pos, "],\"extras\":[", 12);
+            pos += 12;
+        }
+        for (int i = (int)xn - 1; i >= 0 && pos < bufSize - 48; --i) {
+            int w = snprintf(buf + pos, bufSize - pos, "%s\"%s\"",
+                             first ? "" : ",", xnames[i]);
             if (w < 0) break;
             pos += (size_t)w;
             first = false;
@@ -849,7 +882,8 @@ size_t BackupService::apiRestore(const char* ip, const char* file,
     // читаем снимок с SD, applySnapshotJson, отложенный ребут.
     // Ответ несёт reboot_in_ms — панель покажет оверлей перезагрузки.
     if (strcmp(ip, "self") == 0) {
-        if (strchr(file, '/') != nullptr || strstr(file, "..") != nullptr) {
+        if (strchr(file, '/') != nullptr || strstr(file, "..") != nullptr ||
+            strncmp(file, "config-", 7) != 0) {   // 0.9.5-пр3: только конфиги
             return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"name\"}");
         }
         fs::FS* sd = SdService::getInstance().fs();

@@ -1084,11 +1084,14 @@ async function bkFiles(ip,btn){
     const j=await (await api('GET','/api/dev/hm/backup/files?ip='+encodeURIComponent(ip))).json();
     box.dataset.open='1';btn.textContent='Скрыть список';
     if(j.err){box.innerHTML='<div class="note">'+j.err+'</div>';return;}
-    if(!(j.files||[]).length){box.innerHTML='<div class="note">снимков нет</div>';return;}
+    if(!(j.files||[]).length&&!(j.extras||[]).length){box.innerHTML='<div class="note">снимков нет</div>';return;}
     box.innerHTML=j.files.map(f=>
       '<div class="row"><span class="k">'+f+'</span><span>'
       +'<button onclick="bkRestore(\''+ip+'\',\''+f+'\')">Развернуть</button></span></div>'
-    ).join('');
+    ).join('')
+    // 0.9.5-пр3: extras (серии bk.extras) — только хранение, без «Развернуть»
+    +((j.extras||[]).length?'<div class="note">доп.снимки (bk.extras, только хранение):</div>'
+      +j.extras.map(f=>'<div class="row"><span class="k">'+f+'</span><span></span></div>').join(''):'');
   }catch(e){}
 }
 function bkRestore(ip,f){
