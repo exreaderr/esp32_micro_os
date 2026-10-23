@@ -9,6 +9,7 @@
 #include "SdService.h"
 #include "BrokerService.h"
 #include "BridgeService.h"
+#include "NtpServerService.h"
 #include <core/EventBus.h>
 #include <core/Events.h>
 #include <core/Version.h>
@@ -107,6 +108,19 @@ void HomeMasterApp::tick() {
         _lastStateMs = now;
         publishHmState();
     }
+    // Отложенный ре-паблик online (0.9.7, добивка «трёх ребутов»): LWT
+    // призрачной дефолтной сессии (microos-<mac>) на верхнем брокере
+    // срабатывает с опозданием и затирает живой online после «прошивка +
+    // восстановление конфига». Однократный повтор online через 90 с после
+    // подключения перекрывает любой такой поздний LWT.
+    if (_onlineRepubAt != 0 && (int32_t)(now - _onlineRepubAt) >= 0) {
+        _onlineRepubAt = 0;
+        if (MqttTransport::getInstance().publishStateSuffix(
+                "state", "online", /*retained=*/true)) {
+            log(LogLevel::Info,
+                "online re-published (страховка от призрачного LWT, 0.9.7)");
+        }
+    }
 }
 
 // ============================================================================
@@ -130,6 +144,9 @@ void HomeMasterApp::onEvent(int32_t eventId, const ShEventData* data) {
             // (retained-конфиги) и сразу публикуем свежий снимок профиля.
             publishHaDiscovery();
             publishHmState();
+            // 0.9.7: страховка от позднего LWT призрачной сессии (гонка
+            // «прошивка + восстановление» — разгадка «трёх ребутов»).
+            _onlineRepubAt = millis() + HM_ONLINE_REPUB_DELAY_MS;
             break;
         default: break;
     }
@@ -292,11 +309,12 @@ void HomeMasterApp::publishHaDiscovery() {
 void HomeMasterApp::publishHmState() {
     SdService& sd = SdService::getInstance();
     BrokerService& br = BrokerService::getInstance();
-    char json[192];
+    NtpServerService& ntps = NtpServerService::getInstance();
+    char json[224];
     snprintf(json, sizeof(json),
         "{\"sd\":\"%s\",\"sd_mb\":%llu,\"sd_used_mb\":%llu,"
         "\"br_on\":%u,\"br_clients\":%u,\"br_retained\":%lu,"
-        "\"br_rx\":%lu,\"mode\":\"%s\"}",
+        "\"br_rx\":%lu,\"mode\":\"%s\",\"ntps_rx\":%lu,\"ntps_tx\":%lu}",
         sd.stateStr(),
         (unsigned long long)sd.sizeMb(),
         (unsigned long long)sd.usedMb(),
@@ -304,7 +322,9 @@ void HomeMasterApp::publishHmState() {
         (unsigned)br.clients(),
         (unsigned long)br.retained(),
         (unsigned long)br.rxTotal(),
-        modeStr());
+        modeStr(),
+        (unsigned long)ntps.rxTotal(),
+        (unsigned long)ntps.txTotal());
     MqttTransport::getInstance().publishStateSuffix("hm/state", json, true);
 }
 

@@ -11,6 +11,7 @@
 #include "OtaMirrorService.h"
 #include "WeatherMirror.h"
 #include "HmArchiveModule.h"
+#include "NtpServerService.h"
 #include "StatusLedModule.h"
 #include "PanelDisplayModule.h"
 #include "HomeMasterApp.h"
@@ -71,5 +72,8 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     // W7 (20.09.2026): архивариус — слушатель брокера (weather шлюза),
     // потребитель SD. После брокера и SD, рядом с журналом/бэкапами.
     k.registerModule(&HmArchiveModule::getInstance(),  9, 6);
+    // M4-NTP (23.10.2026, 0.9.8): NTP-сервер парка, UDP/123. Рядом с
+    // архивариусом — независимый слушатель, ни от кого не зависит.
+    k.registerModule(&NtpServerService::getInstance(), 9, 7);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }
