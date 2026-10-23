@@ -148,6 +148,27 @@ void BridgeService::onBrokerEvent(const BrokerEventInfo& ev) {
                      "bridge: avail-топик клиента '%s' не выучен, synth в "
                      "угадайку %s", ev.clientId, topic);
         }
+        // Страж по AVAIL-ТОПИКУ (0.9.6, разгадка «трёх ребутов» 22.10):
+        // после прошивки устройство встаёт с конфигом по умолчанию и
+        // коннектится под ДЕФОЛТНЫМ hostname (microos-<mac>), а после
+        // восстановления конфига — под настоящим. Призрак дефолтной
+        // сессии умирает поздно, clientId другой — страж по clientId
+        // выше его не ловит, и synth offline затирал живой online
+        // до третьего ребута. Но avail-ТОПИК устройства (chip-id) тем
+        // временем держит ЖИВАЯ сессия под новым именем — не хороним.
+        // Закрывает и самого мастера (его in-proc клиент home_master
+        // держит тот же топик, что призрак microos-<mac>).
+        for (uint8_t i = 0; i < AVAIL_MAX; ++i) {
+            if (self._avail[i].clientId[0] != '\0' &&
+                strcmp(self._avail[i].clientId, ev.clientId) != 0 &&
+                strcmp(self._avail[i].topic, topic) == 0 &&
+                BrokerService::getInstance().hasClient(self._avail[i].clientId)) {
+                self.log(LogLevel::Info,
+                         "bridge: synth offline пропущен — топик %s держит "
+                         "живая сессия '%s'", topic, self._avail[i].clientId);
+                return;
+            }
+        }
         if (MqttTransport::getInstance().publishRaw(topic, "offline", true)) {
             self._synth++;
             self._up++;
