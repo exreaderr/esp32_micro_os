@@ -1693,8 +1693,14 @@ void WeatherGateApp::forecastTask(void*) {
              "precipitation_sum&forecast_days=7&timezone=auto",
              (double)lat, (double)lon);
 
-    WiFiClient client;
-    HTTPClient http;
+    // 0.9.10: долгоживущий статический клиент вместо пересоздания на прогон —
+    // arduino-esp32 issue #8804: HTTPClient/WiFiClient, созданные внутри
+    // отдельной FreeRTOS-задачи, теряют ~200–380 Б heap на запрос даже с
+    // корректным end()/stop(); обход — статический клиент, begin() на прогон.
+    // A/B 26.10 подтвердил локализацию: 25 ч без цикла open-meteo — наклон
+    // heap ровно 0, с циклом −736 Б/ч при 2 прогонах/час (каденс-маркер).
+    static WiFiClient client;
+    static HTTPClient http;
     http.setTimeout(5000);
     bool ok = false;
     int httpCode = 0;               // 0.9.3: диагностика фазы обрыва
