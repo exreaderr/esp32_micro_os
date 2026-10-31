@@ -114,14 +114,14 @@ void sMQTTClient::processMessage()
 					payload += len;
 				}
 
-				if (_parent->isClientConnected(this) == false)
-				{
-					sMQTTNewClientEvent event(this, username, password);
-					if(_parent->onEvent(&event)==false)
-						status = sMQTTConnReturnBadUsernameOrPassword;
-				}
+				// ПАТЧ МикроОС 5.9.7: сначала аутентификация НОВОЙ сессии,
+				// и только затем takeover старой. Иначе любой неаутентифицированный
+				// CONNECT с чужим client id мог бы разрывать живое устройство.
+				sMQTTNewClientEvent event(this, username, password);
+				if(_parent->onEvent(&event)==false)
+					status = sMQTTConnReturnBadUsernameOrPassword;
 				else
-					status = sMQTTConnReturnIdentifierRejected;
+					_parent->takeover(this);
 			}
 
 			sMQTTMessage msg(sMQTTMessage::Type::ConnAck);

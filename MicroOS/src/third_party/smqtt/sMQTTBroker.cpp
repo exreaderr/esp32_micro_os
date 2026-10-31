@@ -1,5 +1,21 @@
 #include"sMQTTBroker.h"
 
+#if defined(ESP32)
+#include <lwip/sockets.h>   // SO_KEEPALIVE, TCP_KEEPIDLE/KEEPINTVL/KEEPCNT
+// ПАТЧ МикроОС 5.9.7: транспортный сторож принятых сокетов. Дополняет MQTT
+// keepalive (1,5×) и особенно полезен клиентам с keepalive=0: мёртвый TCP
+// не должен оставаться вечной призрачной сессией. Значения фиксированные,
+// новых полей конфигурации нет.
+static void smqttSetTcpKeepAlive(TCPClient &client)
+{
+	int one = 1, idle = 60, interval = 10, probes = 3;
+	client.setSocketOption(SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
+	client.setSocketOption(IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+	client.setSocketOption(IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+	client.setSocketOption(IPPROTO_TCP, TCP_KEEPCNT, &probes, sizeof(probes));
+}
+#endif
+
 bool sMQTTBroker::init(unsigned short port, bool checkWifiConnection)
 {
 	isCheckWifiConnection=checkWifiConnection;
@@ -29,6 +45,9 @@ void sMQTTBroker::update()
 	if (client)
 	{
 		SMQTT_LOGD("New Client");
+#if defined(ESP32)
+		smqttSetTcpKeepAlive(client);
+#endif
 		sMQTTClient *sClient = new sMQTTClient(this, client);
 		clients.push_back(sClient);
 	}
@@ -219,21 +238,20 @@ void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client)
 		}
 	}
 };
-bool sMQTTBroker::isClientConnected(sMQTTClient *client)
+bool sMQTTBroker::takeover(sMQTTClient *client)
 {
-	sMQTTClientList::iterator clit;
-	for (clit = clients.begin(); clit != clients.end(); clit++)
+	bool replaced = false;
+	for (sMQTTClientList::iterator clit = clients.begin(); clit != clients.end(); clit++)
 	{
 		sMQTTClient *c = *clit;
-		if (c == client)
-			return false;
-		if (c->getClientId() == client->getClientId())
+		if (c != client && c->getClientId() == client->getClientId())
 		{
-			SMQTT_LOGD("found:%s client size:%d", client->getClientId().c_str(), clients.size());
-			return true;
+			SMQTT_LOGD("takeover:%s client size:%d", client->getClientId().c_str(), clients.size());
+			c->stopConnection();
+			replaced = true;
 		}
 	}
-	return false;
+	return replaced;
 };
 void sMQTTBroker::publish(const std::string &topic, const std::string &payload, unsigned char qos, bool retain)
 {

@@ -297,6 +297,16 @@ void Kernel::boot(IDeviceProfile* profile) {
 // ============================================================================
 bool Kernel::registerModule(IModule* module, uint8_t priority, uint32_t tickMs) {
     if (module == nullptr) return false;
+    // 5.9.7: ModuleId — ключ диагностики и реестра, дубль недопустим.
+    // Второй модуль отклоняется ДО занятия слота; первый остаётся работать.
+    for (uint8_t i = 0; i < _moduleCount; ++i) {
+        if (_slots[i].module->getModuleId() == module->getModuleId()) {
+            Serial.printf("[KERNEL] ERROR: duplicate ModuleId 0x%04X, '%s' rejected (owner '%s')\n",
+                          (unsigned)module->getModuleId(), module->getName(),
+                          _slots[i].module->getName());
+            return false;
+        }
+    }
     if (_moduleCount >= KERNEL_MAX_MODULES) {
         Serial.printf("[KERNEL] ERROR: module table full, '%s' rejected\n",
                       module->getName());

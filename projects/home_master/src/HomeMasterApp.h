@@ -12,7 +12,9 @@
 // ядра — Version.h зашивает полную метку «MICROOS|ядро|профиль|END» в .bin,
 // getVersion() отдаёт ту же версию строкой. Расходиться не могут по
 // построению.
-#define MICROOS_PROFILE_VER 0.9.8
+// 0.9.9: ядро 5.9.7 — takeover/TCP keepalive + закрыт дубль ModuleId:
+// HmArchiveModule 0x1107 → 0x110C. Профильные страховки 0.9.6/0.9.7 сохранены.
+#define MICROOS_PROFILE_VER 0.9.9
 
 #include <core/Version.h>
 #include <core/ModuleBase.h>

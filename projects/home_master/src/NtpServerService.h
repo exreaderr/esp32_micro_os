@@ -79,7 +79,7 @@ public:
 
     const char* getName() const override { return "NtpServerService"; }
     const char* getVersion() const override { return "0.1.0-ntps"; }
-    ModuleId getModuleId() const override { return 0x110B; }   // hm: ... 0x110A=PanelDisplay, 0x110B=NtpServer (0x1107 занят дважды — известный долг Backup/HmArchive, не трогаем в этом ките)
+    ModuleId getModuleId() const override { return 0x110B; }   // hm: ... 0x110A=PanelDisplay, 0x110B=NtpServer; 5.9.7: HmArchive получил 0x110C, дубль 0x1107 закрыт
     void init() override;
     void start() override;
     void stop() override;

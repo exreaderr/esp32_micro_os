@@ -42,7 +42,10 @@ private:
 	bool isTopicValidName(const char *filter);
 	void updateRetainedTopic(sMQTTTopic *topic);
 
-	bool isClientConnected(sMQTTClient *client);
+	// ПАТЧ МикроОС 5.9.7: takeover по client id. Вызывается ТОЛЬКО после
+	// успешной аутентификации новой сессии; старая закрывается, не удаляется
+	// синхронно из списка — штатный update() снимет её и выдаст RemoveClient.
+	bool takeover(sMQTTClient *client);
 
 	void findRetainTopic(sMQTTTopic *topic, sMQTTClient *client);
 

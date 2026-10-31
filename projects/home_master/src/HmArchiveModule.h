@@ -52,7 +52,7 @@ public:
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "HmArchive"; }
     const char* getVersion() const override { return "0.1.1-w8"; }   // w8.1: один повтор после сторожа (0.9.5)
-    ModuleId getModuleId() const override { return 0x1107; }   // hm: 0x1101..0x1106 заняты
+    ModuleId getModuleId() const override { return 0x110C; }   // 5.9.7: был дубль 0x1107 с BackupService; 0x110B=NtpServer
     void init() override;
     void start() override;
     void stop() override;

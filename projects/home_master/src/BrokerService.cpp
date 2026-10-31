@@ -107,7 +107,11 @@ bool BrokerService::handleBrokerEvent(sMQTTEvent* event) {
             }
 
             // Потолок клиентов (в апстриме его нет — наш контурный предел).
-            if (_clients >= _maxClients) {
+            // 5.9.7: takeover ЗАМЕЩАЕТ старую сессию, поэтому не должен
+            // отклоняться при заполненном потолке — после RemoveClient счётчик
+            // вернётся к прежнему значению. Аутентификация выше уже пройдена.
+            bool replacing = hasClient(e->Client()->getClientId().c_str());
+            if (_clients >= _maxClients && !replacing) {
                 _rejected++;
                 log(LogLevel::Warning, "broker: REJECT cap %u reached, total rejected %lu",
                     _maxClients, (unsigned long)_rejected);

@@ -34,6 +34,10 @@ public:
 	const std::string &getClientId() {
 		return clientId;
 	};
+
+	// ПАТЧ МикроОС 5.9.7: мягкая остановка старой сессии при takeover.
+	// Удаление из списка и событие RemoveClient остаются за Broker::update().
+	void stopConnection() { _client.stop(); }
 private:
 	void processMessage();
 	void updateLiveStatus();
