@@ -329,6 +329,7 @@ body.skin-metro .group-title { border-left-width: 4px; }
 #navChips .chip[data-tab="paz"]    { --tile: #fa6800; }
 #navChips .chip[data-tab="sys"]    { --tile: #00aba9; }
 #navChips .chip[data-tab="adm"]    { --tile: #76608a; }
+#navChips .chip[data-tab="settings"] { --tile: #64748b; }
 
 /* Живой бейдж на ярлычке (MQTT офлайн / тревога ПАЗ) — виден в ОБОИХ скинах */
 #navChips .chip { position: relative; }
@@ -630,6 +631,8 @@ body.skin-term ::selection { background: var(--text); color: var(--bg); }
       <button class="chip" data-tab="lock" onclick="showTab('lock')">🔒 Замок</button>
       <button class="chip" data-tab="exit" onclick="showTab('exit')">⛔ Кнопка выхода</button>
       <button class="chip" data-tab="charts" onclick="showTab('charts')">📈 Графики</button>
+      <!-- 0.5.20: редко используемый полный список — строго ПОСЛЕДНИМ. -->
+      <button class="chip" data-tab="settings" onclick="showTab('settings')">⚙️ Настройки</button>
     </div>
     <button class="svc" id="skinBtn" style="margin-top:10px" onclick="toggleSkin()">🎨 Стиль: Метро</button>
   </div>
@@ -801,6 +804,15 @@ body.skin-term ::selection { background: var(--text); color: var(--bg); }
             <button class="svc" onclick="logout()">🚪 Выйти из сессии</button>
             <button class="danger" onclick="rebootDevice()">⏻ Перезагрузка</button>
           </div>
+        </div>
+
+        <div id="tab-settings" class="tab-pane hidden">
+          <div class="group-card" style="background:rgba(100,116,139,.08)">
+            <div class="group-title">⚙️ Полный список настроек</div>
+            <div class="card-sub">Все видимые группы схемы устройства: звук, индикация, считыватель, замок, сеть и остальные. Скрытые неиспользуемые группы не показываются. Запись идёт через тот же API, что и в профильных вкладках.</div>
+          </div>
+          <div id="cfg-settings"></div>
+          <div class="save-row"><button class="warning" onclick="saveConfig('settings','xcfg')">💾 Сохранить параметры</button></div>
         </div>
 
       </div>
@@ -1319,7 +1331,7 @@ async function checkHealth(){
 var TAB_TITLES = {
   net:'📡 Сеть', lock:'🔒 Замок', exit:'⛔ Кнопка выхода',
   users:'👥 Пользователи', charts:'📈 Даталоггер — графики', paz:'🛡️ Противоаварийная защита',
-  sys:'🩺 Система', adm:'👑 Администрирование'
+  sys:'🩺 Система', adm:'👑 Администрирование', settings:'⚙️ Настройки — полный список'
 };
 var currentTab=null;
 function showTab(name){
@@ -1336,7 +1348,7 @@ function showTab(name){
   if(name==='charts') loadCharts();
   if(name==='paz') renderPaz();
   if(name==='sys') renderSys();
-  if(name==='net'||name==='lock'||name==='exit'||name==='adm') ensureConfig(name);
+  if(name==='net'||name==='lock'||name==='exit'||name==='adm'||name==='settings') ensureConfig(name);
 }
 function togglePanel(id){
   var c=$(id), h=$(id+'Hdr');
@@ -1361,10 +1373,10 @@ async function ensureConfig(tab){
     renderConfigAll();
   }
 }
-function groupCard(name, fields, tab){
+function groupCard(name, fields, tab, ns){
   var gc=document.createElement('div'); gc.className='group-card';
   var html='<div class="group-title">'+esc(name)+'</div><div class="form-grid">';
-  for(var f=0; f<fields.length; f++) html+=widgetHtml(fields[f], tab);
+  for(var f=0; f<fields.length; f++) html+=widgetHtml(fields[f], tab, ns);
   html+='</div>';
   if(GROUP_REBOOT_NOTE[name]) html+='<div class="group-note">⏻ Применяется после перезагрузки контроллера</div>';
   gc.innerHTML=html;
@@ -1389,7 +1401,27 @@ function renderConfigAll(){
     }
     if(!any) host.innerHTML='<div class="card-sub">Нет полей этой группы</div>';
   }
+  renderSettingsConfig();
   applyDhcpVisibility();   // начальное состояние — по загруженному конфигу
+}
+// 0.5.20: полный список строится из фактической схемы, а не из второй
+// ручной карты. Поэтому новые видимые группы появятся здесь автоматически.
+// Порядок групп — порядок их регистрации в /api/config; hg:1 не показываем.
+function renderSettingsConfig(){
+  var host=$('cfg-settings'); if(!host) return;
+  host.innerHTML='';
+  var groups=[], seen={};
+  for(var key in S.cfg){
+    var f=S.cfg[key];
+    if(f.hg) continue;
+    var name=f.group||'Прочее';
+    if(!seen[name]){ seen[name]=true; groups.push(name); }
+  }
+  for(var g=0; g<groups.length; g++){
+    var fields=fieldsOfGroup(groups[g]);
+    if(fields.length) host.appendChild(groupCard(groups[g], fields, 'settings', 'xcfg'));
+  }
+  if(!groups.length) host.innerHTML='<div class="card-sub">Схема настроек пуста</div>';
 }
 // Порядок полей внутри группы: по умолчанию — алфавитный (исторически),
 // но «Запрет с» должен идти ПЕРЕД «Запрет до» (алфавит даёт наоборот:
@@ -1444,9 +1476,12 @@ var FIELD_UI_CONV = {
     toCfg: function(v){ var n=parseFloat(v); return isNaN(n)?v:String(Math.round(n*1000)); }
   }
 };
-function widgetHtml(it, tab){
-  var key=it.key, f=it.f, id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_');
-  var wid='w_'+id.slice(4);   // id обёртки — для скрытия полей (DHCP 5.5.6)
+function widgetHtml(it, tab, ns){
+  ns=ns||'cfg';
+  var key=it.key, f=it.f, suffix=key.replace(/[^a-zA-Z0-9]/g,'_');
+  var id=ns+'_'+suffix;
+  // Старые id сохранены; полный список использует независимый xcfg-namespace.
+  var wid=ns==='cfg'?'w_'+suffix:'w_'+id;
   var ro=f.ro===1, dis=ro?'disabled':'';
   var conv=FIELD_UI_CONV[key]||null;
   var html;
@@ -1485,24 +1520,43 @@ function widgetHtml(it, tab){
 // net.dhcp=true и так игнорирует net.ip/mask/gateway/dns.
 var DHCP_HIDES=['net.ip','net.mask','net.gateway','net.dns'];
 function applyDhcpVisibility(){
-  var cb=$('cfg_net_dhcp'); if(!cb) return;
-  var hide=cb.checked;
-  for(var i=0;i<DHCP_HIDES.length;i++){
-    var w=$('w_'+DHCP_HIDES[i].replace(/[^a-zA-Z0-9]/g,'_'));
-    if(w) w.style.display=hide?'none':'';
+  var namespaces=['cfg','xcfg'];
+  for(var n=0;n<namespaces.length;n++){
+    var ns=namespaces[n], cb=$(ns+'_net_dhcp'); if(!cb) continue;
+    var hide=cb.checked;
+    for(var i=0;i<DHCP_HIDES.length;i++){
+      var suffix=DHCP_HIDES[i].replace(/[^a-zA-Z0-9]/g,'_');
+      var w=$(ns==='cfg'?'w_'+suffix:'w_'+ns+'_'+suffix);
+      if(w) w.style.display=hide?'none':'';
+    }
   }
 }
 function markDirty(tab, key){
   if(!S.dirty[tab]) S.dirty[tab]={};
   S.dirty[tab][key]=true;
 }
-async function saveConfig(tab){
+// После записи синхронизируем второй экземпляр поля в другой вкладке,
+// не перерисовывая формы и не теряя несохранённые правки оператора.
+function syncConfigTwin(ns,key,rawVal,isSecret){
+  var otherNs=ns==='cfg'?'xcfg':'cfg';
+  var other=$(otherNs+'_'+key.replace(/[^a-zA-Z0-9]/g,'_'));
+  if(!other) return;
+  if(isSecret){ other.value=''; return; }
+  if(other.type==='checkbox') other.checked=(rawVal==='true'||rawVal==='1');
+  else {
+    var conv=FIELD_UI_CONV[key];
+    other.value=conv?conv.toUi(rawVal):rawVal;
+  }
+}
+async function saveConfig(tab,ns){
+  ns=ns||'cfg';
   var d=S.dirty[tab]||{}, keys=Object.keys(d);
   if(!keys.length){ toast('Нет изменений',''); return; }
   var ok=0, fail=0, skipped=0, failKeys=[];
   for(var i=0;i<keys.length;i++){
-    var key=keys[i], id='cfg_'+key.replace(/[^a-zA-Z0-9]/g,'_'), el=$(id);
+    var key=keys[i], id=ns+'_'+key.replace(/[^a-zA-Z0-9]/g,'_'), el=$(id);
     if(!el){ continue; }
+    var isSecret=el.type==='password';
     var val = el.type==='checkbox' ? (el.checked?'true':'false') : el.value;
     // Панельные единицы → сырые единицы схемы (5.0.15: секунды → мс)
     var conv=FIELD_UI_CONV[key];
@@ -1510,12 +1564,17 @@ async function saveConfig(tab){
     // Секрет, оставленный пустым, не отправляем — случайная очистка
     // пароля брокера одним кликом недопустима. Очистка — только явная
     // (через консоль ядра).
-    if(el.type==='password' && val===''){ skipped++; continue; }
+    if(isSecret && val===''){ skipped++; continue; }
     var r=await apiPost('/api/config?key='+encodeURIComponent(key)+'&value='+encodeURIComponent(val));
-    if(r.ok){ ok++; if(el.type==='password'){ el.value=''; S.cfg[key].set=1; } else S.cfg[key].value=val; }
+    if(r.ok){
+      ok++;
+      if(isSecret){ el.value=''; S.cfg[key].set=1; } else S.cfg[key].value=val;
+      syncConfigTwin(ns,key,val,isSecret);
+    }
     else { fail++; failKeys.push(key); }
   }
   S.dirty[tab]={};
+  if(ok>0) applyDhcpVisibility();
   if(fail===0) toast('Сохранено: '+ok+' параметр(ов)'+(skipped?' · секрет пуст — пропущен':''),'ok');
   else toast('Сохранено '+ok+', отклонено '+fail+' ('+failKeys.join(', ')+')','err');
 }
