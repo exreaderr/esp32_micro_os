@@ -75,4 +75,6 @@ void SmartLockProfile::registerModules(Kernel& k) {
     k.registerModule(&CardStore::getInstance(),   8, 0);
     k.registerModule(&LockControl::getInstance(), 8, 0);
     k.registerModule(&SmartLockApp::getInstance(), 9, 0);
+    // 0.5.21: без этой регистрации init/start/tick ленты никогда не вызывались.
+    k.registerModule(&SmartLockStatusLed::getInstance(), 9, 0);
 }

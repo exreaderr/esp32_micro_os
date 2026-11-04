@@ -1364,7 +1364,7 @@ var TAB_GROUPS = {
   exit: ['Кнопка выхода','Доступ по вебу'],
   adm:  ['Безопасность','Система','Планировщик','Счётчики']
 };
-var GROUP_REBOOT_NOTE = { 'Сеть':1, 'MQTT':1 };
+var GROUP_REBOOT_NOTE = { 'Сеть':1, 'MQTT':1, 'Индикация':1 };
 async function ensureConfig(tab){
   if(!S.cfg){
     var r=await api('/api/config');
