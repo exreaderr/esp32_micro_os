@@ -8,6 +8,8 @@
 //   · СОСТОЯНИЕ:  <prefix>/<id>/state = online/offline (LWT + retain) —
 //                 УД видит живость устройства даже при внезапной смерти;
 //   · ТЕЛЕМЕТРИЯ: <prefix>/<id>/telemetry = JSON-снимок B1 (retain);
+//   · САМООПИСАНИЕ: <prefix>/<id>/descriptor = JSON v1 (retain, M3.4-Info) —
+//                 id, профиль, версии, hostname, IP; без ответа/регистрации;
 //   · СОБЫТИЯ:    <prefix>/<id>/events/<NAME> — кураторское зеркало шины
 //                 (доступ, тревоги, деградация, OTA) — то, что интересно
 //                 ДРУГИМ устройствам и УД;
@@ -59,7 +61,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "MqttTransport"; }
-    const char* getVersion() const override { return "5.5.1"; }   // 5.5.1: handler получает реальный топик (фикс DOWN моста); 5.5.0: wildcard-матч внешних подписок (M2)
+    const char* getVersion() const override { return "5.9.8"; }   // 5.9.8: M3.4-Info retained descriptor; 5.5.1: handler получает реальный топик (фикс DOWN моста); 5.5.0: wildcard-матч внешних подписок (M2)
     ModuleId getModuleId() const override { return 0x0101; }   // транспорт
 
     void registerExtensions() override;   // схема mqtt.*
@@ -118,6 +120,7 @@ private:
     void clientStop();               // остановка и уничтожение
     void applySession();             // подписки + online после CONNECT
     void publishState(const char* state, bool retained);
+    void publishDescriptor();        // M3.4-Info: фактические метаданные, retained
     void publishTelemetry();         // JSON B1 -> telemetry
     void mirrorEvent(int32_t eventId, const ShEventData* data);
     void drainOutbox();              // replay накопленного после CONNECT
@@ -134,6 +137,7 @@ private:
 
     // Топики (буферы-члены: живут, пока жив клиент)
     char     _topicState[MQTT_TOPIC_LEN];     // <prefix>/<id>/state (LWT)
+    char     _topicDescriptor[MQTT_TOPIC_LEN]; // <prefix>/<id>/descriptor (M3.4-Info)
     char     _topicCmdOwn[MQTT_TOPIC_LEN];    // <prefix>/<id>/cmd/#
     char     _topicCmdAll[MQTT_TOPIC_LEN];    // <prefix>/all/cmd/#
     char     _topicEventsAll[MQTT_TOPIC_LEN]; // <prefix>/+/events/#

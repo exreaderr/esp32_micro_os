@@ -2,6 +2,7 @@
 // MqttTransport.cpp — реализация MQTT-моста экосистемы (E2)
 // ============================================================================
 #include "MqttTransport.h"
+#include "MqttDescriptor.h"
 #include "ConfigService.h"
 #include "NetworkManager.h"
 #include "TelemetryService.h"
@@ -108,6 +109,9 @@ void MqttTransport::start() {
     for (size_t i = 0; i < sizeof(MIRRORED) / sizeof(MIRRORED[0]); ++i) {
         bus.subscribe(MIRRORED[i], this);
     }
+    // M3.4-Info: смена IP обновляет retained descriptor, но не зеркалируется
+    // как событие и не попадает в outbox — при reconnect уйдёт свежий снимок.
+    bus.subscribe(NET_EVENT_IP_CHANGED, this);
     _started = true;
 }
 
@@ -213,6 +217,10 @@ void MqttTransport::clientStart() {
 
     const char* id = NetworkService::getInstance().deviceId();
     snprintf(_topicState, sizeof(_topicState), "%s/%s/state", prefix, id);
+    if (mqtt_descriptor::buildTopic(_topicDescriptor, sizeof(_topicDescriptor),
+                                    prefix, id) == 0) {
+        log(LogLevel::Warning, "descriptor: topic rejected");
+    }
     snprintf(_topicCmdOwn, sizeof(_topicCmdOwn), "%s/%s/cmd/#", prefix, id);
     snprintf(_topicCmdAll, sizeof(_topicCmdAll), "%s/all/cmd/#", prefix);
     snprintf(_topicEventsAll, sizeof(_topicEventsAll),
@@ -278,8 +286,9 @@ static const char* resetReasonStr(esp_reset_reason_t r) {
 
 void MqttTransport::onMqttConnected() {
     _mqttUp = true;
-    // Сессия: online + подписки (канонический паттерн — прямо из колбэка)
+    // Сессия: online + самоописание + подписки (прямо из колбэка).
     publishState("online", true);
+    publishDescriptor();   // M3.4-Info: свежий retained снимок на каждый CONNECT
     // BOOT — один раз за старт, на первом коннекте (реконнекты не шумят).
     if (!_bootEventSent) {
         _bootEventSent = true;
@@ -540,13 +549,18 @@ const char* MqttTransport::mirrorName(int32_t eventId) {
 }
 
 bool MqttTransport::canHandleEvent(int32_t eventId) const {
-    return eventId == TEL_EVENT_SNAPSHOT || mirrorName(eventId) != nullptr;
+    return eventId == TEL_EVENT_SNAPSHOT || eventId == NET_EVENT_IP_CHANGED ||
+           mirrorName(eventId) != nullptr;
 }
 
 void MqttTransport::onEvent(int32_t eventId, const ShEventData* data) {
     if (eventId == TEL_EVENT_SNAPSHOT) {
         if (_mqttUp) publishTelemetry();   // ретро-снимки не копим: после
         return;                            // реконнекта уйдёт свежая
+    }
+    if (eventId == NET_EVENT_IP_CHANGED) {
+        if (_mqttUp) publishDescriptor();  // только фактический снимок, без outbox
+        return;
     }
     if (!cfgGetBool("mqtt.pub_events", true)) return;
     const char* name = mirrorName(eventId);
@@ -609,6 +623,32 @@ void MqttTransport::publishState(const char* state, bool retained) {
     if (_client == nullptr) return;
     esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
                             _topicState, state, 0, 1, retained ? 1 : 0);
+}
+
+void MqttTransport::publishDescriptor() {
+    if (_client == nullptr || !_mqttUp || _topicDescriptor[0] == '\0') return;
+
+    NetworkService& net = NetworkService::getInstance();
+    char ip[16];
+    net.ipString(ip, sizeof(ip));
+
+    const char* profile = Kernel::getInstance().profileId();
+    if (profile == nullptr || profile[0] == '\0') profile = "unknown";
+    const char* profileVer = UpdateService::getInstance().profileVersion();
+    if (profileVer == nullptr || profileVer[0] == '\0') profileVer = "unknown";
+
+    const mqtt_descriptor::Fields fields = {
+        net.deviceId(), profile, MICROOS_VERSION, profileVer, net.hostname(), ip
+    };
+    char body[MQTT_BODY_LEN];
+    const size_t len = mqtt_descriptor::buildJson(body, sizeof(body), fields);
+    if (len == 0) {
+        log(LogLevel::Warning, "descriptor: JSON rejected");
+        return;
+    }
+    const int rc = esp_mqtt_client_publish((esp_mqtt_client_handle_t)_client,
+                                           _topicDescriptor, body, (int)len, 1, 1);
+    if (rc < 0) log(LogLevel::Warning, "descriptor: publish failed");
 }
 
 // ============================================================================

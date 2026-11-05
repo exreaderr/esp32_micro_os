@@ -130,6 +130,7 @@ Kernel::SafeModeReason Kernel::detectSafeMode(int8_t safeModePin) {
 // ЗАГРУЗКА
 // ============================================================================
 void Kernel::boot(IDeviceProfile* profile) {
+    _profile = profile;   // M3.4-Info: источник фактического profileId()
     Serial.begin(115200);
     Serial.printf("\n[KERNEL] MicroOS %s boot, profile: %s\n",
                   MICROOS_VERSION, profile->profileId());

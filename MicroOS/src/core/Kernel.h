@@ -78,6 +78,10 @@ public:
     bool isSafeMode() const { return _safeReason != SafeModeReason::NONE; }
     SafeModeReason safeModeReason() const { return _safeReason; }
     uint8_t bootloopCount() const { return _bootloopCount; }
+    /// M3.4-Info: фактический активный профиль; статическое время жизни.
+    const char* profileId() const {
+        return _profile != nullptr ? _profile->profileId() : "";
+    }
 
     /// 5.8.1 (урок №20): след последнего тика для посмертной диагностики.
     /// true — RTC-структура живая; buf получает имя модуля, в тике которого
@@ -155,6 +159,7 @@ private:
     uint8_t runPhaseStart();
 
     // --- ДАННЫЕ ------------------------------------------------------------------
+    IDeviceProfile* _profile = nullptr;  // run<ProfileT>() владеет static profile
     ModuleSlot _slots[KERNEL_MAX_MODULES];
     uint8_t    _moduleCount = 0;
 
