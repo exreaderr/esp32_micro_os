@@ -2,6 +2,7 @@
 // NetworkManager.cpp — реализация класса NetworkService. единого владельца сети
 // ============================================================================
 #include "NetworkManager.h"
+#include "NetworkIpTransition.h"   // 5.9.9: прямой переход IPv4 A→B
 #include "ConfigService.h"
 #include "MqttTransport.h"         // 5.9.1: сторож мёртвой сети (isConnected)
 #include "HttpService.h"           // 5.9.2: lastServedMs — живость HTTP в вердикте
@@ -299,15 +300,29 @@ void NetworkService::tick() {
             postEvent(NET_EVENT_DISCONNECTED, &d);
         }
     }
-    if (ip != prevIp) {
+    // 5.9.9: булева граница false↔true не видит прямой DHCP-переход A→B.
+    // Поэтому при активном IP на каждом tick сравниваем фактический netif-адрес
+    // с кэшем. Нулевой/transient снимок не портит ни кэш, ни предыдущее состояние.
+    const uint32_t actualIp = ip ? static_cast<uint32_t>(ETH.localIP()) : 0U;
+    const network_ip::Transition ipChange =
+        network_ip::classify(prevIp, static_cast<uint32_t>(_ip), ip, actualIp);
+    if (ipChange.kind != network_ip::TransitionKind::None) {
         prevIp = ip;
-        if (ip) {
-            _lastNetGoodMs = millis();   // 5.9.1: благодать сторожу на подъём сети
-            _ip = ETH.localIP();
+        if (network_ip::emitsIpChanged(ipChange.kind)) {
+            char previousIp[16] = "0.0.0.0";
+            if (ipChange.kind == network_ip::TransitionKind::Changed) {
+                ipString(previousIp, sizeof(previousIp));
+            }
+            _lastNetGoodMs = millis();   // благодать сторожу на живом адресе
+            _ip = ipChange.current;      // кэш обновляется ДО события шины
             ShEventData d; d.clear();
             ipString(d.payload, sizeof(d.payload));
             postEvent(NET_EVENT_IP_CHANGED, &d);
-            log(LogLevel::Info, "IP: %s", d.payload);
+            if (ipChange.kind == network_ip::TransitionKind::Changed) {
+                log(LogLevel::Info, "IP changed: %s -> %s", previousIp, d.payload);
+            } else {
+                log(LogLevel::Info, "IP: %s", d.payload);
+            }
         } else if (link) {
             // IP потерян при живом link — для потребителей это "сети нет"
             ShEventData d; d.clear();
