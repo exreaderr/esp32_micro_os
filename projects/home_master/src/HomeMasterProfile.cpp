@@ -12,6 +12,7 @@
 #include "WeatherMirror.h"
 #include "HmArchiveModule.h"
 #include "NtpServerService.h"
+#include "FleetRegistryService.h"
 #include "StatusLedModule.h"
 #include "PanelDisplayModule.h"
 #include "HomeMasterApp.h"
@@ -75,5 +76,9 @@ void HomeMasterProfile::registerModules(Kernel& k) {
     // M4-NTP (23.10.2026, 0.9.8): NTP-сервер парка, UDP/123. Рядом с
     // архивариусом — независимый слушатель, ни от кого не зависит.
     k.registerModule(&NtpServerService::getInstance(), 9, 7);
+    // M3.4a: пассивный реестр — только RAM-наблюдение и локальные алиасы.
+    // После брокера и существующих потребителей; модуль никого не вызывает
+    // активно и не меняет их политики.
+    k.registerModule(&FleetRegistryService::getInstance(), 9, 8);
     k.registerModule(&HomeMasterApp::getInstance(), 10, 0);
 }

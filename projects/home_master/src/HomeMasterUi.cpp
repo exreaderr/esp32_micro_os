@@ -9,6 +9,7 @@
 #include "JournalService.h"
 #include "BackupService.h"
 #include "OtaMirrorService.h"
+#include "FleetRegistryService.h"
 #include "HmArchiveModule.h"
 #include <services/HttpService.h>
 #include <services/ConfigService.h>
@@ -89,6 +90,65 @@ bool HomeMasterUi::handleApi(const char* pathTail, const ShUiRequest& req,
     }
     if (strcmp(pathTail, "hm/sd/remount") == 0) {
         return apiSdRemount(req, responseBuf, bufSize, statusCode);
+    }
+    // --- M3.4a: пассивный реестр флота (admin; никаких активных действий) ---
+    if (strcmp(pathTail, "hm/fleet") == 0) {
+        if (strcmp(req.method, "GET") != 0) {
+            statusCode = 405;
+            snprintf(responseBuf, bufSize, "{\"error\":\"method_not_allowed\"}");
+            return true;
+        }
+        if (!HttpService::getInstance().isAdminToken(req.token)) {
+            statusCode = 401;
+            snprintf(responseBuf, bufSize, "{\"error\":\"auth_required\"}");
+            return true;
+        }
+        statusCode = 200;
+        if (FleetRegistryService::getInstance().apiStatus(responseBuf, bufSize) == 0) {
+            statusCode = 500;
+            snprintf(responseBuf, bufSize, "{\"error\":\"fleet_json_error\"}");
+        }
+        return true;
+    }
+    if (strcmp(pathTail, "hm/fleet/alias") == 0) {
+        if (strcmp(req.method, "POST") != 0) {
+            statusCode = 405;
+            snprintf(responseBuf, bufSize, "{\"error\":\"method_not_allowed\"}");
+            return true;
+        }
+        if (!HttpService::getInstance().isAdminToken(req.token)) {
+            statusCode = 401;
+            snprintf(responseBuf, bufSize, "{\"error\":\"auth_required\"}");
+            return true;
+        }
+        char id[fleet::ID_LEN] = "";
+        char alias[fleet::ALIAS_LEN] = "";
+        const char* a = req.getArg("id");
+        if (a != nullptr) {
+            strncpy(id, a, sizeof(id) - 1);
+            id[sizeof(id) - 1] = '\0';
+        }
+        a = req.getArg("alias");
+        if (a != nullptr) {
+            strncpy(alias, a, sizeof(alias) - 1);
+            alias[sizeof(alias) - 1] = '\0';
+        }
+        FleetRegistryService& fleet = FleetRegistryService::getInstance();
+        if (fleet.core().find(id) == nullptr) {
+            statusCode = 404;
+            snprintf(responseBuf, bufSize, "{\"error\":\"unknown_device\"}");
+        } else if (!fleet::Core::validAlias(alias) ||
+                   (a != nullptr && strlen(a) >= sizeof(alias))) {
+            statusCode = 400;
+            snprintf(responseBuf, bufSize, "{\"error\":\"bad_alias\"}");
+        } else if (!fleet.setAlias(id, alias)) {
+            statusCode = 500;
+            snprintf(responseBuf, bufSize, "{\"error\":\"alias_save_failed\"}");
+        } else {
+            statusCode = 200;
+            snprintf(responseBuf, bufSize, "{\"ok\":1}");
+        }
+        return true;
     }
     // --- M3.2: вьюер журнала (read-only; фильтры и курсор — аргументами) ---
     if (strcmp(pathTail, "hm/journal/files") == 0) {

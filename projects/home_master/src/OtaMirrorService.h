@@ -42,13 +42,28 @@
 #include <WebServer.h>
 #include <FS.h>
 
+// Пассивная RAM-проекция hostname-based OTA-зеркала для Fleet API.
+struct OtaFleetStatus {
+    bool configured = false;
+    bool linked = false;
+    bool pairReady = false;
+    char host[25] = "";
+    uint32_t fwSize = 0;
+    uint32_t fsSize = 0;
+    char mirrorKernel[20] = "";
+    char mirrorProfileVer[20] = "";
+    char versionRelation[10] = "unknown";
+    uint32_t lastOk = 0;
+    char err[24] = "";
+};
+
 class OtaMirrorService : public ModuleBase {
 public:
     static OtaMirrorService& getInstance();
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "OtaMirrorService"; }
-    const char* getVersion() const override { return "0.2.0-om3"; }   // om3: ручная загрузка троек с верификацией (0.6.7) + otam.src; om2: раздача кусками + TWDT-feed (урок 0.6.4-пр1)
+    const char* getVersion() const override { return "0.2.1-m34a"; }   // m34a: read-only статус для Fleet API, явный отказ вместо молчаливой обрезки JSON; om3: ручная загрузка троек с верификацией (0.6.7) + otam.src; om2: раздача кусками + TWDT-feed (урок 0.6.4-пр1)
     ModuleId getModuleId() const override { return 0x1108; }   // hm: ... 0x1107=Backup, 0x1108=OtaMirror
     void init() override;
     void start() override;
@@ -62,6 +77,10 @@ public:
     /// "version":"x.y.z","lastOkUnix":U,"lastErr":"...","fwSize":N,
     /// "fsSize":N},...]}
     size_t apiStatus(char* buf, size_t bufSize);
+    /// Только RAM: descriptor host -> ручной otam.hosts -> существующий HostState.
+    void fleetStatus(const char* descriptorHost, const char* kernel,
+                     const char* profileVer, bool self,
+                     OtaFleetStatus& out) const;
     /// Ручная проверка: host — конкретный hostname или "all".
     size_t apiCheck(const char* host, char* buf, size_t bufSize);
 

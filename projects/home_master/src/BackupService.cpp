@@ -1,6 +1,8 @@
 // BackupService.cpp — M3.3 BackupAggregator (см. шапку .h)
 // ============================================================================
 #include "BackupService.h"
+#include "BackupTarget.h"
+#include "FleetRegistryService.h"
 #include "BrokerService.h"
 #include "SdService.h"
 #include <core/EventBus.h>
@@ -11,6 +13,7 @@
 #include <services/NetworkManager.h>
 #include <HTTPClient.h>
 #include <WiFiClient.h>
+#include <strings.h>
 #include <time.h>
 
 BackupService& BackupService::getInstance() {
@@ -98,6 +101,63 @@ int BackupService::findHost(const char* ip) const {
         if (strncmp(_hosts[i].ip, ip, sizeof(_hosts[i].ip)) == 0) return (int)i;
     }
     return -1;
+}
+
+bool BackupService::resolveHost(const HostState& h, char* out, size_t cap) const {
+    if (out == nullptr || cap == 0) return false;
+    out[0] = '\0';
+    const char* id = backup_target::deviceId(h.ip);
+    if (id == nullptr) {
+        safeStrCopy(out, cap, h.ip);       // legacy IP/self — старый контракт
+        return true;
+    }
+    const char* ip = FleetRegistryService::getInstance().core().resolveIp(id);
+    if (ip == nullptr) return false;       // identified + descriptor + valid IP
+    safeStrCopy(out, cap, ip);
+    return out[0] != '\0';
+}
+
+void BackupService::fleetStatus(const char* deviceId, bool self,
+                                const char* actualIp,
+                                BackupFleetStatus& out) const {
+    out = BackupFleetStatus{};
+    if (deviceId == nullptr) return;
+    for (uint8_t i = 0; i < _hostCount; ++i) {
+        const HostState& h = _hosts[i];
+        const char* targetId = backup_target::deviceId(h.ip);
+        const bool selected = self
+            ? strcmp(h.ip, "self") == 0
+            : (targetId != nullptr && strcasecmp(targetId, deviceId) == 0) ||
+              (targetId == nullptr && strcmp(h.ip, "self") != 0 &&
+               actualIp != nullptr && actualIp[0] != '\0' &&
+               strcmp(h.ip, actualIp) == 0);
+        if (!selected) continue;
+
+        out.selected = true;
+        safeStrCopy(out.target, sizeof(out.target), h.ip);
+        out.lastOk = h.lastOkUnix;
+        safeStrCopy(out.err, sizeof(out.err), h.lastErr);
+        out.blocked = h.blocked;
+        if (!backup_target::storageKey(h.ip, out.storage, sizeof(out.storage))) {
+            safeStrCopy(out.resolution, sizeof(out.resolution), "bad_target");
+            return;
+        }
+        if (self) {
+            safeStrCopy(out.resolution, sizeof(out.resolution), "self");
+            return;
+        }
+        if (targetId == nullptr) {
+            safeStrCopy(out.resolution, sizeof(out.resolution), "legacy");
+            safeStrCopy(out.resolvedIp, sizeof(out.resolvedIp), h.ip);
+            return;
+        }
+        if (resolveHost(h, out.resolvedIp, sizeof(out.resolvedIp))) {
+            safeStrCopy(out.resolution, sizeof(out.resolution), "ok");
+        } else {
+            safeStrCopy(out.resolution, sizeof(out.resolution), "fleet_no_ip");
+        }
+        return;
+    }
 }
 
 bool BackupService::timeValid() const {
@@ -270,6 +330,21 @@ void BackupService::runCycleStep() {
 
     if (h.ip[0] == '\0') return;
     if (strcmp(h.ip, "self") == 0) { stepSelf(h); return; }
+
+    // M3.4a: id-target разрешается ТОЛЬКО в момент уже запланированного
+    // шага. Смена IP сама цикл не запускает; отсутствие актуального IP —
+    // явный пропуск, без сетевого запроса и без подстановки старого адреса.
+    char actualIp[20];
+    if (!resolveHost(h, actualIp, sizeof(actualIp))) {
+        safeStrCopy(h.lastErr, sizeof(h.lastErr), "fleet_no_ip");
+        log(LogLevel::Warning, "bk: %s — fleet_no_ip, снимок отложен", h.ip);
+        return;
+    }
+    char storage[24];
+    if (!backup_target::storageKey(h.ip, storage, sizeof(storage))) {
+        safeStrCopy(h.lastErr, sizeof(h.lastErr), "bad_target");
+        return;
+    }
     // Урок 0.6.3-пр1: reloadHosts бежит при init, когда DHCP ещё НЕ дал IP
     // (ownIp="0.0.0.0"), поэтому собственный IP может просочиться в список
     // сетевым слотом. Проверяем «а не я ли это» ЗДЕСЬ, в момент цикла,
@@ -280,8 +355,9 @@ void BackupService::runCycleStep() {
         char ownIp[20];
         NetworkService::getInstance().ipString(ownIp, sizeof(ownIp));
         if (ownIp[0] != '\0' && strcmp(ownIp, "0.0.0.0") != 0 &&
-            strcmp(h.ip, ownIp) == 0) {
-            log(LogLevel::Info, "bk: %s — это я сам, снимаю локально", h.ip);
+            strcmp(actualIp, ownIp) == 0) {
+            log(LogLevel::Info, "bk: %s (%s) — это я сам, снимаю локально",
+                h.ip, actualIp);
             stepSelf(h);
             return;
         }
@@ -298,7 +374,7 @@ void BackupService::runCycleStep() {
 
     char token[16];
     char err[24] = "";
-    if (!loginHost(h.ip, token, sizeof(token), err, sizeof(err))) {
+    if (!loginHost(actualIp, token, sizeof(token), err, sizeof(err))) {
         strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
         if (strcmp(err, "http_401") == 0) {
@@ -321,18 +397,21 @@ void BackupService::runCycleStep() {
         return;
     }
     size_t len = 0;
-    bool ok = fetchSnapshot(h.ip, token, snap, BK_SNAPSHOT_CAP, &len,
+    bool ok = fetchSnapshot(actualIp, token, snap, BK_SNAPSHOT_CAP, &len,
                             err, sizeof(err));
     if (ok) extractHostname(snap, h.host, sizeof(h.host));   // 0.6.6: имя для карточки
-    if (ok) ok = storeSnapshot(h.ip, snap, len, err, sizeof(err));
+    if (ok) ok = storeSnapshot(storage, snap, len, err, sizeof(err));
     free(snap);
 
     if (ok) {
         h.lastOkUnix = (uint32_t)TimeService::getInstance().getUnixTime();
         h.lastErr[0] = '\0';
-        rotate(h.ip, "config-", (uint8_t)cfgGetInt("bk.keep", 10));
-        log(LogLevel::Info, "bk: %s снимок сохранён (%u Б)", h.ip, (unsigned)len);
-        stepExtras(h.ip, token);   // 0.9.5: доп.снимки (база замка и пр.)
+        rotate(storage, "config-", (uint8_t)cfgGetInt("bk.keep", 10));
+        log(LogLevel::Info, "bk: %s (%s) снимок сохранён (%u Б)",
+            h.ip, actualIp, (unsigned)len);
+        // bk.extras остаётся legacy «ip:путь». Для id-target здесь нет
+        // совпадения: не угадываем дополнительную политику по текущему IP.
+        stepExtras(h.ip, token);
     } else {
         strncpy(h.lastErr, err, sizeof(h.lastErr) - 1);
         h.lastErr[sizeof(h.lastErr) - 1] = '\0';
@@ -686,8 +765,8 @@ void BackupService::stepExtras(const char* ip, const char* token) {
 // ============================================================================
 // ВОССТАНОВЛЕНИЕ: снимок с SD -> /api/config/import устройства (ребут его)
 // ============================================================================
-bool BackupService::pushSnapshot(const char* ip, const char* file,
-                                 char* err, size_t errCap) {
+bool BackupService::pushSnapshot(const char* storageKey, const char* ip,
+                                 const char* file, char* err, size_t errCap) {
     fs::FS* sd = SdService::getInstance().fs();
     if (sd == nullptr) { snprintf(err, errCap, "no_sd"); return false; }
 
@@ -703,7 +782,7 @@ bool BackupService::pushSnapshot(const char* ip, const char* file,
         return false;
     }
     char path[96];
-    snprintf(path, sizeof(path), "/backup/%s/%s", ip, file);
+    snprintf(path, sizeof(path), "/backup/%s/%s", storageKey, file);
     File f = sd->open(path, FILE_READ);
     if (!f) { snprintf(err, errCap, "no_file"); return false; }
     size_t len = f.size();
@@ -754,30 +833,44 @@ bool BackupService::pushSnapshot(const char* ip, const char* file,
 // API ДЛЯ ПАНЕЛИ (вызывает HomeMasterUi::handleApi, admin уже проверен ядром)
 // ============================================================================
 size_t BackupService::apiStatus(char* buf, size_t bufSize) {
+    if (buf == nullptr || bufSize == 0) return 0;
     uint32_t nowU = timeValid()
         ? (uint32_t)TimeService::getInstance().getUnixTime() : 0;
-    size_t pos = 0;
     int n = snprintf(buf, bufSize, "{\"enabled\":%u,\"nextPlanIn\":%ld,"
                      "\"running\":%d,\"hosts\":[",
                      _enabled ? 1 : 0,
                      (_nextPlanUnix > nowU && nowU > 0)
                          ? (long)(_nextPlanUnix - nowU) : -1L,
                      _cycleIdx >= 0 ? 1 : 0);
-    if (n > 0) pos = (size_t)n;
-    for (uint8_t i = 0; i < _hostCount && pos < bufSize - 96; ++i) {
+    if (n < 0 || (size_t)n >= bufSize) return 0;
+    size_t pos = (size_t)n;
+    for (uint8_t i = 0; i < _hostCount; ++i) {
         const HostState& h = _hosts[i];
+        char resolved[20] = "";
+        char storage[24] = "";
+        const char* resolution = "legacy";
+        if (strcmp(h.ip, "self") == 0) {
+            resolution = "self";
+        } else if (backup_target::isFleetId(h.ip)) {
+            resolution = resolveHost(h, resolved, sizeof(resolved))
+                ? "ok" : "fleet_no_ip";
+        } else {
+            safeStrCopy(resolved, sizeof(resolved), h.ip);
+        }
+        if (!backup_target::storageKey(h.ip, storage, sizeof(storage))) return 0;
         n = snprintf(buf + pos, bufSize - pos,
-                     "%s{\"ip\":\"%s\",\"host\":\"%s\",\"lastOk\":%lu,\"err\":\"%s\",\"blocked\":%u}",
+                     "%s{\"ip\":\"%s\",\"host\":\"%s\",\"lastOk\":%lu,"
+                     "\"err\":\"%s\",\"blocked\":%u,\"resolvedIp\":\"%s\","
+                     "\"storage\":\"%s\",\"resolution\":\"%s\"}",
                      i ? "," : "", h.ip, h.host, (unsigned long)h.lastOkUnix,
-                     h.lastErr, h.blocked ? 1 : 0);
-        if (n < 0) break;
+                     h.lastErr, h.blocked ? 1 : 0, resolved, storage, resolution);
+        if (n < 0 || (size_t)n >= bufSize - pos) return 0;
         pos += (size_t)n;
     }
-    if (pos < bufSize - 3) {
-        buf[pos++] = ']';
-        buf[pos++] = '}';
-        buf[pos]   = '\0';
-    }
+    if (bufSize - pos < 3) return 0;
+    buf[pos++] = ']';
+    buf[pos++] = '}';
+    buf[pos] = '\0';
     return pos;
 }
 
@@ -788,8 +881,14 @@ size_t BackupService::apiFiles(const char* ip, char* buf, size_t bufSize) {
         if (pos < bufSize - 20) strcpy(buf + pos, "],\"err\":\"no_sd\"}");
         return strlen(buf);
     }
+    char storage[24];
+    if (!backup_target::storageKey(ip, storage, sizeof(storage))) {
+        return (size_t)snprintf(buf, bufSize,
+                                "{\"ip\":\"%s\",\"files\":[],\"err\":\"bad_target\"}",
+                                ip != nullptr ? ip : "");
+    }
     char dir[40];
-    snprintf(dir, sizeof(dir), "/backup/%s", ip);
+    snprintf(dir, sizeof(dir), "/backup/%s", storage);
     File d = sd->open(dir);
     bool first = true;
     if (d) {
@@ -921,7 +1020,23 @@ size_t BackupService::apiRestore(const char* ip, const char* file,
                                 "{\"ok\":1,\"applied\":%d,\"reboot_in_ms\":1500}",
                                 applied);
     }
-    if (pushSnapshot(ip, file, err, sizeof(err))) {
+    char storage[24];
+    if (!backup_target::storageKey(ip, storage, sizeof(storage))) {
+        return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"bad_target\"}");
+    }
+    char actualIp[20];
+    safeStrCopy(actualIp, sizeof(actualIp), ip);
+    const int idx = findHost(ip);
+    if (idx >= 0) {
+        if (!resolveHost(_hosts[idx], actualIp, sizeof(actualIp))) {
+            return (size_t)snprintf(buf, bufSize,
+                                    "{\"ok\":0,\"err\":\"fleet_no_ip\"}");
+        }
+    } else if (backup_target::isFleetId(ip)) {
+        return (size_t)snprintf(buf, bufSize,
+                                "{\"ok\":0,\"err\":\"not_in_bk.hosts\"}");
+    }
+    if (pushSnapshot(storage, actualIp, file, err, sizeof(err))) {
         return (size_t)snprintf(buf, bufSize, "{\"ok\":1}");
     }
     return (size_t)snprintf(buf, bufSize, "{\"ok\":0,\"err\":\"%s\"}", err);
@@ -955,6 +1070,8 @@ uint8_t BackupService::fleetSilence(char* out, size_t cap,
     for (uint8_t i = 0; i < _hostCount; ++i) {
         const HostState& h = _hosts[i];
         if (strcmp(h.ip, "self") == 0) continue;     // мастер — не клиент сам себе
+        char resolved[16];
+        if (!resolveHost(h, resolved, sizeof(resolved))) continue;
         if (h.host[0] == '\0') continue;             // имени нет — нет данных
         checkable++;
         if (!br.hasClient(h.host)) {

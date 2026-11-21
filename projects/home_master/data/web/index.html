@@ -50,6 +50,9 @@ a{color:var(--info)}
 .row:last-child{border-bottom:0}
 .k{color:var(--text2);flex-shrink:0}
 .note{font-size:12px;color:var(--text2);margin-top:6px;line-height:1.5}
+#t-fleet .row{flex-wrap:wrap;align-items:flex-start}
+#t-fleet .row>span:last-child{min-width:0;overflow-wrap:anywhere}
+#t-fleet button{min-height:44px}
 
 /* ========== БЕЙДЖИ / КНОПКИ / ПОЛЯ ========== */
 .badge{padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
@@ -130,6 +133,7 @@ footer b{color:var(--text)}
     <div class="btab" data-t="sys" onclick="showTab('sys')"><span class="fav">🧰</span>Система</div>
     <div class="btab" data-t="adm" onclick="showTab('adm')"><span class="fav">👑</span>Админ</div>
     <div class="btab on" data-t="status" onclick="showTab('status')"><span class="fav">📊</span>Статус</div>
+    <div class="btab" data-t="fleet" onclick="showTab('fleet')"><span class="fav">▦</span>Флот</div>
     <div class="btab" data-t="mqtt" onclick="showTab('mqtt')"><span class="fav">📡</span>MQTT</div>
     <div class="btab" data-t="jrn" onclick="showTab('jrn')"><span class="fav">📒</span>Журнал</div>
     <div class="btab" data-t="bk" onclick="showTab('bk')"><span class="fav">💾</span>Бэкапы</div>
@@ -178,6 +182,20 @@ footer b{color:var(--text)}
       <div class="row"><span class="k">Последний сброс</span><span id="jrnFlush">…</span></div>
       <div class="note">JSONL на SD: события парка + живость (фильтр journal.topics). Ротация 100 МБ / 90 дней. Вьюер — следующий шаг (M3.2).</div>
     </div>
+  </section>
+
+  <!-- ================= ФЛОТ (M3.4a: пассивный реестр) ================= -->
+  <section id="t-fleet" class="hidden">
+    <div class="card">
+      <h2>Пассивный реестр флота <button style="float:right" onclick="needAuth(fleetLoad)">Обновить</button></h2>
+      <div class="note">Записи создаются из фактических descriptor/state/telemetry на встроенном брокере.
+      Ключ — deviceId; IP, hostname и алиас идентичностью не являются. Retained descriptor не доказывает online.
+      <b>stale</b> означает устаревшее наблюдение, а не доказанное отключение. Реестр не отправляет команд устройствам
+      и не запускает backup/OTA. Алиас сохраняется только в LittleFS мастера; пустое значение очищает локальное имя.</div>
+      <div id="fleetSummary" class="note" style="margin-top:8px">Нажмите «Обновить».</div>
+      <div id="fleetMsg" class="note"></div>
+    </div>
+    <div id="fleetDevices"></div>
   </section>
 
   <!-- ================= СЕТЬ ================= -->
@@ -450,7 +468,7 @@ const CHK_ST=[['ok','Ok'],['warn','Warning'],['err','Critical']];
 // hm.* остаются в JSON/логах, на панели — понятные подписи. Неизвестное
 // имя показывается как есть (новые проверки не требуют правки панели).
 const CHK_NAME={'hm.sd':'SD-карта мастера','hm.bk':'Бэкапы конфигов парка','hm.ota':'OTA-зеркало прошивок','hm.fleet':'Присутствие парка','heap':'Свободная память (heap)','cpu_temp':'Температура кристалла'};
-const TABS=['net','paz','sys','adm','status','mqtt','jrn','bk','arch','cfg'];
+const TABS=['net','paz','sys','adm','status','fleet','mqtt','jrn','bk','arch','cfg'];
 // Распределение конфиг-групп по вкладкам (правило 23): общие группы ядра —
 // в общие вкладки (Сеть/Система/Безопасность→Админ), MQTT отделён от сети
 // (специфика мастера), всё нераспознанное падает в «Настройки» —
@@ -556,6 +574,7 @@ function openTab(t,force){
   else if(t==='net'){needAuth(()=>loadCfg(),force);}
   else if(t==='cfg'){needAuth(()=>loadCfg(),force);}
   else if(t==='paz'){needAuth(()=>loadPaz());}
+  else if(t==='fleet'){needAuth(()=>fleetLoad());}
   else if(t==='bk'){needAuth(()=>{bkLoad();omLoad();});}
   else if(t==='arch'){needAuth(()=>{loadArchive();loadCfg();});}
   else if(t==='sys'){needAuth(()=>{$('auditLink').href='/api/audit?token='+encodeURIComponent(T);renderOta();});}
@@ -1043,6 +1062,102 @@ function otaUpload(input,type){
   if(T)xhr.setRequestHeader('X-Auth-Token',T);
   xhr.send(fd);
 }
+// ---------- пассивный реестр флота (M3.4a) ----------
+function fleetText(v){return esc(v===null||v===undefined||v===''?'—':String(v));}
+function fleetAge(v){return typeof v==='number'&&isFinite(v)&&v>=0?fmtUp(v):'—';}
+function fleetTime(v){return typeof v==='number'&&v>=1700000000?new Date(v*1000).toLocaleString('ru-RU'):'—';}
+function fleetRow(k,v){return '<div class="row"><span class="k">'+esc(k)+'</span><span>'+v+'</span></div>';}
+
+async function fleetLoad(){
+  $('fleetMsg').textContent='';
+  try{
+    const r=await api('GET','/api/dev/hm/fleet');
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.error){$('fleetSummary').textContent='Реестр недоступен: '+(j.error||('HTTP '+r.status));return;}
+    fleetRender(j);
+  }catch(e){if(e.message!=='401')$('fleetSummary').textContent='Реестр недоступен: сбой связи или некорректный JSON.';}
+}
+
+function fleetRender(j){
+  const s=j.summary||{}, c=j.counters||{};
+  $('fleetSummary').innerHTML='Записей: <b>'+(+s.records||0)+'</b>'
+    +' · идентифицировано '+(+s.identified||0)
+    +' · '+badge('online '+(+s.online||0),'ok')+' '+badge('stale '+(+s.stale||0),'warn')
+    +' '+badge('offline '+(+s.offline||0),'err')+' '+badge('unknown '+(+s.unknown||0),'mut')
+    +'<br>Сформировано: '+esc(j.generatedUnix?fleetTime(j.generatedUnix):'только монотонное время')
+    +' · stale через '+fmtUp(j.staleAfterSec||600)
+    +' · алиасы: '+(j.aliasPersist?badge('LittleFS ok','ok'):badge('ошибка persistence','err'))
+    +'<br><span class="k">accepted '+(+c.accepted||0)+' · rejected '+(+c.rejected||0)
+    +' · truncated '+(+c.truncated||0)+' · identity conflicts '+(+c.identityConflicts||0)
+    +' · records rejected '+(+c.recordsRejected||0)+'</span>';
+  const devices=(j.devices||[]).slice().sort((a,b)=>{
+    if(!!a.self!==!!b.self)return a.self?-1:1;
+    return String(a.alias||a.host||a.id).localeCompare(String(b.alias||b.host||b.id),'ru');
+  });
+  const box=$('fleetDevices');box.innerHTML='';
+  if(!devices.length){box.innerHTML='<div class="card k">Записей пока нет. Устройства появятся после их публикаций на локальном брокере.</div>';return;}
+  const AV={online:['online','ok'],offline:['offline','err'],stale:['stale','warn'],unknown:['unknown','mut']};
+  const REL={same:'совпадают',different:'различаются',unknown:'неизвестно'};
+  devices.forEach(d=>{
+    const av=AV[d.availability]||AV.unknown, t=d.telemetry, b=d.backup||{}, o=d.ota||{};
+    let marks=badge(av[0],av[1]);
+    if(d.self)marks+=' '+badge('этот мастер','mut');
+    if(!d.identified)marks+=' '+badge(d.descriptorMs?'descriptor удалён':'provisional','warn');
+    if(d.identityConflicts)marks+=' '+badge('конфликт id: '+d.identityConflicts,'err');
+    if(b.blocked)marks+=' '+badge('backup: ждёт пароль','err');
+    const name=d.alias||d.host||d.id;
+    let html='<h2>'+esc(name)+' '+marks+'</h2>';
+    html+=fleetRow('Локальный алиас','<input id="fleetAlias-'+d.id+'" maxlength="32" size="24" value="'+esc(d.alias||'')+'"> '
+      +'<button onclick="fleetAliasSave(\''+d.id+'\')">Сохранить алиас</button>');
+    html+=fleetRow('deviceId / профиль',fleetText(d.id)+' · '+fleetText(d.profile));
+    html+=fleetRow('hostname / IP',fleetText(d.host)+' · '+fleetText(d.ip)
+      +(d.web_url?' · <a href="'+esc(d.web_url)+'" target="_blank" rel="noopener">открыть веб</a>':''));
+    html+=fleetRow('Ядро / профиль',fleetText(d.kernel)+' / '+fleetText(d.profileVer));
+    html+=fleetRow('Возраст descriptor / state / telemetry',fleetAge(d.descriptorAgeSec)+' / '
+      +fleetAge(d.availabilityAgeSec)+' / '+fleetAge(d.telemetryAgeSec));
+    if(t){
+      const cpu=typeof t.cpuTenths==='number'?(t.cpuTenths/10).toFixed(1)+' °C':'—';
+      html+=fleetRow('Uptime / heap / heap_min',fleetAge(t.uptime)+' / '+fmtKb(t.heap)+' / '+fmtKb(t.heapMin));
+      html+=fleetRow('CPU / деградация / RTT шлюза',cpu+' / '+fleetText(DEGR[t.degradation]||t.degradation)+' / '+fleetText(t.gwRtt)+' мс');
+      html+=fleetRow('EventBus dropped / HWM',fleetText(t.busDropped)+' / '+fleetText(t.busHwm));
+      html+=fleetRow('Bootloop / audit lost',fleetText(t.bootloop)+' / '+fleetText(t.auditLost));
+    }else html+=fleetRow('Телеметрия','<span class="k">ещё не получена</span>');
+    html+='<h3>BackupAggregator</h3>';
+    if(!b.selected)html+=fleetRow('Ручная политика','<span class="k">не выбран в bk.hosts</span>');
+    else{
+      html+=fleetRow('Target / актуальный IP',fleetText(b.target)+' / '+fleetText(b.resolved_ip));
+      html+=fleetRow('Хранилище',fleetText(b.storage));
+      html+=fleetRow('Последний снимок',fleetTime(b.last_ok));
+      html+=fleetRow('Состояние',b.err?badge(b.err,'warn'):badge(b.resolution||'ok','ok'));
+    }
+    html+='<h3>OTA-зеркало</h3>';
+    html+=fleetRow('Связь по descriptor.host',o.configured
+      ?badge('configured','mut')+' '+badge(o.linked?'linked':'not linked',o.linked?'ok':'warn')
+      :'<span class="k">hostname не входит в otam.hosts</span>');
+    html+=fleetRow('Комплект FW+FS',o.pair_ready?badge('pair_ready','ok'):badge('не подтверждён',o.configured?'warn':'mut'));
+    html+=fleetRow('Зеркало: ядро / профиль',fleetText(o.mirror_kernel)+' / '+fleetText(o.mirror_profile_ver));
+    html+=fleetRow('Размеры FW / FS',(o.fw_size?fmtKb(o.fw_size):'—')+' / '+(o.fs_size?fmtKb(o.fs_size):'—'));
+    html+=fleetRow('Отношение версий',badge(REL[o.version_relation]||REL.unknown,
+      o.version_relation==='same'?'ok':o.version_relation==='different'?'warn':'mut'));
+    html+=fleetRow('Последняя сверка / ошибка',fleetTime(o.last_ok)+' / '+fleetText(o.err));
+    html+=fleetRow('Board-совместимость','<span class="k">не доказана: descriptor v1 не содержит board/capabilities</span>');
+    html+='<div class="note">Различие версий — не рекомендация обновления. pair_ready — не разрешение на OTA. Ручные операции остаются только на своих прежних вкладках.</div>';
+    const card=document.createElement('div');card.className='card';card.innerHTML=html;box.appendChild(card);
+  });
+}
+
+async function fleetAliasSave(id){
+  const alias=$('fleetAlias-'+id).value;
+  try{
+    const r=await api('POST','/api/dev/hm/fleet/alias','id='+encodeURIComponent(id)+'&alias='+encodeURIComponent(alias));
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){$('fleetMsg').textContent='Алиас не сохранён: '+(j.error||('HTTP '+r.status));return;}
+    $('fleetMsg').textContent='';
+    await fleetLoad();
+    $('fleetMsg').textContent='Локальный алиас сохранён на мастере. Устройству ничего не отправлено.';
+  }catch(e){if(e.message!=='401')$('fleetMsg').textContent='Алиас не сохранён: сбой связи.';}
+}
+
 // ---------- бэкапы парка (M3.3) ----------
 // Статусы и списки снимков — с мастера; развёртывание уходит на устройство
 // (оно применяет снимок и перезагружается — панель честно предупреждает).

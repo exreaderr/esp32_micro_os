@@ -1,6 +1,7 @@
 // OtaMirrorService.cpp — 0.6.1: OTA-зеркало парка на мастере (см. шапку .h)
 // ============================================================================
 #include "OtaMirrorService.h"
+#include "FleetOtaJoin.h"
 #include "SdService.h"
 #include <core/EventBus.h>
 #include <core/Events.h>
@@ -860,7 +861,33 @@ bool OtaMirrorService::tryFinalize(const char* host, char* msg, size_t cap) {
 // ============================================================================
 // API ДЛЯ ПАНЕЛИ
 // ============================================================================
+void OtaMirrorService::fleetStatus(const char* descriptorHost,
+                                   const char* kernel,
+                                   const char* profileVer, bool self,
+                                   OtaFleetStatus& out) const {
+    out = OtaFleetStatus{};
+    if (self || descriptorHost == nullptr || descriptorHost[0] == '\0') return;
+    const int idx = findHost(descriptorHost);
+    if (idx < 0) return;                    // hostname не входит в otam.hosts
+    const HostState& h = _hosts[idx];
+    out.configured = true;
+    out.linked = true;                      // точное совпадение descriptor.host
+    safeStrCopy(out.host, sizeof(out.host), h.host);
+    out.fwSize = h.fwSize;
+    out.fsSize = h.fsSize;
+    safeStrCopy(out.mirrorKernel, sizeof(out.mirrorKernel), h.version);
+    safeStrCopy(out.mirrorProfileVer, sizeof(out.mirrorProfileVer), h.pver);
+    out.lastOk = h.lastOkUnix;
+    safeStrCopy(out.err, sizeof(out.err), h.lastErr);
+    out.pairReady = fleet_ota::pairReady(out.linked, h.version, h.pver,
+                                         h.fwSize, h.fsSize, h.lastErr);
+    safeStrCopy(out.versionRelation, sizeof(out.versionRelation),
+                fleet_ota::versionRelation(kernel, profileVer,
+                                           h.version, h.pver));
+}
+
 size_t OtaMirrorService::apiStatus(char* buf, size_t bufSize) {
+    if (buf == nullptr || bufSize == 0) return 0;
     fs::FS* sd = SdService::getInstance().fs();
     size_t n = 0;
     uint32_t nextIn = 0;
@@ -871,11 +898,13 @@ size_t OtaMirrorService::apiStatus(char* buf, size_t bufSize) {
             nextIn = d > 0 ? (uint32_t)d / 1000 : 0;
         }
     }
-    n += snprintf(buf + n, bufSize - n,
+    int written = snprintf(buf, bufSize,
                   "{\"enabled\":%u,\"period_h\":%u,\"lastRunUnix\":%lu,"
                   "\"nextIn\":%lu,\"hosts\":[",
                   _enabled ? 1u : 0u, cfgGetUInt("otam.period_h", 6),
                   (unsigned long)_lastRunUnix, (unsigned long)nextIn);
+    if (written < 0 || (size_t)written >= bufSize) return 0;
+    n = (size_t)written;
     for (uint8_t i = 0; i < _hostCount; ++i) {
         const HostState& h = _hosts[i];
         // Размеры — по факту с SD (могли пережить ребут мастера).
@@ -905,14 +934,18 @@ size_t OtaMirrorService::apiStatus(char* buf, size_t bufSize) {
                 if (pver[0] == '\0') omJsonStr(js, "\"profile_version\"", pver, sizeof(pver));
             }
         }
-        n += snprintf(buf + n, bufSize - n,
+        written = snprintf(buf + n, bufSize - n,
                       "%s{\"host\":\"%s\",\"version\":\"%s\",\"pver\":\"%s\","
                       "\"lastOkUnix\":%lu,"
                       "\"lastErr\":\"%s\",\"fwSize\":%lu,\"fsSize\":%lu}",
                       i ? "," : "", h.host, ver, pver, (unsigned long)h.lastOkUnix,
                       h.lastErr, (unsigned long)fw, (unsigned long)fsz);
+        if (written < 0 || (size_t)written >= bufSize - n) return 0;
+        n += (size_t)written;
     }
-    n += snprintf(buf + n, bufSize - n, "]}");
+    if (bufSize - n < 3) return 0;
+    memcpy(buf + n, "]}", 3);
+    n += 2;
     return n;
 }
 

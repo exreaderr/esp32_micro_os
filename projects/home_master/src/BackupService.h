@@ -33,13 +33,25 @@
 
 struct BrokerEventInfo;   // BrokerService.h — только в .cpp (шапка лёгкая)
 
+// Пассивная проекция ручной bk.hosts-политики для Fleet API.
+struct BackupFleetStatus {
+    bool selected = false;
+    char target[20] = "";
+    char resolvedIp[16] = "";
+    uint32_t lastOk = 0;
+    char err[32] = "";
+    bool blocked = false;
+    char storage[24] = "";
+    char resolution[12] = "";
+};
+
 class BackupService : public ModuleBase {
 public:
     static BackupService& getInstance();
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BackupService"; }
-    const char* getVersion() const override { return "0.3.2-m38"; }   // m38: bk.extras — доп.снимки с хостов (0.9.5: база пользователей замка); m37: fleetSilence для hm.fleet (0.6.8); m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
+    const char* getVersion() const override { return "0.3.3-m34a"; }   // m34a: ручные id:<deviceId> цели, актуальный IP из FleetRegistry и /backup/id-<id>/; legacy IP/self без изменений; m38: bk.extras — доп.снимки с хостов (0.9.5: база пользователей замка); m37: fleetSilence для hm.fleet (0.6.8); m36: hostname хоста в apiStatus (0.6.6); m35: проверка «не я ли» в момент цикла (урок 0.6.3-пр1); m34: self слот 0
     // 0.2.0 (0.6.2, bk.self): мастер бэкапит и СЕБЯ — псевдохост "self"
     // первым в цикле, локально (exportSnapshotJson, без HTTP/пароля),
     // в /backup/self/. Восстановление: applySnapshotJson + отложенный
@@ -59,6 +71,9 @@ public:
     /// Список хостов и статусов: {"hosts":[{"ip":"...","lastOk":U,
     /// "lastErr":"...","files":N,"blocked":0/1},...],"nextIn":секунды}
     size_t apiStatus(char* buf, size_t bufSize);
+    /// Read-only связь deviceId/self/актуального IP с ручной bk.hosts-политикой.
+    void fleetStatus(const char* deviceId, bool self, const char* actualIp,
+                     BackupFleetStatus& out) const;
     /// Список файлов снимков хоста: {"ip":"...","files":["config-...json",...]}
     size_t apiFiles(const char* ip, char* buf, size_t bufSize);
     /// Ручной съём: ip — конкретный или "all". Возврат: ok + статус.
@@ -108,6 +123,7 @@ private:
 
     void     reloadHosts();              // bk.hosts -> _hosts[] (слот 0 — "self")
     int      findHost(const char* ip) const;
+    bool     resolveHost(const HostState& h, char* out, size_t cap) const;
     void     stepSelf(HostState& h);     // 0.6.2: снимок самого мастера (локально)
     /// Запуск цикла: only >= 0 — точечно один хост (ручной «Снять»),
     /// иначе весь список. Цикл идёт [_cycleIdx, _cycleEnd).
@@ -119,7 +135,7 @@ private:
     bool     fetchSnapshot(const char* ip, const char* token,
                            char* buf, size_t cap, size_t* outLen,
                            char* err, size_t errCap);
-    bool     pushSnapshot(const char* ip, const char* file,
+    bool     pushSnapshot(const char* storageKey, const char* ip, const char* file,
                           char* err, size_t errCap);
     bool     storeSnapshot(const char* ip, const char* data, size_t len,
                            char* err, size_t errCap);

@@ -100,7 +100,7 @@ void registerHomeMasterConfig() {
         { "bk.enabled", ConfigType::BOOL, "true", 0, 0, CFG_NONE,
           "Бэкапы", "Собирать снимки конфигов парка на SD" },
         { "bk.hosts", ConfigType::STRING, "10.146.75.53,10.146.75.55", 0, 0, CFG_NONE,
-          "Бэкапы", "IP устройств парка через запятую (без мастера)" },
+          "Бэкапы", "IP или id:<deviceId> устройств через запятую (без мастера)" },
         { "bk.admin_pin", ConfigType::SECRET, "", 0, 0, CFG_SECRET | CFG_NONE,
           "Бэкапы", "Пароль администратора устройств парка (единый, только NVS)" },
         { "bk.period_days", ConfigType::UINT, "7", 1, 90, CFG_NONE,

@@ -49,7 +49,7 @@ public:
 
     // --- IModule ---------------------------------------------------------
     const char* getName() const override { return "BrokerService"; }
-    const char* getVersion() const override { return "0.1.6-m3"; }   // 0.1.6: hasClient — страж гонки synth offline (M2); 0.1.5: multi-hook (слоты под мост M2 + журнал M3); 0.1.4: clientId в Publish-хуке; 0.1.2: ёмкость 12 (бенч M1); 0.1.3: хук для моста M2
+    const char* getVersion() const override { return "0.1.7-m34a"; }   // 0.1.7: запас hook-слотов для пассивного FleetRegistry M3.4a; 0.1.6: hasClient — страж гонки synth offline (M2); 0.1.5: multi-hook (слоты под мост M2 + журнал M3); 0.1.4: clientId в Publish-хуке; 0.1.2: ёмкость 12 (бенч M1); 0.1.3: хук для моста M2
     ModuleId getModuleId() const override { return 0x1103; }   // 0x1101=SdService, 0x1102=HomeMasterApp
     void init() override;
     void start() override;
@@ -87,7 +87,7 @@ public:
     /// RemoveClient (clientId) из принятых сессий. До BROKER_HOOK_MAX
     /// слушателей (M3.1: было один слот — мост M2; добавился журнал).
     /// Вызываются синхронно из tick — тяжёлое в хуке запрещено (SD, сеть).
-    static constexpr uint8_t BROKER_HOOK_MAX = 4;
+    static constexpr uint8_t BROKER_HOOK_MAX = 8;
     bool addEventHook(BrokerEventHook h);
     void removeEventHook(BrokerEventHook h);
 
